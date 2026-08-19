@@ -33,7 +33,7 @@ import type {
 interface ChildContentFormValues {
   question: string;
   response_content: string;
-  question_variants?: string;
+  question_variants?: string[];
   follow_up_guidance?: string;
   question_type?: string;
   business_object?: string;
@@ -48,7 +48,7 @@ interface ParentSubmissionFormValues {
   parent: {
     name: string;
     canonical_keyword: string;
-    aliases?: string;
+    aliases?: string[];
   };
   primary_child: ChildContentFormValues;
   knowledge_base_ids: string[];
@@ -66,10 +66,9 @@ interface ResubmissionFormValues {
   child?: ChildContentFormValues;
 }
 
-function lines(value: string | undefined): string[] {
-  return (value ?? "")
-    .split("\n")
-    .map((line) => line.trim())
+function normalizeList(values: string[] | undefined): string[] {
+  return (values ?? [])
+    .map((value) => value.trim())
     .filter(Boolean);
 }
 
@@ -77,6 +76,45 @@ const parentTypeOptions = [
   { label: "问题反馈", value: "问题反馈" },
   { label: "需求提交", value: "需求提交" },
   { label: "配置项咨询", value: "配置项咨询" }
+];
+
+const questionTypeOptions = [
+  { label: "功能故障类", value: "功能故障类" },
+  { label: "终端/管理平台功能咨询类", value: "终端/管理平台功能咨询类" },
+  { label: "对账/账单数据类", value: "对账/账单数据类" },
+  { label: "账户迁仓类", value: "账户迁仓类" },
+  { label: "穿透式测试/飞套报告类", value: "穿透式测试/飞套报告类" }
+];
+
+const businessObjectOptions = [
+  { label: "基础知识与算法", value: "基础知识与算法" },
+  { label: "对应平台使用说明书", value: "对应平台使用说明书" },
+  { label: "随心易交易终端", value: "随心易交易终端" },
+  { label: "管理平台&风控终端配置", value: "管理平台&风控终端配置" },
+  { label: "企业版交易终端相关配置", value: "企业版交易终端相关配置" },
+  { label: "程序化接入", value: "程序化接入" },
+  { label: "仓位、资金比对及处理", value: "仓位、资金比对及处理" },
+  { label: "账户建立&账户迁移", value: "账户建立&账户迁移" },
+  { label: "绩效系统使用", value: "绩效系统使用" },
+  { label: "服务器硬件配置&需求确认单", value: "服务器硬件配置&需求确认单" },
+  { label: "测试报告&白皮书", value: "测试报告&白皮书" }
+];
+
+const purposeOptions = [
+  { label: "企业微信咨询", value: "企业微信咨询" },
+  { label: "400 电话咨询", value: "400 电话咨询" },
+  { label: "需求节点核实", value: "需求节点核实" },
+  { label: "内部培训", value: "内部培训" },
+  { label: "审计合规", value: "审计合规" }
+];
+
+const customerTypeOptions = [
+  { label: "个人客户", value: "个人客户" },
+  { label: "私募公司", value: "私募公司" },
+  { label: "期货公司", value: "期货公司" },
+  { label: "经纪公司风险子", value: "经纪公司风险子" },
+  { label: "证券公司", value: "证券公司" },
+  { label: "产业客户", value: "产业客户" }
 ];
 
 function nullable(value: string | undefined): string | null {
@@ -88,7 +126,7 @@ function toChildContent(values: ChildContentFormValues): ChildContentInput {
   return {
     question: values.question,
     response_content: values.response_content,
-    question_variants: lines(values.question_variants),
+    question_variants: normalizeList(values.question_variants),
     follow_up_guidance: nullable(values.follow_up_guidance),
     question_type: nullable(values.question_type),
     business_object: nullable(values.business_object),
@@ -104,7 +142,7 @@ function toParentContent(values: ParentSubmissionFormValues["parent"]): ParentCo
   return {
     name: values.name,
     canonical_keyword: values.canonical_keyword,
-    lexical_rules: lines(values.aliases).map((ruleValue) => ({
+    lexical_rules: normalizeList(values.aliases).map((ruleValue) => ({
       rule_type: "alias" as const,
       rule_value: ruleValue
     }))
@@ -115,7 +153,7 @@ function toChildFormValues(revision: ReviewChildRevision): ChildContentFormValue
   return {
     question: revision.question,
     response_content: revision.response_content,
-    question_variants: revision.question_variants.join("\n"),
+    question_variants: [...revision.question_variants],
     follow_up_guidance: revision.follow_up_guidance ?? "",
     question_type: revision.question_type ?? "",
     business_object: revision.business_object ?? "",
@@ -134,8 +172,47 @@ function toParentFormValues(revision: ReviewParentRevision): ParentSubmissionFor
     aliases: revision.lexical_rules
       .filter((rule) => rule.rule_type === "alias")
       .map((rule) => rule.rule_value)
-      .join("\n")
   };
+}
+
+function StructuredTextList({
+  name,
+  label,
+  addLabel,
+  placeholder
+}: {
+  name: (string | number)[];
+  label: string;
+  addLabel: string;
+  placeholder: string;
+}): JSX.Element {
+  return (
+    <Form.Item label={label}>
+      <Form.List name={name}>
+        {(fields, { add, remove }) => (
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            {fields.map((field) => (
+              <Space key={field.key} align="start" style={{ display: "flex", width: "100%" }}>
+                <Form.Item
+                  {...field}
+                  rules={[{ required: true, whitespace: true, message: `请输入${label}` }]}
+                  style={{ flex: 1, marginBottom: 0 }}
+                >
+                  <Input placeholder={placeholder} />
+                </Form.Item>
+                <Button type="link" danger onClick={() => remove(field.name)}>
+                  删除
+                </Button>
+              </Space>
+            ))}
+            <Button type="dashed" onClick={() => add()} block>
+              + {addLabel}
+            </Button>
+          </Space>
+        )}
+      </Form.List>
+    </Form.Item>
+  );
 }
 
 function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.Element {
@@ -155,28 +232,47 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
       >
         <Input.TextArea rows={5} placeholder="审核通过后面向检索用户展示的回答" />
       </Form.Item>
-      <Form.Item name={[root, "question_variants"]} label="同义问句">
-        <Input.TextArea rows={3} placeholder="每行一个；无需重复填写主问题" />
-      </Form.Item>
+      <StructuredTextList
+        name={[root, "question_variants"]}
+        label="同义问句"
+        addLabel="添加同义问句"
+        placeholder="无需重复填写主问题"
+      />
       <Collapse
         ghost
         items={[
           {
             key: "more-fields",
-            label: "补充业务字段（可选）",
+            label: "业务字段（必填）",
             children: (
               <>
-                <Form.Item name={[root, "question_type"]} label="问题类型">
-                  <Input />
+                <Form.Item
+                  name={[root, "question_type"]}
+                  label="问题类型"
+                  rules={[{ required: true, message: "请选择问题类型" }]}
+                >
+                  <Select placeholder="--请选择--" options={questionTypeOptions} />
                 </Form.Item>
-                <Form.Item name={[root, "business_object"]} label="业务对象">
-                  <Input />
+                <Form.Item
+                  name={[root, "business_object"]}
+                  label="具体功能与模块"
+                  rules={[{ required: true, message: "请选择具体功能与模块" }]}
+                >
+                  <Select placeholder="--请选择--" options={businessObjectOptions} />
                 </Form.Item>
-                <Form.Item name={[root, "purpose"]} label="使用目的">
-                  <Input />
+                <Form.Item
+                  name={[root, "purpose"]}
+                  label="应用场景"
+                  rules={[{ required: true, message: "请选择应用场景" }]}
+                >
+                  <Select placeholder="--请选择--" options={purposeOptions} />
                 </Form.Item>
-                <Form.Item name={[root, "customer_type"]} label="客户类型">
-                  <Input />
+                <Form.Item
+                  name={[root, "customer_type"]}
+                  label="客户类型"
+                  rules={[{ required: true, message: "请选择客户类型" }]}
+                >
+                  <Select placeholder="--请选择--" options={customerTypeOptions} />
                 </Form.Item>
                 <Form.Item name={[root, "feature_explanation"]} label="功能说明">
                   <Input.TextArea rows={3} />
@@ -489,9 +585,12 @@ export function ContentSubmissionPage(): JSX.Element {
                     >
                       <Input placeholder="例如：登录" />
                     </Form.Item>
-                    <Form.Item name={["parent", "aliases"]} label="别名">
-                      <Input.TextArea rows={2} placeholder="每行一个，例如：登陆" />
-                    </Form.Item>
+                    <StructuredTextList
+                      name={["parent", "aliases"]}
+                      label="别名"
+                      addLabel="添加别名"
+                      placeholder="例如：登陆"
+                    />
                     <Typography.Title level={5}>主子条目字段</Typography.Title>
                     <ChildContentFields root="primary_child" />
                     <Form.Item
@@ -622,9 +721,12 @@ export function ContentSubmissionPage(): JSX.Element {
                   >
                     <Input />
                   </Form.Item>
-                  <Form.Item name={["parent", "aliases"]} label="别名">
-                    <Input.TextArea rows={2} />
-                  </Form.Item>
+                  <StructuredTextList
+                    name={["parent", "aliases"]}
+                    label="别名"
+                    addLabel="添加别名"
+                    placeholder="例如：登陆"
+                  />
                   <Typography.Title level={5}>主子条目字段</Typography.Title>
                   <ChildContentFields root="primary_child" />
                 </>
