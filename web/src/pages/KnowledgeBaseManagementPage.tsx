@@ -40,6 +40,10 @@ function normalizeDescription(value: string | undefined): string | null {
   return description || null;
 }
 
+function activeReviewAdministrators(users: User[]): User[] {
+  return users.filter((user) => user.role === "review_admin" && user.is_active);
+}
+
 export function KnowledgeBaseManagementPage(): JSX.Element {
   const [knowledgeBases, setKnowledgeBases] = useState<ManagedKnowledgeBase[]>([]);
   const [reviewAdministrators, setReviewAdministrators] = useState<User[]>([]);
@@ -50,6 +54,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
   const [reviewerKnowledgeBase, setReviewerKnowledgeBase] = useState<ManagedKnowledgeBase>();
   const [assignments, setAssignments] = useState<ReviewerAssignment[]>([]);
   const [assigningReviewerId, setAssigningReviewerId] = useState<string>();
+  const [reviewerLoading, setReviewerLoading] = useState(false);
   const [createForm] = Form.useForm<CreateKnowledgeBaseValues>();
   const [editForm] = Form.useForm<UpdateKnowledgeBaseValues>();
 
@@ -61,9 +66,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
         api.listUsers(false)
       ]);
       setKnowledgeBases(managedKnowledgeBases);
-      setReviewAdministrators(
-        users.filter((user) => user.role === "review_admin" && user.is_active)
-      );
+      setReviewAdministrators(activeReviewAdministrators(users));
     } catch (reason) {
       message.error(errorMessage(reason));
     } finally {
@@ -78,10 +81,19 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
   const loadAssignments = async (knowledgeBase: ManagedKnowledgeBase): Promise<void> => {
     setReviewerKnowledgeBase(knowledgeBase);
     setAssignments([]);
+    setReviewAdministrators([]);
+    setReviewerLoading(true);
     try {
-      setAssignments(await api.listKnowledgeBaseReviewers(knowledgeBase.id));
+      const [assignments, users] = await Promise.all([
+        api.listKnowledgeBaseReviewers(knowledgeBase.id),
+        api.listUsers(false)
+      ]);
+      setAssignments(assignments);
+      setReviewAdministrators(activeReviewAdministrators(users));
     } catch (reason) {
       message.error(errorMessage(reason));
+    } finally {
+      setReviewerLoading(false);
     }
   };
 
@@ -323,6 +335,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
         <Space.Compact block>
           <Select
             value={assigningReviewerId}
+            loading={reviewerLoading}
             placeholder="选择要分配的启用审查管理员"
             options={unassignedReviewers.map((reviewer) => ({
               value: reviewer.id,

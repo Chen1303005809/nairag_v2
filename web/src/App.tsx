@@ -5,13 +5,13 @@ import {
   Dropdown,
   Layout,
   Spin,
-  Tabs,
   Typography,
   message
 } from "antd";
 import { Suspense, lazy, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api/client";
+import { ApplicationTabs } from "./components/ApplicationTabs";
 import type { User } from "./api/types";
 import { RoleTag } from "./components/role";
 import { ChangePasswordPage } from "./pages/ChangePasswordPage";
@@ -136,7 +136,7 @@ function App(): JSX.Element {
       <Layout.Content className="application-content">
         <AntApp>
           {user.role === "system_admin" ? (
-            <Tabs
+            <ApplicationTabs
               defaultActiveKey="knowledge-bases"
               items={[
                 {
@@ -187,7 +187,7 @@ function App(): JSX.Element {
               ]}
             />
           ) : user.role === "review_admin" ? (
-            <Tabs
+            <ApplicationTabs
               defaultActiveKey="content-submission"
               items={[
                 {
@@ -220,7 +220,7 @@ function App(): JSX.Element {
               ]}
             />
           ) : (
-            <Tabs
+            <ApplicationTabs
               defaultActiveKey="search"
               items={[
                 {
