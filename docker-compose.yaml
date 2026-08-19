@@ -145,8 +145,8 @@ services:
       INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
       INDEX_BACKEND_MODE: ${INDEX_BACKEND_MODE:-local_artifact}
       EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
-      MILVUS_URL: ${MILVUS_URL:-http://milvus:19530}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      MILVUS_URL: ${MILVUS_URL:-}
       WORKER_POLL_INTERVAL_SECONDS: "2"
       WORKER_LEASE_SECONDS: "300"
       COOKIE_SECURE: "false"
