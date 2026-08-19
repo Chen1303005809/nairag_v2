@@ -15,12 +15,14 @@ from app.main import create_app
 from app.models.knowledge_content import (
     ChildKnowledgeBasePublication,
     ChildPublicationStatus,
+    IndexJob,
+    IndexJobStatus,
     ReviewSubmission,
     ReviewSubmissionStatus,
     ReviewSubmissionTarget,
     ReviewTargetStatus,
 )
-from app.services.knowledge_content import publish_approved_target
+from app.services.index_jobs import run_next_index_job
 
 
 async def build_test_app(tmp_path: Path) -> tuple[object, AsyncEngine]:
@@ -532,11 +534,16 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     ).json() == []
 
                     async with app.state.session_factory() as session:  # type: ignore[attr-defined]
-                        await publish_approved_target(
-                            session,
-                            review_submission_id=UUID(parent_submission_id),
-                            knowledge_base_id=UUID(knowledge_base_ids[0]),
-                        )
+                        jobs = list((await session.scalars(select(IndexJob))).all())
+                        assert len(jobs) == 2
+                        assert {job.status for job in jobs} == {IndexJobStatus.PENDING}
+                        for _ in jobs:
+                            result = await run_next_index_job(
+                                session,
+                                worker_id="test-worker",
+                            )
+                            assert result is not None
+                            assert result.status == IndexJobStatus.SUCCEEDED
                         await session.commit()
 
                     parent_id = submitted.json()["parent_id"]
@@ -568,11 +575,12 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     )
                     assert approve_child.status_code == 201
                     async with app.state.session_factory() as session:  # type: ignore[attr-defined]
-                        await publish_approved_target(
+                        result = await run_next_index_job(
                             session,
-                            review_submission_id=UUID(child_submission_id),
-                            knowledge_base_id=UUID(knowledge_base_ids[0]),
+                            worker_id="test-worker",
                         )
+                        assert result is not None
+                        assert result.status == IndexJobStatus.SUCCEEDED
                         await session.commit()
 
                     reject_child = await reviewer.post(
@@ -589,6 +597,30 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert publication.status_code == 200
                     assert publication.json()["status"] == "published"
                     assert publication.json()["pending_submission_id"] is None
+
+                    search = await author.post(
+                        "/api/v1/search",
+                        headers=csrf_headers(author, settings),
+                        json={"query": "如何找回密码？", "limit": 10},
+                    )
+                    assert search.status_code == 200
+                    search_payload = search.json()
+                    assert search_payload["no_match"] is False
+                    result_item = search_payload["groups"][0]["children"][0]
+                    feedback = await author.post(
+                        f"/api/v1/search/events/{search_payload['search_event_id']}/feedback",
+                        headers=csrf_headers(author, settings),
+                        json={"result_item_id": result_item["result_item_id"]},
+                    )
+                    assert feedback.status_code == 200
+                    assert feedback.json()["already_recorded"] is False
+                    duplicate_feedback = await author.post(
+                        f"/api/v1/search/events/{search_payload['search_event_id']}/feedback",
+                        headers=csrf_headers(author, settings),
+                        json={"result_item_id": result_item["result_item_id"]},
+                    )
+                    assert duplicate_feedback.status_code == 200
+                    assert duplicate_feedback.json()["already_recorded"] is True
     finally:
         await engine.dispose()
 

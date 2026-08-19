@@ -63,6 +63,24 @@ class ChildPublicationStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class IndexJobKind(str, Enum):
+    INDEX_TARGET = "index_target"
+    CLEAN_PUBLICATION = "clean_publication"
+
+
+class IndexJobStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class SearchQueryMode(str, Enum):
+    TEXT = "text"
+    IMAGE = "image"
+    MIXED = "mixed"
+
+
 class Parent(Base):
     """Global parent identity. Its mutable business content belongs to revisions."""
 
@@ -489,4 +507,242 @@ class ChildKnowledgeBasePublication(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class IndexJob(Base):
+    """Durable outbox/worker record for derived index operations."""
+
+    __tablename__ = "index_job"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_index_job_idempotency_key"),
+        CheckConstraint("attempt_count >= 0", name="ck_index_job_attempt_count_nonnegative"),
+        CheckConstraint("max_attempts >= 1", name="ck_index_job_max_attempts_positive"),
+        CheckConstraint(
+            "job_kind != 'index_target' OR "
+            "(review_submission_id IS NOT NULL AND knowledge_base_id IS NOT NULL "
+            "AND child_id IS NOT NULL AND child_revision_id IS NOT NULL)",
+            name="ck_index_job_target_fields_required",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    job_kind: Mapped[IndexJobKind] = mapped_column(
+        SqlEnum(
+            IndexJobKind,
+            name="index_job_kind",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [value.value for value in enum_class],
+        ),
+        nullable=False,
+    )
+    status: Mapped[IndexJobStatus] = mapped_column(
+        SqlEnum(
+            IndexJobStatus,
+            name="index_job_status",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [value.value for value in enum_class],
+        ),
+        nullable=False,
+        default=IndexJobStatus.PENDING,
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    review_submission_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("review_submission.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    child_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    child_revision_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child_revision.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SearchEvent(Base):
+    """A persisted search context used for result tracing and feedback idempotency."""
+
+    __tablename__ = "search_event"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("user_account.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    query_mode: Mapped[SearchQueryMode] = mapped_column(
+        SqlEnum(
+            SearchQueryMode,
+            name="search_query_mode",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [value.value for value in enum_class],
+        ),
+        nullable=False,
+        default=SearchQueryMode.TEXT,
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    no_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
+class SearchResultItem(Base):
+    """The exact published revision returned for one search event."""
+
+    __tablename__ = "search_result_item"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint("search_event_id", "rank", name="uq_search_result_item_event_rank"),
+        UniqueConstraint(
+            "search_event_id",
+            "child_id",
+            "knowledge_base_id",
+            "child_revision_id",
+            name="uq_search_result_item_event_revision",
+        ),
+        CheckConstraint("rank >= 1", name="ck_search_result_item_rank_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    search_event_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_event.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[float] = mapped_column(nullable=False)
+    child_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    child_revision_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child_revision.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    parent_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("parent.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    parent_revision_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("parent_revision.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    match_reason: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class HelpfulFeedbackEvent(Base):
+    """An explicit, idempotent helpful signal for a returned result."""
+
+    __tablename__ = "helpful_feedback_event"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "search_event_id",
+            "child_id",
+            "knowledge_base_id",
+            "child_revision_id",
+            name="uq_helpful_feedback_user_event_revision",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("user_account.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    search_event_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_event.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    search_result_item_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_result_item.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    child_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    child_revision_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child_revision.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )

@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     initial_admin_username: str = "admin"
     initial_admin_password_file: Path | None = None
 
+    index_artifact_dir: Path = Path("./var/index-artifacts")
+    worker_id: str | None = None
+    worker_poll_interval_seconds: float = 2.0
+    worker_lease_seconds: int = 300
+
     argon2_memory_cost_kib: int = 19_456
     argon2_time_cost: int = 2
     argon2_parallelism: int = 1
@@ -60,6 +65,14 @@ class Settings(BaseSettings):
             raise ValueError("Argon2id parallelism must be at least 1")
         if self.password_min_length < 12 or self.password_max_length < self.password_min_length:
             raise ValueError("invalid password length limits")
+        if self.worker_poll_interval_seconds <= 0:
+            raise ValueError("WORKER_POLL_INTERVAL_SECONDS must be positive")
+        if self.worker_lease_seconds <= 0:
+            raise ValueError("WORKER_LEASE_SECONDS must be positive")
+        if self.worker_id is not None and not self.worker_id.strip():
+            raise ValueError("WORKER_ID must not be empty when provided")
+        if self.worker_id is not None and len(self.worker_id.strip()) > 120:
+            raise ValueError("WORKER_ID must be at most 120 characters")
         return self
 
     @property

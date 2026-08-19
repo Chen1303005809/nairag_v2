@@ -168,3 +168,46 @@ export interface ReviewDecision {
   decided_by_user_id: string;
   decided_at: string;
 }
+
+export interface SearchResult {
+  result_item_id: string;
+  rank: number;
+  score: number;
+  child_id: string;
+  knowledge_base_id: string;
+  knowledge_base_name: string;
+  child_revision_id: string;
+  question: string;
+  response_content: string;
+  question_variants: string[];
+  follow_up_guidance: string | null;
+  question_type: string | null;
+  business_object: string | null;
+  purpose: string | null;
+  customer_type: string | null;
+  feature_explanation: string | null;
+  example: string | null;
+  helpful_count: number;
+  match_reason: string;
+}
+
+export interface SearchGroup {
+  parent_id: string;
+  parent_name: string;
+  canonical_keyword: string;
+  children: SearchResult[];
+}
+
+export interface SearchResponse {
+  search_event_id: string;
+  query_mode: "text" | "image" | "mixed";
+  no_match: boolean;
+  no_match_guidance: string | null;
+  groups: SearchGroup[];
+}
+
+export interface HelpfulFeedbackResponse {
+  accepted: boolean;
+  already_recorded: boolean;
+  helpful_count: number;
+}

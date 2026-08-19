@@ -37,6 +37,11 @@ const ReviewWorkbenchPage = lazy(async () => {
   return { default: page.ReviewWorkbenchPage };
 });
 
+const SearchPage = lazy(async () => {
+  const page = await import("./pages/SearchPage");
+  return { default: page.SearchPage };
+});
+
 function App(): JSX.Element {
   const [user, setUser] = useState<User>();
   const [loading, setLoading] = useState(true);
@@ -148,6 +153,15 @@ function App(): JSX.Element {
                   )
                 },
                 {
+                  key: "search",
+                  label: "知识检索",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <SearchPage />
+                    </Suspense>
+                  )
+                },
+                {
                   key: "accounts",
                   label: "账号管理",
                   children: (
@@ -179,13 +193,42 @@ function App(): JSX.Element {
                       <ReviewWorkbenchPage />
                     </Suspense>
                   )
+                },
+                {
+                  key: "search",
+                  label: "知识检索",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <SearchPage />
+                    </Suspense>
+                  )
                 }
               ]}
             />
           ) : (
-            <Suspense fallback={<Spin />}>
-              <ContentSubmissionPage />
-            </Suspense>
+            <Tabs
+              defaultActiveKey="search"
+              items={[
+                {
+                  key: "search",
+                  label: "知识检索",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <SearchPage />
+                    </Suspense>
+                  )
+                },
+                {
+                  key: "content-submission",
+                  label: "知识投稿",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <ContentSubmissionPage />
+                    </Suspense>
+                  )
+                }
+              ]}
+            />
           )}
         </AntApp>
       </Layout.Content>

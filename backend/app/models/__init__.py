@@ -6,6 +6,10 @@ from app.models.knowledge_content import (
     ChildPublicationStatus,
     ChildRevision,
     ChildRevisionQuestionVariant,
+    HelpfulFeedbackEvent,
+    IndexJob,
+    IndexJobKind,
+    IndexJobStatus,
     Parent,
     ParentLexicalRule,
     ParentLexicalRuleType,
@@ -17,6 +21,9 @@ from app.models.knowledge_content import (
     ReviewSubmissionStatus,
     ReviewSubmissionTarget,
     ReviewTargetStatus,
+    SearchEvent,
+    SearchQueryMode,
+    SearchResultItem,
 )
 from app.models.user_account import UserAccount, UserRole
 
@@ -27,6 +34,10 @@ __all__ = [
     "ChildPublicationStatus",
     "ChildRevision",
     "ChildRevisionQuestionVariant",
+    "HelpfulFeedbackEvent",
+    "IndexJob",
+    "IndexJobKind",
+    "IndexJobStatus",
     "KnowledgeBase",
     "Parent",
     "ParentLexicalRule",
@@ -40,6 +51,9 @@ __all__ = [
     "ReviewDecision",
     "ReviewDecisionKind",
     "ReviewTargetStatus",
+    "SearchEvent",
+    "SearchQueryMode",
+    "SearchResultItem",
     "UserAccount",
     "UserRole",
 ]

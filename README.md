@@ -4,12 +4,13 @@
 
 ## 当前实现
 
-当前已完成三个可审查模块：
+当前已完成以下可审查模块：
 
 1. 账号与认证：首次系统管理员初始化、Cookie JWT、CSRF、强制改密、账号管理与审计。
 2. 知识库与审查授权：知识库启停、逻辑标识和物理 Collection 代映射、审查管理员分配。
 3. 父类、子条目与审核提交：不可变修订、父类—主子条目原子投稿、普通子条目目标库门禁和投稿界面。
 4. 审查工作台与发布状态：按知识库授权过滤审核队列、不可变审核决定、父类聚合全局发布、普通子条目分库发布和归档。
+5. 异步索引与检索基础：持久化索引任务、独立 worker、租约/重试、开发索引 artifact、发布事实回查、文本检索、父类关键词保底和有用反馈。
 
 后续实施请从 [实施交接](docs/实施交接.md) 继续，并以 [已确认实施基线](docs/已确认实施基线.md) 为准。
 
@@ -47,4 +48,4 @@ Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登�
 
 ## 容器开发
 
-`docker compose up --build` 会启动 PostgreSQL 和 API。启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件；这些文件不会纳入版本控制。
+`docker compose up --build` 会启动 PostgreSQL、API 和独立索引 worker。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，将开发用的确定性索引产物写入 `index_artifacts` volume，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。

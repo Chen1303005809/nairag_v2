@@ -33,13 +33,44 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     secrets:
       - postgres_password
       - jwt_signing_key
       - initial_admin_password
 
+  worker:
+    build:
+      context: ./backend
+    command: python worker.py
+    environment:
+      APP_ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://nairag@postgres:5432/nairag
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      JWT_SECRET_FILE: /run/secrets/jwt_signing_key
+      INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
+      WORKER_POLL_INTERVAL_SECONDS: "2"
+      WORKER_LEASE_SECONDS: "300"
+      COOKIE_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - index_artifacts:/var/lib/nairag/index-artifacts
+    secrets:
+      - postgres_password
+      - jwt_signing_key
+
 volumes:
   postgres_data:
+  index_artifacts:
 
 secrets:
   postgres_password:

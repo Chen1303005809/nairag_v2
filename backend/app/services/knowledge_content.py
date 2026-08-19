@@ -27,6 +27,7 @@ from app.models.knowledge_content import (
 )
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.knowledge_content import ChildContentInput, ParentContentInput
+from app.services.index_jobs import enqueue_index_jobs_for_submission
 
 
 class ParentNotFoundError(Exception):
@@ -985,6 +986,11 @@ async def decide_review_target(
         await _clear_pending_submission_slots(
             session,
             child_id=submission.child_id,
+            review_submission_id=submission.id,
+        )
+    if decision == ReviewDecisionKind.APPROVED:
+        await enqueue_index_jobs_for_submission(
+            session,
             review_submission_id=submission.id,
         )
     return review_decision

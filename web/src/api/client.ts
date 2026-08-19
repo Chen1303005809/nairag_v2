@@ -10,6 +10,8 @@ import type {
   ReviewDecisionKind,
   ReviewQueueItem,
   ReviewSubmission,
+  SearchResponse,
+  HelpfulFeedbackResponse,
   TemporaryPasswordResponse,
   User,
   UserRole
@@ -203,6 +205,23 @@ export const api = {
       "POST",
       `/knowledge-content/review-submissions/${submissionId}/targets/${knowledgeBaseId}/decision`,
       { decision, comment: comment || null }
+    ),
+
+  search: (query: string, knowledgeBaseId?: string): Promise<SearchResponse> =>
+    sessionMutation<SearchResponse>("POST", "/search", {
+      query,
+      knowledge_base_id: knowledgeBaseId || null,
+      limit: 10
+    }),
+
+  submitHelpfulFeedback: (
+    searchEventId: string,
+    resultItemId: string
+  ): Promise<HelpfulFeedbackResponse> =>
+    sessionMutation<HelpfulFeedbackResponse>(
+      "POST",
+      `/search/events/${searchEventId}/feedback`,
+      { result_item_id: resultItemId }
     ),
 
   createParentSubmission: (
