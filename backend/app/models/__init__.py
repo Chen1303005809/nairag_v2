@@ -1,11 +1,45 @@
 from app.models.audit_event import AuditEvent
 from app.models.knowledge_base import KnowledgeBase, ReviewerKnowledgeBase
+from app.models.knowledge_content import (
+    Child,
+    ChildKnowledgeBasePublication,
+    ChildPublicationStatus,
+    ChildRevision,
+    ChildRevisionQuestionVariant,
+    Parent,
+    ParentLexicalRule,
+    ParentLexicalRuleType,
+    ParentRevision,
+    ReviewDecision,
+    ReviewDecisionKind,
+    ReviewSubmission,
+    ReviewSubmissionKind,
+    ReviewSubmissionStatus,
+    ReviewSubmissionTarget,
+    ReviewTargetStatus,
+)
 from app.models.user_account import UserAccount, UserRole
 
 __all__ = [
     "AuditEvent",
+    "Child",
+    "ChildKnowledgeBasePublication",
+    "ChildPublicationStatus",
+    "ChildRevision",
+    "ChildRevisionQuestionVariant",
     "KnowledgeBase",
+    "Parent",
+    "ParentLexicalRule",
+    "ParentLexicalRuleType",
+    "ParentRevision",
     "ReviewerKnowledgeBase",
+    "ReviewSubmission",
+    "ReviewSubmissionKind",
+    "ReviewSubmissionStatus",
+    "ReviewSubmissionTarget",
+    "ReviewDecision",
+    "ReviewDecisionKind",
+    "ReviewTargetStatus",
     "UserAccount",
     "UserRole",
 ]

@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401  # Register model metadata.
 from app.core.config import Settings
 from app.db.base import Base
 from app.main import create_app
+from app.models.knowledge_content import (
+    ChildKnowledgeBasePublication,
+    ChildPublicationStatus,
+    ReviewSubmission,
+    ReviewSubmissionStatus,
+    ReviewSubmissionTarget,
+    ReviewTargetStatus,
+)
+from app.services.knowledge_content import publish_approved_target
 
 
 async def build_test_app(tmp_path: Path) -> tuple[object, AsyncEngine]:
@@ -53,6 +64,40 @@ async def login(
         headers=pre_auth_csrf_headers(client, settings),
         json={"username": username, "password": password},
     )
+
+
+async def publish_parent_submission_for_test(app: object, submission_id: str) -> None:
+    session_factory = app.state.session_factory  # type: ignore[attr-defined]
+    async with session_factory() as session:
+        submission = await session.get(ReviewSubmission, UUID(submission_id))
+        assert submission is not None
+        submission.status = ReviewSubmissionStatus.PUBLISHED
+        targets = list(
+            (
+                await session.scalars(
+                    select(ReviewSubmissionTarget).where(
+                        ReviewSubmissionTarget.review_submission_id == submission.id
+                    )
+                )
+            ).all()
+        )
+        publications = list(
+            (
+                await session.scalars(
+                    select(ChildKnowledgeBasePublication).where(
+                        ChildKnowledgeBasePublication.child_id == submission.child_id
+                    )
+                )
+            ).all()
+        )
+        assert len(targets) == len(publications)
+        for target in targets:
+            target.status = ReviewTargetStatus.PUBLISHED
+        for publication in publications:
+            publication.status = ChildPublicationStatus.PUBLISHED
+            publication.active_revision_id = submission.child_revision_id
+            publication.pending_submission_id = None
+        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -111,6 +156,439 @@ async def test_initial_admin_must_change_password_and_csrf_is_required(tmp_path:
                     json={"is_active": False},
                 )
                 assert cannot_disable_last_admin.status_code == 409
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_content_submissions_preserve_parent_and_target_invariants(tmp_path: Path) -> None:
+    app, engine = await build_test_app(tmp_path)
+    settings: Settings = app.state.settings
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="https://testserver"
+            ) as admin_client:
+                admin_login = await login(
+                    admin_client,
+                    settings,
+                    username="bootstrap-admin",
+                    password="InitialPassword-123!",
+                )
+                assert admin_login.status_code == 200
+                password_change = await admin_client.post(
+                    "/api/v1/auth/change-password",
+                    headers=csrf_headers(admin_client, settings),
+                    json={
+                        "current_password": "InitialPassword-123!",
+                        "new_password": "ChangedPassword-123!",
+                    },
+                )
+                assert password_change.status_code == 200
+
+                primary_knowledge_base = await admin_client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"logical_key": "product-help", "name": "产品帮助"},
+                )
+                assert primary_knowledge_base.status_code == 201
+                primary_knowledge_base_id = primary_knowledge_base.json()["id"]
+
+                other_knowledge_base = await admin_client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"logical_key": "sales-help", "name": "销售帮助"},
+                )
+                assert other_knowledge_base.status_code == 201
+                other_knowledge_base_id = other_knowledge_base.json()["id"]
+
+                created_author = await admin_client.post(
+                    "/api/v1/users",
+                    headers=csrf_headers(admin_client, settings),
+                    json={
+                        "username": "author",
+                        "display_name": "Author",
+                        "role": "normal_user",
+                    },
+                )
+                assert created_author.status_code == 201
+                author_password = created_author.json()["temporary_password"]
+
+                async with AsyncClient(
+                    transport=transport, base_url="https://testserver"
+                ) as author_client:
+                    author_login = await login(
+                        author_client,
+                        settings,
+                        username="author",
+                        password=author_password,
+                    )
+                    assert author_login.status_code == 200
+                    changed = await author_client.post(
+                        "/api/v1/auth/change-password",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "current_password": author_password,
+                            "new_password": "AuthorPassword-123!",
+                        },
+                    )
+                    assert changed.status_code == 200
+
+                    parent_submission = await author_client.post(
+                        "/api/v1/knowledge-content/parent-submissions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "parent": {
+                                "name": "账号登录",
+                                "canonical_keyword": "登录",
+                                "lexical_rules": [
+                                    {"rule_type": "alias", "rule_value": "登陆"},
+                                    {"rule_type": "regex", "rule_value": "^登录.+"},
+                                ],
+                            },
+                            "primary_child": {
+                                "question": "无法登录怎么办？",
+                                "response_content": "请先确认账号与密码是否正确。",
+                                "question_variants": ["登录不上怎么办？"],
+                            },
+                            "knowledge_base_ids": [primary_knowledge_base_id],
+                        },
+                    )
+                    assert parent_submission.status_code == 201
+                    parent_payload = parent_submission.json()
+                    assert parent_payload["submission_kind"] == "parent_with_primary"
+                    assert parent_payload["status"] == "pending_review"
+                    assert parent_payload["targets"][0]["id"] == primary_knowledge_base_id
+                    parent_id = parent_payload["parent_id"]
+
+                    unavailable_parents = await author_client.get(
+                        "/api/v1/knowledge-content/parents/available"
+                    )
+                    assert unavailable_parents.status_code == 200
+                    assert unavailable_parents.json() == []
+
+                    ordinary_before_parent_publication = await author_client.post(
+                        "/api/v1/knowledge-content/child-submissions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "parent_id": parent_id,
+                            "child": {
+                                "question": "如何找回密码？",
+                                "response_content": "请联系系统管理员重置密码。",
+                            },
+                            "knowledge_base_ids": [primary_knowledge_base_id],
+                        },
+                    )
+                    assert ordinary_before_parent_publication.status_code == 409
+
+                    my_submissions = await author_client.get(
+                        "/api/v1/knowledge-content/submissions/mine"
+                    )
+                    assert my_submissions.status_code == 200
+                    assert [
+                        submission["title"] for submission in my_submissions.json()
+                    ] == ["账号登录"]
+
+                    await publish_parent_submission_for_test(app, parent_payload["id"])
+
+                    available_parents = await author_client.get(
+                        "/api/v1/knowledge-content/parents/available"
+                    )
+                    assert available_parents.status_code == 200
+                    assert available_parents.json()[0]["id"] == parent_id
+                    assert available_parents.json()[0]["available_knowledge_bases"] == [
+                        {
+                            "id": primary_knowledge_base_id,
+                            "logical_key": "product-help",
+                            "name": "产品帮助",
+                        }
+                    ]
+
+                    invalid_target = await author_client.post(
+                        "/api/v1/knowledge-content/child-submissions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "parent_id": parent_id,
+                            "child": {
+                                "question": "销售问题？",
+                                "response_content": "这是不允许的目标库。",
+                            },
+                            "knowledge_base_ids": [other_knowledge_base_id],
+                        },
+                    )
+                    assert invalid_target.status_code == 422
+
+                    ordinary_submission = await author_client.post(
+                        "/api/v1/knowledge-content/child-submissions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "parent_id": parent_id,
+                            "child": {
+                                "question": "如何找回密码？",
+                                "response_content": "请联系系统管理员重置密码。",
+                                "question_type": "账号管理",
+                            },
+                            "knowledge_base_ids": [primary_knowledge_base_id],
+                        },
+                    )
+                    assert ordinary_submission.status_code == 201
+                    ordinary_child_id = ordinary_submission.json()["child_id"]
+
+                    duplicate_child_candidate = await author_client.post(
+                        f"/api/v1/knowledge-content/children/{ordinary_child_id}/revisions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "child": {
+                                "question": "如何找回密码？",
+                                "response_content": "新的候选内容。",
+                            },
+                            "knowledge_base_ids": [primary_knowledge_base_id],
+                        },
+                    )
+                    assert duplicate_child_candidate.status_code == 409
+
+                    parent_revision = await author_client.post(
+                        f"/api/v1/knowledge-content/parents/{parent_id}/revisions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "parent": {"name": "账号登录与验证", "canonical_keyword": "登录"},
+                            "primary_child": {
+                                "question": "无法登录怎么办？",
+                                "response_content": "请先确认账号、密码和网络状态。",
+                            },
+                        },
+                    )
+                    assert parent_revision.status_code == 201
+
+                    duplicate_parent_candidate = await author_client.post(
+                        f"/api/v1/knowledge-content/parents/{parent_id}/revisions",
+                        headers=csrf_headers(author_client, settings),
+                        json={
+                            "parent": {"name": "账号登录与验证", "canonical_keyword": "登录"},
+                            "primary_child": {
+                                "question": "无法登录怎么办？",
+                                "response_content": "新的父类候选内容。",
+                            },
+                        },
+                    )
+                    assert duplicate_parent_candidate.status_code == 409
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_path: Path) -> None:
+    app, engine = await build_test_app(tmp_path)
+    settings: Settings = app.state.settings
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="https://testserver") as admin:
+                assert (
+                    await login(
+                        admin,
+                        settings,
+                        username="bootstrap-admin",
+                        password="InitialPassword-123!",
+                    )
+                ).status_code == 200
+                assert (
+                    await admin.post(
+                        "/api/v1/auth/change-password",
+                        headers=csrf_headers(admin, settings),
+                        json={
+                            "current_password": "InitialPassword-123!",
+                            "new_password": "ChangedPassword-123!",
+                        },
+                    )
+                ).status_code == 200
+
+                knowledge_base_ids: list[str] = []
+                for logical_key, name in (("product-help", "产品帮助"), ("sales-help", "销售帮助")):
+                    created = await admin.post(
+                        "/api/v1/knowledge-bases",
+                        headers=csrf_headers(admin, settings),
+                        json={"logical_key": logical_key, "name": name},
+                    )
+                    assert created.status_code == 201
+                    knowledge_base_ids.append(created.json()["id"])
+
+                reviewer_created = await admin.post(
+                    "/api/v1/users",
+                    headers=csrf_headers(admin, settings),
+                    json={
+                        "username": "reviewer",
+                        "display_name": "Reviewer",
+                        "role": "review_admin",
+                    },
+                )
+                assert reviewer_created.status_code == 201
+                reviewer_id = reviewer_created.json()["user"]["id"]
+                reviewer_password = reviewer_created.json()["temporary_password"]
+                for knowledge_base_id in knowledge_base_ids:
+                    assigned = await admin.put(
+                        f"/api/v1/knowledge-bases/{knowledge_base_id}/reviewers/{reviewer_id}",
+                        headers=csrf_headers(admin, settings),
+                    )
+                    assert assigned.status_code == 200
+
+                author_created = await admin.post(
+                    "/api/v1/users",
+                    headers=csrf_headers(admin, settings),
+                    json={
+                        "username": "author",
+                        "display_name": "Author",
+                        "role": "normal_user",
+                    },
+                )
+                assert author_created.status_code == 201
+                author_password = author_created.json()["temporary_password"]
+
+                async with AsyncClient(
+                    transport=transport, base_url="https://testserver"
+                ) as reviewer, AsyncClient(
+                    transport=transport, base_url="https://testserver"
+                ) as author:
+                    assert (
+                        await login(
+                            reviewer,
+                            settings,
+                            username="reviewer",
+                            password=reviewer_password,
+                        )
+                    ).status_code == 200
+                    assert (
+                        await reviewer.post(
+                            "/api/v1/auth/change-password",
+                            headers=csrf_headers(reviewer, settings),
+                            json={
+                                "current_password": reviewer_password,
+                                "new_password": "ReviewerPassword-123!",
+                            },
+                        )
+                    ).status_code == 200
+                    assert (
+                        await login(
+                            author,
+                            settings,
+                            username="author",
+                            password=author_password,
+                        )
+                    ).status_code == 200
+                    assert (
+                        await author.post(
+                            "/api/v1/auth/change-password",
+                            headers=csrf_headers(author, settings),
+                            json={
+                                "current_password": author_password,
+                                "new_password": "AuthorPassword-123!",
+                            },
+                        )
+                    ).status_code == 200
+
+                    submitted = await author.post(
+                        "/api/v1/knowledge-content/parent-submissions",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "parent": {
+                                "name": "账号登录",
+                                "canonical_keyword": "登录",
+                            },
+                            "primary_child": {
+                                "question": "无法登录怎么办？",
+                                "response_content": "请检查账号和密码。",
+                            },
+                            "knowledge_base_ids": knowledge_base_ids,
+                        },
+                    )
+                    assert submitted.status_code == 201
+                    parent_submission_id = submitted.json()["id"]
+
+                    queue = await reviewer.get("/api/v1/knowledge-content/review-queue")
+                    assert queue.status_code == 200
+                    assert {item["knowledge_base"]["id"] for item in queue.json()} == set(
+                        knowledge_base_ids
+                    )
+
+                    first_decision = await reviewer.post(
+                        f"/api/v1/knowledge-content/review-submissions/{parent_submission_id}"
+                        f"/targets/{knowledge_base_ids[0]}/decision",
+                        headers=csrf_headers(reviewer, settings),
+                        json={"decision": "approved"},
+                    )
+                    assert first_decision.status_code == 201
+                    assert (await reviewer.get("/api/v1/knowledge-content/review-queue")).json()
+
+                    second_decision = await reviewer.post(
+                        f"/api/v1/knowledge-content/review-submissions/{parent_submission_id}"
+                        f"/targets/{knowledge_base_ids[1]}/decision",
+                        headers=csrf_headers(reviewer, settings),
+                        json={"decision": "approved"},
+                    )
+                    assert second_decision.status_code == 201
+                    assert (
+                        await reviewer.get("/api/v1/knowledge-content/review-queue")
+                    ).json() == []
+
+                    async with app.state.session_factory() as session:  # type: ignore[attr-defined]
+                        await publish_approved_target(
+                            session,
+                            review_submission_id=UUID(parent_submission_id),
+                            knowledge_base_id=UUID(knowledge_base_ids[0]),
+                        )
+                        await session.commit()
+
+                    parent_id = submitted.json()["parent_id"]
+                    available = await author.get("/api/v1/knowledge-content/parents/available")
+                    assert available.status_code == 200
+                    assert available.json()[0]["id"] == parent_id
+
+                    ordinary = await author.post(
+                        "/api/v1/knowledge-content/child-submissions",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "parent_id": parent_id,
+                            "child": {
+                                "question": "如何找回密码？",
+                                "response_content": "请联系管理员。",
+                            },
+                            "knowledge_base_ids": knowledge_base_ids,
+                        },
+                    )
+                    assert ordinary.status_code == 201
+                    child_submission_id = ordinary.json()["id"]
+                    child_id = ordinary.json()["child_id"]
+
+                    approve_child = await reviewer.post(
+                        f"/api/v1/knowledge-content/review-submissions/{child_submission_id}"
+                        f"/targets/{knowledge_base_ids[0]}/decision",
+                        headers=csrf_headers(reviewer, settings),
+                        json={"decision": "approved"},
+                    )
+                    assert approve_child.status_code == 201
+                    async with app.state.session_factory() as session:  # type: ignore[attr-defined]
+                        await publish_approved_target(
+                            session,
+                            review_submission_id=UUID(child_submission_id),
+                            knowledge_base_id=UUID(knowledge_base_ids[0]),
+                        )
+                        await session.commit()
+
+                    reject_child = await reviewer.post(
+                        f"/api/v1/knowledge-content/review-submissions/{child_submission_id}"
+                        f"/targets/{knowledge_base_ids[1]}/decision",
+                        headers=csrf_headers(reviewer, settings),
+                        json={"decision": "rejected", "comment": "不适用于该知识库"},
+                    )
+                    assert reject_child.status_code == 201
+
+                    publication = await author.get(
+                        f"/api/v1/knowledge-content/children/{child_id}/publications/{knowledge_base_ids[0]}"
+                    )
+                    assert publication.status_code == 200
+                    assert publication.json()["status"] == "published"
+                    assert publication.json()["pending_submission_id"] is None
     finally:
         await engine.dispose()
 

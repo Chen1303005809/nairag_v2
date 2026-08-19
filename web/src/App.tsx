@@ -1,6 +1,5 @@
 import { LogoutOutlined, UserOutlined } from "@ant-design/icons";
 import {
-  Alert,
   App as AntApp,
   Button,
   Dropdown,
@@ -28,9 +27,14 @@ const KnowledgeBaseManagementPage = lazy(async () => {
   return { default: page.KnowledgeBaseManagementPage };
 });
 
-const ReviewerKnowledgeBasesPage = lazy(async () => {
-  const page = await import("./pages/ReviewerKnowledgeBasesPage");
-  return { default: page.ReviewerKnowledgeBasesPage };
+const ContentSubmissionPage = lazy(async () => {
+  const page = await import("./pages/ContentSubmissionPage");
+  return { default: page.ContentSubmissionPage };
+});
+
+const ReviewWorkbenchPage = lazy(async () => {
+  const page = await import("./pages/ReviewWorkbenchPage");
+  return { default: page.ReviewWorkbenchPage };
 });
 
 function App(): JSX.Element {
@@ -126,6 +130,24 @@ function App(): JSX.Element {
                   )
                 },
                 {
+                  key: "content-submission",
+                  label: "知识投稿",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <ContentSubmissionPage />
+                    </Suspense>
+                  )
+                },
+                {
+                  key: "review-workbench",
+                  label: "审核工作台",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <ReviewWorkbenchPage systemAdmin />
+                    </Suspense>
+                  )
+                },
+                {
                   key: "accounts",
                   label: "账号管理",
                   children: (
@@ -137,16 +159,33 @@ function App(): JSX.Element {
               ]}
             />
           ) : user.role === "review_admin" ? (
-            <Suspense fallback={<Spin />}>
-              <ReviewerKnowledgeBasesPage />
-            </Suspense>
-          ) : (
-            <Alert
-              type="info"
-              showIcon
-              message="账号已准备就绪"
-              description="知识投稿、审核与检索功能将在后续模块中开放。"
+            <Tabs
+              defaultActiveKey="content-submission"
+              items={[
+                {
+                  key: "content-submission",
+                  label: "知识投稿",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <ContentSubmissionPage />
+                    </Suspense>
+                  )
+                },
+                {
+                  key: "review-workbench",
+                  label: "审核工作台",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <ReviewWorkbenchPage />
+                    </Suspense>
+                  )
+                }
+              ]}
             />
+          ) : (
+            <Suspense fallback={<Spin />}>
+              <ContentSubmissionPage />
+            </Suspense>
           )}
         </AntApp>
       </Layout.Content>

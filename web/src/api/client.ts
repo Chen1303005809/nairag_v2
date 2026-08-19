@@ -1,8 +1,15 @@
 import type {
+  AvailableParent,
+  ChildContentInput,
   KnowledgeBase,
   LoginResponse,
   ManagedKnowledgeBase,
+  ParentContentInput,
   ReviewerAssignment,
+  ReviewDecision,
+  ReviewDecisionKind,
+  ReviewQueueItem,
+  ReviewSubmission,
   TemporaryPasswordResponse,
   User,
   UserRole
@@ -173,5 +180,50 @@ export const api = {
     sessionMutation<void>(
       "DELETE",
       `/knowledge-bases/${knowledgeBaseId}/reviewers/${reviewerUserId}`
-    )
+    ),
+
+  listAvailableParents: (): Promise<AvailableParent[]> =>
+    request<AvailableParent[]>("/knowledge-content/parents/available"),
+
+  listMyContentSubmissions: (): Promise<ReviewSubmission[]> =>
+    request<ReviewSubmission[]>("/knowledge-content/submissions/mine"),
+
+  listReviewQueue: (knowledgeBaseId?: string): Promise<ReviewQueueItem[]> =>
+    request<ReviewQueueItem[]>(
+      `/knowledge-content/review-queue${knowledgeBaseId ? `?knowledge_base_id=${knowledgeBaseId}` : ""}`
+    ),
+
+  decideReviewTarget: (
+    submissionId: string,
+    knowledgeBaseId: string,
+    decision: ReviewDecisionKind,
+    comment?: string
+  ): Promise<ReviewDecision> =>
+    sessionMutation<ReviewDecision>(
+      "POST",
+      `/knowledge-content/review-submissions/${submissionId}/targets/${knowledgeBaseId}/decision`,
+      { decision, comment: comment || null }
+    ),
+
+  createParentSubmission: (
+    parent: ParentContentInput,
+    primaryChild: ChildContentInput,
+    knowledgeBaseIds: string[]
+  ): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>("POST", "/knowledge-content/parent-submissions", {
+      parent,
+      primary_child: primaryChild,
+      knowledge_base_ids: knowledgeBaseIds
+    }),
+
+  createChildSubmission: (
+    parentId: string,
+    child: ChildContentInput,
+    knowledgeBaseIds: string[]
+  ): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>("POST", "/knowledge-content/child-submissions", {
+      parent_id: parentId,
+      child,
+      knowledge_base_ids: knowledgeBaseIds
+    })
 };
