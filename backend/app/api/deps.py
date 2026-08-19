@@ -62,6 +62,14 @@ async def require_system_administrator(
     return authenticated
 
 
+async def require_review_administrator(
+    authenticated: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+) -> AuthenticatedSession:
+    if authenticated.user.role != UserRole.REVIEW_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要审查管理员权限")
+    return authenticated
+
+
 async def require_csrf(
     request: Request,
     authenticated: Annotated[AuthenticatedSession, Depends(get_current_session)],

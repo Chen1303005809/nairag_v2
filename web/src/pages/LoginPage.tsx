@@ -29,7 +29,7 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
 
   return (
     <main className="auth-page">
-      <Card className="auth-card" bordered={false}>
+      <Card className="auth-card" variant="borderless">
         <Typography.Title level={2}>Nairag 知识库</Typography.Title>
         <Typography.Paragraph type="secondary">
           使用由系统管理员创建的账号登录。
@@ -50,4 +50,3 @@ export function LoginPage({ onLogin }: LoginPageProps): JSX.Element {
     </main>
   );
 }
-

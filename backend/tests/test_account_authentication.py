@@ -245,3 +245,200 @@ async def test_account_management_invalidates_stale_sessions(tmp_path: Path) -> 
                     assert stale_after_disable.status_code == 401
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_base_management_and_reviewer_authorization(tmp_path: Path) -> None:
+    app, engine = await build_test_app(tmp_path)
+    settings: Settings = app.state.settings
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="https://testserver"
+            ) as admin_client:
+                admin_login = await login(
+                    admin_client,
+                    settings,
+                    username="bootstrap-admin",
+                    password="InitialPassword-123!",
+                )
+                assert admin_login.status_code == 200
+                await admin_client.post(
+                    "/api/v1/auth/change-password",
+                    headers=csrf_headers(admin_client, settings),
+                    json={
+                        "current_password": "InitialPassword-123!",
+                        "new_password": "ChangedPassword-123!",
+                    },
+                )
+
+                reviewer_created = await admin_client.post(
+                    "/api/v1/users",
+                    headers=csrf_headers(admin_client, settings),
+                    json={
+                        "username": "reviewer",
+                        "display_name": "Reviewer",
+                        "role": "review_admin",
+                    },
+                )
+                assert reviewer_created.status_code == 201
+                reviewer_id = reviewer_created.json()["user"]["id"]
+                reviewer_password = reviewer_created.json()["temporary_password"]
+
+                normal_created = await admin_client.post(
+                    "/api/v1/users",
+                    headers=csrf_headers(admin_client, settings),
+                    json={
+                        "username": "ordinary",
+                        "display_name": "Ordinary",
+                        "role": "normal_user",
+                    },
+                )
+                assert normal_created.status_code == 201
+                normal_user_id = normal_created.json()["user"]["id"]
+
+                knowledge_base_created = await admin_client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(admin_client, settings),
+                    json={
+                        "logical_key": "support-team",
+                        "name": "客户支持知识库",
+                        "description": "支持团队的知识内容",
+                        "is_active": True,
+                    },
+                )
+                assert knowledge_base_created.status_code == 201
+                knowledge_base = knowledge_base_created.json()
+                knowledge_base_id = knowledge_base["id"]
+                assert knowledge_base["current_collection_generation"] == 1
+                assert (
+                    knowledge_base["current_physical_collection_name"] == "nairag_support_d_team_g1"
+                )
+                assert knowledge_base["reviewer_count"] == 0
+
+                underscore_key = await admin_client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"logical_key": "support_team", "name": "下划线知识库"},
+                )
+                assert underscore_key.status_code == 201
+                assert (
+                    underscore_key.json()["current_physical_collection_name"]
+                    == "nairag_support_u_team_g1"
+                )
+
+                duplicate = await admin_client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"logical_key": "SUPPORT-TEAM", "name": "重复知识库"},
+                )
+                assert duplicate.status_code == 409
+
+                invalid_name_update = await admin_client.patch(
+                    f"/api/v1/knowledge-bases/{knowledge_base_id}",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"name": None},
+                )
+                assert invalid_name_update.status_code == 422
+
+                available = await admin_client.get("/api/v1/knowledge-bases")
+                assert available.status_code == 200
+                available_by_key = {
+                    record["logical_key"]: record for record in available.json()
+                }
+                assert set(available_by_key) == {"support-team", "support_team"}
+                assert (
+                    "current_physical_collection_name"
+                    not in available_by_key["support-team"]
+                )
+
+                invalid_assignment = await admin_client.put(
+                    f"/api/v1/knowledge-bases/{knowledge_base_id}/reviewers/{normal_user_id}",
+                    headers=csrf_headers(admin_client, settings),
+                )
+                assert invalid_assignment.status_code == 422
+
+                assignment = await admin_client.put(
+                    f"/api/v1/knowledge-bases/{knowledge_base_id}/reviewers/{reviewer_id}",
+                    headers=csrf_headers(admin_client, settings),
+                )
+                assert assignment.status_code == 200
+                assert assignment.json()["reviewer"]["username"] == "reviewer"
+
+                idempotent_assignment = await admin_client.put(
+                    f"/api/v1/knowledge-bases/{knowledge_base_id}/reviewers/{reviewer_id}",
+                    headers=csrf_headers(admin_client, settings),
+                )
+                assert idempotent_assignment.status_code == 200
+                assignments = await admin_client.get(
+                    f"/api/v1/knowledge-bases/admin/{knowledge_base_id}/reviewers"
+                )
+                assert assignments.status_code == 200
+                assert len(assignments.json()) == 1
+
+                role_change_while_assigned = await admin_client.patch(
+                    f"/api/v1/users/{reviewer_id}",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"role": "normal_user"},
+                )
+                assert role_change_while_assigned.status_code == 409
+
+                async with AsyncClient(
+                    transport=transport, base_url="https://testserver"
+                ) as reviewer_client:
+                    reviewer_login = await login(
+                        reviewer_client,
+                        settings,
+                        username="reviewer",
+                        password=reviewer_password,
+                    )
+                    assert reviewer_login.status_code == 200
+                    await reviewer_client.post(
+                        "/api/v1/auth/change-password",
+                        headers=csrf_headers(reviewer_client, settings),
+                        json={
+                            "current_password": reviewer_password,
+                            "new_password": "ReviewerPassword-123!",
+                        },
+                    )
+                    assigned_to_reviewer = await reviewer_client.get(
+                        "/api/v1/knowledge-bases/assigned-to-me"
+                    )
+                    assert assigned_to_reviewer.status_code == 200
+                    assert [record["id"] for record in assigned_to_reviewer.json()] == [
+                        knowledge_base_id
+                    ]
+
+                    disabled = await admin_client.patch(
+                        f"/api/v1/knowledge-bases/{knowledge_base_id}",
+                        headers=csrf_headers(admin_client, settings),
+                        json={"description": None, "is_active": False},
+                    )
+                    assert disabled.status_code == 200
+                    assert disabled.json()["description"] is None
+                    assert disabled.json()["is_active"] is False
+
+                    no_longer_assigned = await reviewer_client.get(
+                        "/api/v1/knowledge-bases/assigned-to-me"
+                    )
+                    assert no_longer_assigned.status_code == 200
+                    assert no_longer_assigned.json() == []
+                    hidden_when_disabled = await reviewer_client.get(
+                        f"/api/v1/knowledge-bases/{knowledge_base_id}"
+                    )
+                    assert hidden_when_disabled.status_code == 404
+
+                unassigned = await admin_client.delete(
+                    f"/api/v1/knowledge-bases/{knowledge_base_id}/reviewers/{reviewer_id}",
+                    headers=csrf_headers(admin_client, settings),
+                )
+                assert unassigned.status_code == 204
+                role_change_after_unassignment = await admin_client.patch(
+                    f"/api/v1/users/{reviewer_id}",
+                    headers=csrf_headers(admin_client, settings),
+                    json={"role": "normal_user"},
+                )
+                assert role_change_after_unassignment.status_code == 200
+    finally:
+        await engine.dispose()

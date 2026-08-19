@@ -21,3 +21,32 @@ export interface TemporaryPasswordResponse {
   temporary_password: string;
 }
 
+export interface KnowledgeBase {
+  id: string;
+  logical_key: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ManagedKnowledgeBase extends KnowledgeBase {
+  current_collection_generation: number;
+  current_physical_collection_name: string;
+  reviewer_count: number;
+}
+
+export interface ReviewerAccount {
+  id: string;
+  username: string;
+  display_name: string;
+  is_active: boolean;
+}
+
+export interface ReviewerAssignment {
+  knowledge_base_id: string;
+  reviewer: ReviewerAccount;
+  assigned_by_user_id: string;
+  assigned_at: string;
+}

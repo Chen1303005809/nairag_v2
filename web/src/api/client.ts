@@ -1,4 +1,12 @@
-import type { LoginResponse, TemporaryPasswordResponse, User, UserRole } from "./types";
+import type {
+  KnowledgeBase,
+  LoginResponse,
+  ManagedKnowledgeBase,
+  ReviewerAssignment,
+  TemporaryPasswordResponse,
+  User,
+  UserRole
+} from "./types";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "/api/v1").replace(/\/$/, "");
 const csrfCookieName = import.meta.env.VITE_CSRF_COOKIE_NAME ?? "nairag_csrf";
@@ -103,7 +111,8 @@ export const api = {
       new_password: newPassword
     }),
 
-  listUsers: (): Promise<User[]> => request<User[]>("/users"),
+  listUsers: (includeDisabled = true): Promise<User[]> =>
+    request<User[]>(`/users?include_disabled=${includeDisabled}`),
 
   createUser: (
     username: string,
@@ -122,6 +131,47 @@ export const api = {
   ): Promise<User> => sessionMutation<User>("PATCH", `/users/${id}`, update),
 
   resetUserPassword: (id: string): Promise<TemporaryPasswordResponse> =>
-    sessionMutation<TemporaryPasswordResponse>("POST", `/users/${id}/reset-password`)
-};
+    sessionMutation<TemporaryPasswordResponse>("POST", `/users/${id}/reset-password`),
 
+  listKnowledgeBases: (): Promise<KnowledgeBase[]> => request<KnowledgeBase[]>("/knowledge-bases"),
+
+  listManagedKnowledgeBases: (): Promise<ManagedKnowledgeBase[]> =>
+    request<ManagedKnowledgeBase[]>("/knowledge-bases/admin"),
+
+  listAssignedReviewKnowledgeBases: (): Promise<KnowledgeBase[]> =>
+    request<KnowledgeBase[]>("/knowledge-bases/assigned-to-me"),
+
+  createKnowledgeBase: (
+    logicalKey: string,
+    name: string,
+    description: string | null,
+    isActive: boolean
+  ): Promise<ManagedKnowledgeBase> =>
+    sessionMutation<ManagedKnowledgeBase>("POST", "/knowledge-bases", {
+      logical_key: logicalKey,
+      name,
+      description,
+      is_active: isActive
+    }),
+
+  updateKnowledgeBase: (
+    id: string,
+    update: Partial<Pick<KnowledgeBase, "name" | "description" | "is_active">>
+  ): Promise<ManagedKnowledgeBase> =>
+    sessionMutation<ManagedKnowledgeBase>("PATCH", `/knowledge-bases/${id}`, update),
+
+  listKnowledgeBaseReviewers: (id: string): Promise<ReviewerAssignment[]> =>
+    request<ReviewerAssignment[]>(`/knowledge-bases/admin/${id}/reviewers`),
+
+  assignKnowledgeBaseReviewer: (knowledgeBaseId: string, reviewerUserId: string): Promise<ReviewerAssignment> =>
+    sessionMutation<ReviewerAssignment>(
+      "PUT",
+      `/knowledge-bases/${knowledgeBaseId}/reviewers/${reviewerUserId}`
+    ),
+
+  unassignKnowledgeBaseReviewer: (knowledgeBaseId: string, reviewerUserId: string): Promise<void> =>
+    sessionMutation<void>(
+      "DELETE",
+      `/knowledge-bases/${knowledgeBaseId}/reviewers/${reviewerUserId}`
+    )
+};

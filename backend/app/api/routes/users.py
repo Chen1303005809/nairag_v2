@@ -19,6 +19,7 @@ from app.db.session import get_db_session
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.auth import UserResponse
 from app.schemas.users import CreateUserRequest, TemporaryPasswordResponse, UpdateUserRequest
+from app.services.knowledge_bases import count_reviewer_assignments_for_user
 from app.services.users import (
     UsernameAlreadyExistsError,
     count_active_system_administrators,
@@ -126,6 +127,13 @@ async def update_managed_user(
     user = await get_target_user(session, user_id)
     desired_role = body.role if body.role is not None else user.role
     desired_is_active = body.is_active if body.is_active is not None else user.is_active
+    if user.role == UserRole.REVIEW_ADMIN and desired_role != UserRole.REVIEW_ADMIN:
+        assignment_count = await count_reviewer_assignments_for_user(session, user.id)
+        if assignment_count:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该审查管理员仍有知识库授权；请先解除授权再变更角色",
+            )
     await assert_not_removing_last_active_system_administrator(
         session,
         user=user,

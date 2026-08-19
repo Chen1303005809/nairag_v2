@@ -31,7 +31,13 @@ class UserAccount(Base):
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
     role: Mapped[UserRole] = mapped_column(
-        SqlEnum(UserRole, name="user_role", native_enum=False, create_constraint=True),
+        SqlEnum(
+            UserRole,
+            name="user_role",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [role.value for role in enum_class],
+        ),
         nullable=False,
         default=UserRole.NORMAL_USER,
     )

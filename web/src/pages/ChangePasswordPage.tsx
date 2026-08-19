@@ -30,7 +30,7 @@ export function ChangePasswordPage({ onChangePassword }: ChangePasswordPageProps
 
   return (
     <main className="auth-page">
-      <Card className="auth-card" bordered={false}>
+      <Card className="auth-card" variant="borderless">
         <Typography.Title level={2}>请修改临时密码</Typography.Title>
         <Typography.Paragraph type="secondary">
           为保护账号安全，临时密码不能继续用于系统操作。
@@ -79,4 +79,3 @@ export function ChangePasswordPage({ onChangePassword }: ChangePasswordPageProps
     </main>
   );
 }
-

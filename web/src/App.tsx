@@ -1,5 +1,15 @@
 import { LogoutOutlined, UserOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Dropdown, Layout, Spin, Typography, message } from "antd";
+import {
+  Alert,
+  App as AntApp,
+  Button,
+  Dropdown,
+  Layout,
+  Spin,
+  Tabs,
+  Typography,
+  message
+} from "antd";
 import { Suspense, lazy, useEffect, useState } from "react";
 
 import { api, ApiError } from "./api/client";
@@ -11,6 +21,16 @@ import { LoginPage } from "./pages/LoginPage";
 const AccountManagementPage = lazy(async () => {
   const page = await import("./pages/AccountManagementPage");
   return { default: page.AccountManagementPage };
+});
+
+const KnowledgeBaseManagementPage = lazy(async () => {
+  const page = await import("./pages/KnowledgeBaseManagementPage");
+  return { default: page.KnowledgeBaseManagementPage };
+});
+
+const ReviewerKnowledgeBasesPage = lazy(async () => {
+  const page = await import("./pages/ReviewerKnowledgeBasesPage");
+  return { default: page.ReviewerKnowledgeBasesPage };
 });
 
 function App(): JSX.Element {
@@ -93,8 +113,32 @@ function App(): JSX.Element {
       <Layout.Content className="application-content">
         <AntApp>
           {user.role === "system_admin" ? (
+            <Tabs
+              defaultActiveKey="knowledge-bases"
+              items={[
+                {
+                  key: "knowledge-bases",
+                  label: "知识库管理",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <KnowledgeBaseManagementPage />
+                    </Suspense>
+                  )
+                },
+                {
+                  key: "accounts",
+                  label: "账号管理",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <AccountManagementPage />
+                    </Suspense>
+                  )
+                }
+              ]}
+            />
+          ) : user.role === "review_admin" ? (
             <Suspense fallback={<Spin />}>
-              <AccountManagementPage />
+              <ReviewerKnowledgeBasesPage />
             </Suspense>
           ) : (
             <Alert
