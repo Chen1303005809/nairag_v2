@@ -11,6 +11,6 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
 COPY worker.py ./worker.py
-RUN pip install --no-cache-dir .
+RUN pip install .
 
 EXPOSE 8000
