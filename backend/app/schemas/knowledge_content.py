@@ -181,39 +181,7 @@ class AvailableParentResponse(BaseModel):
 
 class ReviewSubmissionTargetResponse(AvailableKnowledgeBaseResponse):
     status: ReviewTargetStatus
-
-
-class ReviewSubmissionResponse(BaseModel):
-    id: UUID
-    submission_kind: ReviewSubmissionKind
-    status: ReviewSubmissionStatus
-    parent_id: UUID
-    parent_revision_id: UUID | None
-    child_id: UUID
-    child_revision_id: UUID
-    title: str
-    targets: list[ReviewSubmissionTargetResponse]
-    submitted_at: datetime
-
-
-class ReviewDecisionRequest(BaseModel):
-    decision: ReviewDecisionKind
-    comment: str | None = Field(default=None, max_length=4_000)
-
-    @field_validator("comment")
-    @classmethod
-    def validate_comment(cls, value: str | None) -> str | None:
-        return normalize_optional_content(value)
-
-
-class ReviewDecisionResponse(BaseModel):
-    id: UUID
-    review_submission_id: UUID
-    knowledge_base_id: UUID
-    decision: ReviewDecisionKind
-    comment: str | None
-    decided_by_user_id: UUID
-    decided_at: datetime
+    review_comment: str | None = None
 
 
 class ReviewParentRevisionResponse(BaseModel):
@@ -238,6 +206,41 @@ class ReviewChildRevisionResponse(BaseModel):
     feature_explanation: str | None
     example: str | None
     internal_notes: str | None
+
+
+class ReviewSubmissionResponse(BaseModel):
+    id: UUID
+    submission_kind: ReviewSubmissionKind
+    status: ReviewSubmissionStatus
+    parent_id: UUID
+    parent_revision_id: UUID | None
+    child_id: UUID
+    child_revision_id: UUID
+    title: str
+    targets: list[ReviewSubmissionTargetResponse]
+    submitted_at: datetime
+    parent_revision: ReviewParentRevisionResponse | None = None
+    child_revision: ReviewChildRevisionResponse | None = None
+
+
+class ReviewDecisionRequest(BaseModel):
+    decision: ReviewDecisionKind
+    comment: str | None = Field(default=None, max_length=4_000)
+
+    @field_validator("comment")
+    @classmethod
+    def validate_comment(cls, value: str | None) -> str | None:
+        return normalize_optional_content(value)
+
+
+class ReviewDecisionResponse(BaseModel):
+    id: UUID
+    review_submission_id: UUID
+    knowledge_base_id: UUID
+    decision: ReviewDecisionKind
+    comment: str | None
+    decided_by_user_id: UUID
+    decided_at: datetime
 
 
 class ReviewSubmitterResponse(BaseModel):

@@ -109,6 +109,7 @@ export interface AvailableParent {
 
 export interface ReviewSubmissionTarget extends AvailableKnowledgeBase {
   status: ReviewTargetStatus;
+  review_comment: string | null;
 }
 
 export interface ReviewSubmission {
@@ -122,6 +123,8 @@ export interface ReviewSubmission {
   title: string;
   targets: ReviewSubmissionTarget[];
   submitted_at: string;
+  parent_revision: ReviewParentRevision | null;
+  child_revision: ReviewChildRevision | null;
 }
 
 export interface ReviewParentRevision {

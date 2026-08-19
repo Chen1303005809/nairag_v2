@@ -599,6 +599,116 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     )
                     assert reject_child.status_code == 201
 
+                    mine = await author.get("/api/v1/knowledge-content/submissions/mine")
+                    assert mine.status_code == 200
+                    child_submission = next(
+                        item for item in mine.json() if item["id"] == child_submission_id
+                    )
+                    assert (
+                        child_submission["child_revision"]["response_content"] == "请联系管理员。"
+                    )
+                    child_targets = {
+                        target["id"]: target for target in child_submission["targets"]
+                    }
+                    assert child_targets[knowledge_base_ids[1]]["status"] == "rejected"
+                    assert (
+                        child_targets[knowledge_base_ids[1]]["review_comment"]
+                        == "不适用于该知识库"
+                    )
+
+                    child_resubmitted = await author.post(
+                        f"/api/v1/knowledge-content/review-submissions/{child_submission_id}"
+                        "/resubmit-child",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "child": {
+                                "question": "如何找回密码？",
+                                "response_content": "请先验证身份，再联系管理员重置密码。",
+                            },
+                            "knowledge_base_ids": [knowledge_base_ids[1]],
+                        },
+                    )
+                    assert child_resubmitted.status_code == 201
+                    child_resubmitted_payload = child_resubmitted.json()
+                    assert child_resubmitted_payload["id"] != child_submission_id
+                    assert child_resubmitted_payload["child_id"] == child_id
+                    assert (
+                        child_resubmitted_payload["child_revision_id"]
+                        != child_submission["child_revision_id"]
+                    )
+                    assert child_resubmitted_payload["status"] == "pending_review"
+                    assert child_resubmitted_payload["targets"] == [
+                        {
+                            "id": knowledge_base_ids[1],
+                            "logical_key": "sales-help",
+                            "name": "销售帮助",
+                            "status": "pending_review",
+                            "review_comment": None,
+                        }
+                    ]
+
+                    rejected_parent = await author.post(
+                        "/api/v1/knowledge-content/parent-submissions",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "parent": {
+                                "name": "支付问题",
+                                "canonical_keyword": "支付",
+                            },
+                            "primary_child": {
+                                "question": "支付失败怎么办？",
+                                "response_content": "请检查支付状态。",
+                            },
+                            "knowledge_base_ids": knowledge_base_ids,
+                        },
+                    )
+                    assert rejected_parent.status_code == 201
+                    rejected_parent_payload = rejected_parent.json()
+                    rejected_parent_submission_id = rejected_parent_payload["id"]
+                    rejected_parent_id = rejected_parent_payload["parent_id"]
+                    reject_parent = await reviewer.post(
+                        f"/api/v1/knowledge-content/review-submissions/{rejected_parent_submission_id}"
+                        f"/targets/{knowledge_base_ids[0]}/decision",
+                        headers=csrf_headers(reviewer, settings),
+                        json={"decision": "rejected", "comment": "请补充支付失败处理路径"},
+                    )
+                    assert reject_parent.status_code == 201
+
+                    parent_resubmitted = await author.post(
+                        f"/api/v1/knowledge-content/review-submissions/{rejected_parent_submission_id}"
+                        "/resubmit-parent",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "parent": {
+                                "name": "支付问题（已修订）",
+                                "canonical_keyword": "支付",
+                            },
+                            "primary_child": {
+                                "question": "支付失败时如何处理？",
+                                "response_content": "请先确认支付状态，再按照订单状态处理。",
+                            },
+                        },
+                    )
+                    assert parent_resubmitted.status_code == 201
+                    parent_resubmitted_payload = parent_resubmitted.json()
+                    assert parent_resubmitted_payload["id"] != rejected_parent_submission_id
+                    assert parent_resubmitted_payload["parent_id"] == rejected_parent_id
+                    assert parent_resubmitted_payload["status"] == "pending_review"
+                    assert (
+                        parent_resubmitted_payload["parent_revision_id"]
+                        != rejected_parent_payload["parent_revision_id"]
+                    )
+                    assert (
+                        parent_resubmitted_payload["child_revision_id"]
+                        != rejected_parent_payload["child_revision_id"]
+                    )
+                    assert {
+                        target["id"] for target in parent_resubmitted_payload["targets"]
+                    } == set(knowledge_base_ids)
+                    assert {
+                        target["status"] for target in parent_resubmitted_payload["targets"]
+                    } == {"pending_review"}
+
                     publication = await author.get(
                         f"/api/v1/knowledge-content/children/{child_id}/publications/{knowledge_base_ids[0]}"
                     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -86,6 +86,18 @@ class ReviewPublicationConflictError(Exception):
     pass
 
 
+class SubmissionNotFoundError(Exception):
+    pass
+
+
+class SubmissionNotEditableError(Exception):
+    pass
+
+
+class RejectedTargetNotAllowedError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class AvailableParentDetails:
     parent: Parent
@@ -99,6 +111,11 @@ class SubmissionDetails:
     submission: ReviewSubmission
     title: str
     targets: list[tuple[ReviewSubmissionTarget, KnowledgeBase]]
+    parent_revision: ParentRevision | None = None
+    parent_lexical_rules: list[ParentLexicalRule] = field(default_factory=list)
+    child_revision: ChildRevision | None = None
+    child_question_variants: list[ChildRevisionQuestionVariant] = field(default_factory=list)
+    target_comments: dict[UUID, str | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -628,12 +645,142 @@ async def submit_child_revision(
     )
 
 
+async def _get_locked_resubmission_source(
+    session: AsyncSession,
+    *,
+    review_submission_id: UUID,
+    submitted_by_user_id: UUID,
+) -> tuple[ReviewSubmission, list[ReviewSubmissionTarget]]:
+    submission = await session.scalar(
+        select(ReviewSubmission)
+        .where(
+            ReviewSubmission.id == review_submission_id,
+            ReviewSubmission.submitted_by_user_id == submitted_by_user_id,
+        )
+        .with_for_update()
+    )
+    if submission is None:
+        raise SubmissionNotFoundError(review_submission_id)
+
+    targets = await _locked_submission_targets(session, review_submission_id)
+    if not any(target.status == ReviewTargetStatus.REJECTED for target in targets):
+        raise SubmissionNotEditableError(review_submission_id)
+    return submission, targets
+
+
+async def resubmit_rejected_parent_aggregate(
+    session: AsyncSession,
+    *,
+    review_submission_id: UUID,
+    parent_content: ParentContentInput,
+    primary_child_content: ChildContentInput,
+    submitted_by_user_id: UUID,
+) -> SubmissionDetails:
+    source, source_targets = await _get_locked_resubmission_source(
+        session,
+        review_submission_id=review_submission_id,
+        submitted_by_user_id=submitted_by_user_id,
+    )
+    if source.submission_kind != ReviewSubmissionKind.PARENT_WITH_PRIMARY:
+        raise SubmissionNotEditableError(review_submission_id)
+
+    parent = await _get_parent(session, source.parent_id, lock=True)
+    primary_child = await session.scalar(
+        select(Child)
+        .where(
+            Child.id == source.child_id,
+            Child.parent_id == parent.id,
+            Child.is_primary.is_(True),
+        )
+        .with_for_update()
+    )
+    if primary_child is None:
+        raise ParentNotAvailableError(parent.id)
+
+    await _assert_no_open_parent_aggregate_submission(session, parent.id)
+    knowledge_base_ids = [target.knowledge_base_id for target in source_targets]
+    knowledge_bases_by_id = await _active_knowledge_bases_by_id(session, knowledge_base_ids)
+    publications = await _locked_publications(
+        session,
+        child_id=primary_child.id,
+        knowledge_base_ids=knowledge_base_ids,
+    )
+    if len(publications) != len(knowledge_base_ids):
+        raise ParentNotAvailableError(parent.id)
+
+    parent_revision = await _create_parent_revision(
+        session,
+        parent_id=parent.id,
+        content=parent_content,
+        created_by_user_id=submitted_by_user_id,
+    )
+    child_revision = await _create_child_revision(
+        session,
+        child_id=primary_child.id,
+        content=primary_child_content,
+        created_by_user_id=submitted_by_user_id,
+    )
+    submission, targets = await _create_submission(
+        session,
+        submission_kind=ReviewSubmissionKind.PARENT_WITH_PRIMARY,
+        parent_id=parent.id,
+        parent_revision_id=parent_revision.id,
+        child_id=primary_child.id,
+        child_revision_id=child_revision.id,
+        submitted_by_user_id=submitted_by_user_id,
+        knowledge_base_ids=knowledge_base_ids,
+    )
+    for publication in publications.values():
+        publication.pending_submission_id = submission.id
+
+    return SubmissionDetails(
+        submission=submission,
+        title=parent_revision.name,
+        targets=[
+            (target, knowledge_bases_by_id[target.knowledge_base_id]) for target in targets
+        ],
+    )
+
+
+async def resubmit_rejected_child(
+    session: AsyncSession,
+    *,
+    review_submission_id: UUID,
+    child_content: ChildContentInput,
+    knowledge_base_ids: list[UUID],
+    submitted_by_user_id: UUID,
+) -> SubmissionDetails:
+    source, source_targets = await _get_locked_resubmission_source(
+        session,
+        review_submission_id=review_submission_id,
+        submitted_by_user_id=submitted_by_user_id,
+    )
+    if source.submission_kind != ReviewSubmissionKind.CHILD:
+        raise SubmissionNotEditableError(review_submission_id)
+
+    rejected_target_ids = {
+        target.knowledge_base_id
+        for target in source_targets
+        if target.status == ReviewTargetStatus.REJECTED
+    }
+    if not set(knowledge_base_ids).issubset(rejected_target_ids):
+        raise RejectedTargetNotAllowedError(review_submission_id)
+
+    return await submit_child_revision(
+        session,
+        child_id=source.child_id,
+        child_content=child_content,
+        knowledge_base_ids=knowledge_base_ids,
+        submitted_by_user_id=submitted_by_user_id,
+    )
+
+
 async def list_submissions_by_author(
     session: AsyncSession,
     submitted_by_user_id: UUID,
 ) -> list[SubmissionDetails]:
     statement = (
-        select(ReviewSubmission, ParentRevision.name, ChildRevision.question)
+        select(ReviewSubmission, ParentRevision, ChildRevision)
         .outerjoin(ParentRevision, ParentRevision.id == ReviewSubmission.parent_revision_id)
         .join(ChildRevision, ChildRevision.id == ReviewSubmission.child_revision_id)
         .where(ReviewSubmission.submitted_by_user_id == submitted_by_user_id)
@@ -643,7 +790,7 @@ async def list_submissions_by_author(
     if not rows:
         return []
 
-    submission_ids = [submission.id for submission, _parent_name, _question in rows]
+    submission_ids = [submission.id for submission, _parent_revision, _child_revision in rows]
     target_rows = (
         await session.execute(
             select(ReviewSubmissionTarget, KnowledgeBase)
@@ -658,13 +805,65 @@ async def list_submissions_by_author(
             (target, knowledge_base)
         )
 
+    parent_revision_ids = {
+        parent_revision.id
+        for _submission, parent_revision, _child_revision in rows
+        if parent_revision is not None
+    }
+    rules_by_revision: dict[UUID, list[ParentLexicalRule]] = {}
+    if parent_revision_ids:
+        rule_rows = await session.scalars(
+            select(ParentLexicalRule)
+            .where(ParentLexicalRule.parent_revision_id.in_(parent_revision_ids))
+            .order_by(ParentLexicalRule.parent_revision_id, ParentLexicalRule.sort_order)
+        )
+        for rule in rule_rows:
+            rules_by_revision.setdefault(rule.parent_revision_id, []).append(rule)
+
+    child_revision_ids = {
+        child_revision.id for _submission, _parent_revision, child_revision in rows
+    }
+    variants_by_revision: dict[UUID, list[ChildRevisionQuestionVariant]] = {}
+    variant_rows = await session.scalars(
+        select(ChildRevisionQuestionVariant)
+        .where(ChildRevisionQuestionVariant.child_revision_id.in_(child_revision_ids))
+        .order_by(
+            ChildRevisionQuestionVariant.child_revision_id,
+            ChildRevisionQuestionVariant.sort_order,
+        )
+    )
+    for variant in variant_rows:
+        variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+
+    decision_rows = await session.scalars(
+        select(ReviewDecision).where(ReviewDecision.review_submission_id.in_(submission_ids))
+    )
+    comments_by_target = {
+        (decision.review_submission_id, decision.knowledge_base_id): decision.comment
+        for decision in decision_rows
+    }
+
     return [
         SubmissionDetails(
             submission=submission,
-            title=parent_name or question,
+            title=parent_revision.name if parent_revision is not None else child_revision.question,
             targets=targets_by_submission_id.get(submission.id, []),
+            parent_revision=parent_revision,
+            parent_lexical_rules=(
+                rules_by_revision.get(parent_revision.id, [])
+                if parent_revision is not None
+                else []
+            ),
+            child_revision=child_revision,
+            child_question_variants=variants_by_revision.get(child_revision.id, []),
+            target_comments={
+                target.knowledge_base_id: comments_by_target.get(
+                    (submission.id, target.knowledge_base_id)
+                )
+                for target, _knowledge_base in targets_by_submission_id.get(submission.id, [])
+            },
         )
-        for submission, parent_name, question in rows
+        for submission, parent_revision, child_revision in rows
     ]
 
 

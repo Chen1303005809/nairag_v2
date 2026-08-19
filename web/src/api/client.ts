@@ -244,5 +244,27 @@ export const api = {
       parent_id: parentId,
       child,
       knowledge_base_ids: knowledgeBaseIds
-    })
+    }),
+
+  resubmitRejectedParent: (
+    reviewSubmissionId: string,
+    parent: ParentContentInput,
+    primaryChild: ChildContentInput
+  ): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>(
+      "POST",
+      `/knowledge-content/review-submissions/${reviewSubmissionId}/resubmit-parent`,
+      { parent, primary_child: primaryChild }
+    ),
+
+  resubmitRejectedChild: (
+    reviewSubmissionId: string,
+    child: ChildContentInput,
+    knowledgeBaseIds: string[]
+  ): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>(
+      "POST",
+      `/knowledge-content/review-submissions/${reviewSubmissionId}/resubmit-child`,
+      { child, knowledge_base_ids: knowledgeBaseIds }
+    )
 };

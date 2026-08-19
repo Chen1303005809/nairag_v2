@@ -38,6 +38,7 @@ from app.services.knowledge_content import (
     ParentNotFoundError,
     PendingSubmissionExistsError,
     PrimaryChildRevisionError,
+    RejectedTargetNotAllowedError,
     ReviewAccessDeniedError,
     ReviewDecisionAlreadyExistsError,
     ReviewPublicationNotFoundError,
@@ -46,6 +47,8 @@ from app.services.knowledge_content import (
     ReviewTargetNotFoundError,
     ReviewTargetStateError,
     SubmissionDetails,
+    SubmissionNotEditableError,
+    SubmissionNotFoundError,
     TargetKnowledgeBaseNotAllowedError,
     TargetKnowledgeBaseUnavailableError,
     archive_publication,
@@ -54,6 +57,8 @@ from app.services.knowledge_content import (
     list_available_parents,
     list_review_queue,
     list_submissions_by_author,
+    resubmit_rejected_child,
+    resubmit_rejected_parent_aggregate,
     submit_child_revision,
     submit_new_child,
     submit_new_parent_aggregate,
@@ -98,10 +103,49 @@ def as_submission_response(details: SubmissionDetails) -> ReviewSubmissionRespon
                 logical_key=knowledge_base.logical_key,
                 name=knowledge_base.name,
                 status=target.status,
+                review_comment=details.target_comments.get(target.knowledge_base_id),
             )
             for target, knowledge_base in details.targets
         ],
         submitted_at=submission.submitted_at,
+        parent_revision=(
+            ReviewParentRevisionResponse(
+                id=details.parent_revision.id,
+                revision_number=details.parent_revision.revision_number,
+                name=details.parent_revision.name,
+                canonical_keyword=details.parent_revision.canonical_keyword,
+                lexical_rules=[
+                    ParentLexicalRuleInput(
+                        rule_type=rule.rule_type,
+                        rule_value=rule.rule_value,
+                    )
+                    for rule in details.parent_lexical_rules
+                ],
+            )
+            if details.parent_revision is not None
+            else None
+        ),
+        child_revision=(
+            ReviewChildRevisionResponse(
+                id=details.child_revision.id,
+                revision_number=details.child_revision.revision_number,
+                question=details.child_revision.question,
+                response_content=details.child_revision.response_content,
+                question_variants=[
+                    variant.question_text for variant in details.child_question_variants
+                ],
+                follow_up_guidance=details.child_revision.follow_up_guidance,
+                question_type=details.child_revision.question_type,
+                business_object=details.child_revision.business_object,
+                purpose=details.child_revision.purpose,
+                customer_type=details.child_revision.customer_type,
+                feature_explanation=details.child_revision.feature_explanation,
+                example=details.child_revision.example,
+                internal_notes=details.child_revision.internal_notes,
+            )
+            if details.child_revision is not None
+            else None
+        ),
     )
 
 
@@ -132,6 +176,18 @@ def as_content_http_error(error: Exception) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="目标内容已有未结束的候选提交，请等待审核、发布或驳回",
+        )
+    if isinstance(error, SubmissionNotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="投稿不存在")
+    if isinstance(error, SubmissionNotEditableError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="只有包含被驳回目标的投稿才能重新提交审核",
+        )
+    if isinstance(error, RejectedTargetNotAllowedError):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="重新提交普通子条目时只能选择原投稿中被驳回的知识库",
         )
     if isinstance(error, ReviewAccessDeniedError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="没有该知识库的审核权限")
@@ -395,6 +451,101 @@ async def create_child_revision_submission(
         target_type="child",
         target_id=submission.submission.child_id,
         payload={
+            "review_submission_id": str(submission.submission.id),
+            "knowledge_base_ids": [
+                str(target.knowledge_base_id) for target, _ in submission.targets
+            ],
+        },
+    )
+    await session.commit()
+    return as_submission_response(submission)
+
+
+@router.post(
+    "/review-submissions/{review_submission_id}/resubmit-parent",
+    response_model=ReviewSubmissionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def resubmit_rejected_parent_submission(
+    review_submission_id: UUID,
+    body: CreateParentRevisionSubmissionRequest,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ReviewSubmissionResponse:
+    try:
+        submission = await resubmit_rejected_parent_aggregate(
+            session,
+            review_submission_id=review_submission_id,
+            parent_content=body.parent,
+            primary_child_content=body.primary_child,
+            submitted_by_user_id=user.user.id,
+        )
+    except (
+        ParentNotFoundError,
+        ParentNotAvailableError,
+        PendingSubmissionExistsError,
+        SubmissionNotFoundError,
+        SubmissionNotEditableError,
+        TargetKnowledgeBaseUnavailableError,
+    ) as exc:
+        raise as_content_http_error(exc) from exc
+
+    record_audit_event(
+        session,
+        event_type="content.rejected_parent_resubmitted",
+        actor_user_id=user.user.id,
+        target_type="parent",
+        target_id=submission.submission.parent_id,
+        payload={
+            "source_review_submission_id": str(review_submission_id),
+            "review_submission_id": str(submission.submission.id),
+        },
+    )
+    await session.commit()
+    return as_submission_response(submission)
+
+
+@router.post(
+    "/review-submissions/{review_submission_id}/resubmit-child",
+    response_model=ReviewSubmissionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def resubmit_rejected_child_submission(
+    review_submission_id: UUID,
+    body: CreateChildRevisionSubmissionRequest,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ReviewSubmissionResponse:
+    try:
+        submission = await resubmit_rejected_child(
+            session,
+            review_submission_id=review_submission_id,
+            child_content=body.child,
+            knowledge_base_ids=body.knowledge_base_ids,
+            submitted_by_user_id=user.user.id,
+        )
+    except (
+        ChildNotFoundError,
+        ParentNotAvailableError,
+        PendingSubmissionExistsError,
+        PrimaryChildRevisionError,
+        RejectedTargetNotAllowedError,
+        SubmissionNotFoundError,
+        SubmissionNotEditableError,
+        TargetKnowledgeBaseNotAllowedError,
+    ) as exc:
+        raise as_content_http_error(exc) from exc
+
+    record_audit_event(
+        session,
+        event_type="content.rejected_child_resubmitted",
+        actor_user_id=user.user.id,
+        target_type="child",
+        target_id=submission.submission.child_id,
+        payload={
+            "source_review_submission_id": str(review_submission_id),
             "review_submission_id": str(submission.submission.id),
             "knowledge_base_ids": [
                 str(target.knowledge_base_id) for target, _ in submission.targets

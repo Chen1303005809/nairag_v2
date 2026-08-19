@@ -6,6 +6,7 @@ import {
   Collapse,
   Form,
   Input,
+  Modal,
   Select,
   Space,
   Table,
@@ -23,6 +24,8 @@ import type {
   ChildContentInput,
   KnowledgeBase,
   ParentContentInput,
+  ReviewChildRevision,
+  ReviewParentRevision,
   ReviewSubmission,
   ReviewSubmissionStatus
 } from "../api/types";
@@ -58,6 +61,12 @@ interface ChildSubmissionFormValues {
   knowledge_base_ids: string[];
 }
 
+interface ResubmissionFormValues {
+  parent?: ParentSubmissionFormValues["parent"];
+  primary_child?: ChildContentFormValues;
+  child?: ChildContentFormValues;
+}
+
 function lines(value: string | undefined): string[] {
   return (value ?? "")
     .split("\n")
@@ -83,6 +92,54 @@ function toChildContent(values: ChildContentFormValues): ChildContentInput {
     feature_explanation: nullable(values.feature_explanation),
     example: nullable(values.example),
     internal_notes: nullable(values.internal_notes)
+  };
+}
+
+function toParentContent(values: ParentSubmissionFormValues["parent"]): ParentContentInput {
+  return {
+    name: values.name,
+    canonical_keyword: values.canonical_keyword,
+    lexical_rules: [
+      ...lines(values.aliases).map((ruleValue) => ({
+        rule_type: "alias" as const,
+        rule_value: ruleValue
+      })),
+      ...lines(values.regexes).map((ruleValue) => ({
+        rule_type: "regex" as const,
+        rule_value: ruleValue
+      }))
+    ]
+  };
+}
+
+function toChildFormValues(revision: ReviewChildRevision): ChildContentFormValues {
+  return {
+    question: revision.question,
+    response_content: revision.response_content,
+    question_variants: revision.question_variants.join("\n"),
+    follow_up_guidance: revision.follow_up_guidance ?? "",
+    question_type: revision.question_type ?? "",
+    business_object: revision.business_object ?? "",
+    purpose: revision.purpose ?? "",
+    customer_type: revision.customer_type ?? "",
+    feature_explanation: revision.feature_explanation ?? "",
+    example: revision.example ?? "",
+    internal_notes: revision.internal_notes ?? ""
+  };
+}
+
+function toParentFormValues(revision: ReviewParentRevision): ParentSubmissionFormValues["parent"] {
+  return {
+    name: revision.name,
+    canonical_keyword: revision.canonical_keyword,
+    aliases: revision.lexical_rules
+      .filter((rule) => rule.rule_type === "alias")
+      .map((rule) => rule.rule_value)
+      .join("\n"),
+    regexes: revision.lexical_rules
+      .filter((rule) => rule.rule_type === "regex")
+      .map((rule) => rule.rule_value)
+      .join("\n")
   };
 }
 
@@ -158,12 +215,15 @@ function submissionStatus(status: ReviewSubmissionStatus): JSX.Element {
 export function ContentSubmissionPage(): JSX.Element {
   const [parentForm] = Form.useForm<ParentSubmissionFormValues>();
   const [childForm] = Form.useForm<ChildSubmissionFormValues>();
+  const [resubmissionForm] = Form.useForm<ResubmissionFormValues>();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [availableParents, setAvailableParents] = useState<AvailableParent[]>([]);
   const [submissions, setSubmissions] = useState<ReviewSubmission[]>([]);
   const [loading, setLoading] = useState(true);
   const [submittingParent, setSubmittingParent] = useState(false);
   const [submittingChild, setSubmittingChild] = useState(false);
+  const [editingSubmission, setEditingSubmission] = useState<ReviewSubmission | null>(null);
+  const [resubmitting, setResubmitting] = useState(false);
   const selectedParentId = Form.useWatch("parent_id", childForm);
 
   const selectedParent = useMemo(
@@ -200,20 +260,7 @@ export function ContentSubmissionPage(): JSX.Element {
   const submitParent = async (values: ParentSubmissionFormValues): Promise<void> => {
     setSubmittingParent(true);
     try {
-      const parent: ParentContentInput = {
-        name: values.parent.name,
-        canonical_keyword: values.parent.canonical_keyword,
-        lexical_rules: [
-          ...lines(values.parent.aliases).map((ruleValue) => ({
-            rule_type: "alias" as const,
-            rule_value: ruleValue
-          })),
-          ...lines(values.parent.regexes).map((ruleValue) => ({
-            rule_type: "regex" as const,
-            rule_value: ruleValue
-          }))
-        ]
-      };
+      const parent = toParentContent(values.parent);
       await api.createParentSubmission(
         parent,
         toChildContent(values.primary_child),
@@ -226,6 +273,85 @@ export function ContentSubmissionPage(): JSX.Element {
       message.error(reason instanceof Error ? reason.message : "提交失败，请稍后重试");
     } finally {
       setSubmittingParent(false);
+    }
+  };
+
+  const openResubmission = (submission: ReviewSubmission): void => {
+    if (!submission.child_revision) {
+      message.error("投稿内容尚未加载，无法编辑");
+      return;
+    }
+    if (
+      submission.submission_kind === "parent_with_primary" &&
+      !submission.parent_revision
+    ) {
+      message.error("父类内容尚未加载，无法编辑");
+      return;
+    }
+
+    const rejectedTargetIds = submission.targets
+      .filter((target) => target.status === "rejected")
+      .map((target) => target.id);
+    if (rejectedTargetIds.length === 0) {
+      message.info("当前投稿没有可重新提交的被驳回目标");
+      return;
+    }
+
+    if (submission.submission_kind === "parent_with_primary") {
+      resubmissionForm.setFieldsValue({
+        parent: toParentFormValues(submission.parent_revision!),
+        primary_child: toChildFormValues(submission.child_revision)
+      });
+    } else {
+      resubmissionForm.setFieldsValue({ child: toChildFormValues(submission.child_revision) });
+    }
+    setEditingSubmission(submission);
+  };
+
+  const closeResubmission = (): void => {
+    if (resubmitting) {
+      return;
+    }
+    setEditingSubmission(null);
+    resubmissionForm.resetFields();
+  };
+
+  const resubmitSubmission = async (values: ResubmissionFormValues): Promise<void> => {
+    if (!editingSubmission) {
+      return;
+    }
+    setResubmitting(true);
+    try {
+      const rejectedTargetIds = editingSubmission.targets
+        .filter((target) => target.status === "rejected")
+        .map((target) => target.id);
+      if (editingSubmission.submission_kind === "parent_with_primary") {
+        if (!values.parent || !values.primary_child) {
+          throw new Error("父类和主子条目内容不能为空");
+        }
+        await api.resubmitRejectedParent(
+          editingSubmission.id,
+          toParentContent(values.parent),
+          toChildContent(values.primary_child)
+        );
+      } else {
+        if (!values.child) {
+          throw new Error("子条目内容不能为空");
+        }
+        await api.resubmitRejectedChild(
+          editingSubmission.id,
+          toChildContent(values.child),
+          rejectedTargetIds
+        );
+      }
+      message.success("已生成新的候选并重新提交审核");
+      setEditingSubmission(null);
+      resubmissionForm.resetFields();
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "重新提交失败，请稍后重试");
+    } finally {
+      setResubmitting(false);
     }
   };
 
@@ -267,7 +393,13 @@ export function ContentSubmissionPage(): JSX.Element {
       render: (_value: unknown, submission: ReviewSubmission) => (
         <Space size={[4, 4]} wrap>
           {submission.targets.map((target) => (
-            <Tag key={target.id}>{target.name}</Tag>
+            <Tag
+              key={target.id}
+              color={target.status === "rejected" ? "error" : undefined}
+              title={target.review_comment ?? undefined}
+            >
+              {target.name}
+            </Tag>
           ))}
         </Space>
       )
@@ -283,6 +415,21 @@ export function ContentSubmissionPage(): JSX.Element {
       dataIndex: "submitted_at",
       key: "submitted_at",
       render: (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false })
+    },
+    {
+      title: "操作",
+      key: "actions",
+      render: (_value: unknown, submission: ReviewSubmission) => {
+        const editable =
+          submission.child_revision !== null &&
+          (submission.submission_kind === "child" || submission.parent_revision !== null) &&
+          submission.targets.some((target) => target.status === "rejected");
+        return editable ? (
+          <Button type="link" onClick={() => openResubmission(submission)}>
+            编辑重提
+          </Button>
+        ) : null;
+      }
     }
   ];
 
@@ -425,6 +572,90 @@ export function ContentSubmissionPage(): JSX.Element {
           }
         ]}
       />
+      <Modal
+        open={editingSubmission !== null}
+        title="编辑驳回投稿并重新提交"
+        onCancel={closeResubmission}
+        footer={null}
+        destroyOnClose
+        width={760}
+      >
+        {editingSubmission && (
+          <>
+            <Alert
+              type="warning"
+              showIcon
+              message="原审核记录会保留，新内容将生成新的候选修订"
+              description={
+                <Space direction="vertical" size={4}>
+                  {editingSubmission.targets
+                    .filter((target) => target.status === "rejected")
+                    .map((target) => (
+                      <Typography.Text key={target.id}>
+                        {target.name}：{target.review_comment || "审核未填写具体意见"}
+                      </Typography.Text>
+                    ))}
+                </Space>
+              }
+            />
+            <Form<ResubmissionFormValues>
+              form={resubmissionForm}
+              layout="vertical"
+              onFinish={(values) => void resubmitSubmission(values)}
+              requiredMark={false}
+              style={{ marginTop: 16 }}
+            >
+              {editingSubmission.submission_kind === "parent_with_primary" && (
+                <>
+                  <Typography.Title level={5}>父类字段</Typography.Title>
+                  <Form.Item name={["parent", "name"]} label="父类名称" rules={[{ required: true }]}>
+                    <Input />
+                  </Form.Item>
+                  <Form.Item
+                    name={["parent", "canonical_keyword"]}
+                    label="规范关键词"
+                    rules={[{ required: true }]}
+                  >
+                    <Input />
+                  </Form.Item>
+                  <Form.Item name={["parent", "aliases"]} label="别名">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Form.Item name={["parent", "regexes"]} label="受控正则">
+                    <Input.TextArea rows={2} />
+                  </Form.Item>
+                  <Typography.Title level={5}>主子条目字段</Typography.Title>
+                  <ChildContentFields root="primary_child" />
+                </>
+              )}
+              {editingSubmission.submission_kind === "child" && (
+                <>
+                  <Typography.Text type="secondary">
+                    当前问题：{editingSubmission.title}
+                  </Typography.Text>
+                  <ChildContentFields root="child" />
+                </>
+              )}
+              <Form.Item label="重新提交目标">
+                <Space size={[4, 4]} wrap>
+                  {editingSubmission.targets
+                    .filter((target) =>
+                      editingSubmission.submission_kind === "parent_with_primary"
+                        ? true
+                        : target.status === "rejected"
+                    )
+                    .map((target) => (
+                      <Tag key={target.id}>{target.name}</Tag>
+                    ))}
+                </Space>
+              </Form.Item>
+              <Button type="primary" htmlType="submit" loading={resubmitting}>
+                重新提交审核
+              </Button>
+            </Form>
+          </>
+        )}
+      </Modal>
     </section>
   );
 }
