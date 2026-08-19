@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -77,6 +77,7 @@ def as_search_response(details) -> SearchResponse:
 @router.post("", response_model=SearchResponse)
 async def search_content(
     body: SearchRequest,
+    request: Request,
     user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
     _csrf: Annotated[None, Depends(require_csrf)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
@@ -89,6 +90,7 @@ async def search_content(
             ocr_text=body.ocr_text,
             knowledge_base_id=body.knowledge_base_id,
             limit=body.limit,
+            index_backend=request.app.state.search_index_backend,
         )
     except SearchKnowledgeBaseUnavailableError as exc:
         raise HTTPException(

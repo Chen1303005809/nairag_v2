@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -32,15 +33,28 @@ from app.models.knowledge_content import (
     ReviewTargetStatus,
 )
 from app.models.user_account import UserAccount, UserRole
+from app.services.embedding import (
+    DeterministicEmbeddingProvider,
+    EmbeddingProviderError,
+    QwenEmbeddingProvider,
+)
 from app.services.index_backend import (
     RESPONSE_CHUNK_OVERLAP,
     VECTOR_DIMENSION,
     LocalArtifactIndexBackend,
+    MilvusHttpWriter,
+    MilvusIndexBackend,
     build_index_fragments,
     deterministic_hash_vector,
     stable_source_item_id,
 )
 from app.services.index_jobs import claim_next_index_job, run_next_index_job
+from app.services.retrieval import (
+    IndexQuery,
+    LocalArtifactSearchBackend,
+    MilvusHttpHybridSearcher,
+    MilvusSearchBackend,
+)
 from app.worker import run_worker
 
 
@@ -380,3 +394,200 @@ async def test_worker_loop_processes_job_and_stops_gracefully(tmp_path: Path) ->
         assert results[0].status == IndexJobStatus.SUCCEEDED
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_qwen_embedding_provider_orders_and_validates_vectors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/embeddings"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": 1, "embedding": [0.0, 1.0]},
+                    {"index": 0, "embedding": [1.0, 0.0]},
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = QwenEmbeddingProvider(
+            "https://embedding.test/v1",
+            model_name="Qwen/Qwen3-Embedding-0.6B",
+            dimension=2,
+            client=client,
+        )
+        assert await provider.embed_texts(["a", "b"]) == [[1.0, 0.0], [0.0, 1.0]]
+    finally:
+        await client.aclose()
+
+    def invalid_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0]}]})
+
+    invalid_client = httpx.AsyncClient(transport=httpx.MockTransport(invalid_handler))
+    try:
+        provider = QwenEmbeddingProvider(
+            "https://embedding.test/v1",
+            dimension=2,
+            client=invalid_client,
+        )
+        with pytest.raises(EmbeddingProviderError):
+            await provider.embed_texts(["a"])
+    finally:
+        await invalid_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_local_artifact_search_uses_hybrid_scores(tmp_path: Path) -> None:
+    factory, engine = await build_index_db(tmp_path)
+    try:
+        async with factory() as session:
+            revision, _submission, knowledge_bases, jobs = await create_index_graph(
+                session,
+                response_content="请检查账号密码并联系管理员。",
+            )
+            await LocalArtifactIndexBackend(tmp_path / "artifacts").index_target(session, jobs[0])
+            backend = LocalArtifactSearchBackend(tmp_path / "artifacts")
+            hits = await backend.search(
+                knowledge_base_id=knowledge_bases[0].id,
+                queries=[IndexQuery(text="账号密码", channel="text", weight=1.0)],
+                limit=10,
+            )
+            assert hits
+            assert hits[0].child_revision_id == revision.id
+            assert hits[0].dense_score >= 0
+            assert hits[0].sparse_score > 0
+            assert hits[0].match_reason == "hybrid_dense_bm25"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_milvus_backend_upserts_current_collection_with_stable_rows(tmp_path: Path) -> None:
+    factory, engine = await build_index_db(tmp_path)
+    captured: dict[str, object] = {}
+
+    class CapturingWriter:
+        async def upsert(self, *, collection_name: str, rows: list[dict[str, object]]) -> None:
+            captured["collection_name"] = collection_name
+            captured["rows"] = rows
+
+    try:
+        async with factory() as session:
+            revision, _submission, knowledge_bases, jobs = await create_index_graph(session)
+            backend = MilvusIndexBackend(
+                writer=CapturingWriter(),
+                embedding_provider=DeterministicEmbeddingProvider(),
+            )
+            await backend.index_target(session, jobs[0])
+            assert (
+                captured["collection_name"]
+                == knowledge_bases[0].current_physical_collection_name
+            )
+            rows = captured["rows"]
+            assert isinstance(rows, list)
+            assert rows
+            assert rows[0]["child_revision_id"] == str(revision.id)
+            assert rows[0]["source_item_id"]
+            assert len(rows[0]["dense_vector"]) == VECTOR_DIMENSION
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_milvus_http_writer_sends_idempotent_upsert_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/vectordb/entities/upsert"
+        assert request.headers["Authorization"] == "Bearer milvus-token"
+        body = json.loads(request.content)
+        assert body["collectionName"] == "nairag_support_g1"
+        assert body["data"][0]["source_item_id"] == "source-1"
+        return httpx.Response(200, json={"code": 0, "data": {"upsertCount": 1}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        writer = MilvusHttpWriter(
+            "https://milvus.test",
+            token="milvus-token",
+            client=client,
+        )
+        await writer.upsert(
+            collection_name="nairag_support_g1",
+            rows=[{"source_item_id": "source-1"}],
+        )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_milvus_search_backend_maps_and_clamps_gateway_hits() -> None:
+    revision_id = uuid4()
+    knowledge_base_id = uuid4()
+
+    class CapturingSearcher:
+        async def hybrid_search(
+            self,
+            *,
+            collection_name: str,
+            queries: list[dict[str, object]],
+            limit: int,
+        ) -> list[dict[str, object]]:
+            assert collection_name == "nairag_support_g1"
+            assert len(queries) == 1
+            assert len(queries[0]["dense_vector"]) == VECTOR_DIMENSION
+            assert limit == 4
+            return [
+                {
+                    "entity": {
+                        "source_item_id": "source-1",
+                        "child_revision_id": str(revision_id),
+                        "field_type": "question",
+                    },
+                    "score": 1.7,
+                    "dense_score": 0.9,
+                    "sparse_score": 0.8,
+                }
+            ]
+
+    backend = MilvusSearchBackend(
+        searcher=CapturingSearcher(),
+        embedding_provider=DeterministicEmbeddingProvider(),
+    )
+    hits = await backend.search(
+        knowledge_base_id=knowledge_base_id,
+        collection_name="nairag_support_g1",
+        queries=[IndexQuery(text="账号", channel="text", weight=1.0)],
+        limit=4,
+    )
+    assert len(hits) == 1
+    assert hits[0].child_revision_id == revision_id
+    assert hits[0].score == 1.0
+    assert hits[0].dense_score == 0.9
+
+
+@pytest.mark.asyncio
+async def test_milvus_http_hybrid_searcher_uses_current_collection() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/vectordb/entities/hybrid_search"
+        assert request.headers["Authorization"] == "Bearer milvus-token"
+        body = json.loads(request.content)
+        assert body["collectionName"] == "nairag_support_g1"
+        assert body["limit"] == 2
+        return httpx.Response(200, json={"code": 0, "data": [{"score": 0.9}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        searcher = MilvusHttpHybridSearcher(
+            "https://milvus.test",
+            token="milvus-token",
+            client=client,
+        )
+        result = await searcher.hybrid_search(
+            collection_name="nairag_support_g1",
+            queries=[{"text": "账号", "dense_vector": [0.1]}],
+            limit=2,
+        )
+        assert result == [{"score": 0.9}]
+    finally:
+        await client.aclose()

@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     initial_admin_password_file: Path | None = None
 
     index_artifact_dir: Path = Path("./var/index-artifacts")
+    index_backend_mode: str = "local_artifact"
+    embedding_service_url: str | None = None
+    embedding_service_api_key_file: Path | None = None
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    embedding_dimension: int = 1024
+    embedding_timeout_seconds: float = 60.0
+    reranker_service_url: str | None = None
+    reranker_service_api_key_file: Path | None = None
+    reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
+    reranker_timeout_seconds: float = 60.0
+    milvus_url: str | None = None
+    milvus_token_file: Path | None = None
     worker_id: str | None = None
     worker_poll_interval_seconds: float = 2.0
     worker_lease_seconds: int = 300
@@ -73,6 +85,19 @@ class Settings(BaseSettings):
             raise ValueError("WORKER_ID must not be empty when provided")
         if self.worker_id is not None and len(self.worker_id.strip()) > 120:
             raise ValueError("WORKER_ID must be at most 120 characters")
+        if self.index_backend_mode not in {"local_artifact", "milvus"}:
+            raise ValueError("INDEX_BACKEND_MODE must be local_artifact or milvus")
+        if self.embedding_dimension != 1024:
+            raise ValueError("EMBEDDING_DIMENSION must be exactly 1024")
+        if self.embedding_timeout_seconds <= 0:
+            raise ValueError("EMBEDDING_TIMEOUT_SECONDS must be positive")
+        if self.reranker_timeout_seconds <= 0:
+            raise ValueError("RERANKER_TIMEOUT_SECONDS must be positive")
+        if self.index_backend_mode == "milvus":
+            if not self.embedding_service_url:
+                raise ValueError("EMBEDDING_SERVICE_URL is required for Milvus indexing")
+            if not self.milvus_url:
+                raise ValueError("MILVUS_URL is required for Milvus indexing")
         return self
 
     @property
@@ -104,6 +129,30 @@ class Settings(BaseSettings):
         if self.jwt_secret is not None:
             return self.jwt_secret.get_secret_value()
         raise RuntimeError("JWT_SECRET_FILE or JWT_SECRET must be configured")
+
+    @property
+    def embedding_api_key(self) -> str | None:
+        if self.embedding_service_api_key_file is None:
+            return None
+        return read_secret_file(
+            self.embedding_service_api_key_file,
+            "EMBEDDING_SERVICE_API_KEY_FILE",
+        )
+
+    @property
+    def milvus_token(self) -> str | None:
+        if self.milvus_token_file is None:
+            return None
+        return read_secret_file(self.milvus_token_file, "MILVUS_TOKEN_FILE")
+
+    @property
+    def reranker_api_key(self) -> str | None:
+        if self.reranker_service_api_key_file is None:
+            return None
+        return read_secret_file(
+            self.reranker_service_api_key_file,
+            "RERANKER_SERVICE_API_KEY_FILE",
+        )
 
 
 def read_secret_file(path: Path, setting_name: str) -> str:

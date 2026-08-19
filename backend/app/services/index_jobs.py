@@ -43,18 +43,15 @@ class IndexWorkerResult:
 
 
 class IndexBackend(Protocol):
-    """Adapter seam for Milvus/embedding implementations.
-
-    The first runnable backend is deliberately a no-op.  It lets the durable
-    state machine be exercised in local development while a later deployment
-    supplies the real embedding and Milvus adapter.
-    """
+    """Adapter seam for local artifacts and production embedding/Milvus writers."""
 
     async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
         ...
 
 
 class NoopIndexBackend:
+    """Test-only backend for exercising the durable state machine without writes."""
+
     async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
         return None
 

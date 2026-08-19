@@ -26,6 +26,11 @@ from app.models.knowledge_content import (
     SearchQueryMode,
     SearchResultItem,
 )
+from app.services.retrieval import (
+    IndexQuery,
+    SearchIndexBackend,
+    SearchIndexUnavailableError,
+)
 
 
 class SearchKnowledgeBaseUnavailableError(Exception):
@@ -258,6 +263,86 @@ def _score_candidate(
     return ScoredCandidate(candidate, min(score, 1.0), reason)
 
 
+async def _score_candidates_from_index(
+    candidates: list[SearchCandidate],
+    *,
+    query: str | None,
+    ocr_text: str | None,
+    knowledge_base_id: UUID | None,
+    limit: int,
+    index_backend: SearchIndexBackend,
+) -> list[ScoredCandidate] | None:
+    queries: list[IndexQuery] = []
+    if query:
+        queries.append(
+            IndexQuery(
+                text=query,
+                channel="text",
+                weight=0.65 if ocr_text else 1.0,
+            )
+        )
+    if ocr_text:
+        queries.append(
+            IndexQuery(
+                text=ocr_text,
+                channel="ocr",
+                weight=0.35 if query else 1.0,
+            )
+        )
+    if not queries:
+        return []
+
+    knowledge_base_ids = (
+        {knowledge_base_id}
+        if knowledge_base_id is not None
+        else {candidate.knowledge_base.id for candidate in candidates}
+    )
+    hits = []
+    index_available = False
+    for target_knowledge_base_id in knowledge_base_ids:
+        target_collection_name = next(
+            (
+                candidate.knowledge_base.current_physical_collection_name
+                for candidate in candidates
+                if candidate.knowledge_base.id == target_knowledge_base_id
+            ),
+            None,
+        )
+        try:
+            target_hits = await index_backend.search(
+                knowledge_base_id=target_knowledge_base_id,
+                queries=queries,
+                limit=max(limit * 12, 24),
+                collection_name=target_collection_name,
+            )
+        except SearchIndexUnavailableError:
+            continue
+        index_available = True
+        hits.extend(target_hits)
+    if not index_available:
+        return None
+
+    best_by_candidate: dict[tuple[UUID, UUID], tuple[float, str]] = {}
+    for hit in hits:
+        key = (hit.knowledge_base_id, hit.child_revision_id)
+        previous = best_by_candidate.get(key)
+        if previous is None or hit.score > previous[0]:
+            best_by_candidate[key] = (hit.score, hit.match_reason)
+
+    scored: list[ScoredCandidate] = []
+    for candidate in candidates:
+        score_and_reason = best_by_candidate.get(
+            (candidate.knowledge_base.id, candidate.child_revision.id)
+        )
+        if score_and_reason is None:
+            score, reason = 0.0, "hybrid_dense_bm25"
+        else:
+            score, reason = score_and_reason
+        score += _helpful_bonus(candidate.publication.helpful_count)
+        scored.append(ScoredCandidate(candidate, min(score, 1.0), reason))
+    return scored
+
+
 async def search_published_content(
     session: AsyncSession,
     *,
@@ -266,6 +351,7 @@ async def search_published_content(
     ocr_text: str | None,
     knowledge_base_id: UUID | None,
     limit: int,
+    index_backend: SearchIndexBackend | None = None,
 ) -> SearchDetails:
     if knowledge_base_id is not None:
         knowledge_base = await session.get(KnowledgeBase, knowledge_base_id)
@@ -279,7 +365,18 @@ async def search_published_content(
         else SearchQueryMode.TEXT
     )
     candidates = await _load_candidates(session, knowledge_base_id=knowledge_base_id)
-    scored = [_score_candidate(item, query=query, ocr_text=ocr_text) for item in candidates]
+    scored = None
+    if index_backend is not None:
+        scored = await _score_candidates_from_index(
+            candidates,
+            query=query,
+            ocr_text=ocr_text,
+            knowledge_base_id=knowledge_base_id,
+            limit=limit,
+            index_backend=index_backend,
+        )
+    if scored is None:
+        scored = [_score_candidate(item, query=query, ocr_text=ocr_text) for item in candidates]
     selected = [item for item in scored if item.score >= SEARCH_THRESHOLD]
 
     fallback_queries = [value for value in (query, ocr_text) if value]

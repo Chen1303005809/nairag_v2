@@ -54,6 +54,7 @@ services:
       DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_FILE: /run/secrets/jwt_signing_key
       INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
+      INDEX_BACKEND_MODE: local_artifact
       WORKER_POLL_INTERVAL_SECONDS: "2"
       WORKER_LEASE_SECONDS: "300"
       COOKIE_SECURE: "false"

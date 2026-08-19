@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.db.session import create_session_factory
+from app.services.retrieval import create_search_index_backend
 from app.services.users import bootstrap_initial_admin
 
 
@@ -30,6 +31,7 @@ def create_app(
     app = FastAPI(title=active_settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.settings = active_settings
     app.state.session_factory = active_session_factory
+    app.state.search_index_backend = create_search_index_backend(active_settings)
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

@@ -22,6 +22,7 @@ from app.models.knowledge_content import (
     ReviewSubmissionTarget,
     ReviewTargetStatus,
 )
+from app.services.index_backend import LocalArtifactIndexBackend
 from app.services.index_jobs import run_next_index_job
 
 
@@ -34,6 +35,7 @@ async def build_test_app(tmp_path: Path) -> tuple[object, AsyncEngine]:
         database_url=f"sqlite+aiosqlite:///{database_path}",
         jwt_secret="test-signing-key-that-is-long-enough",
         cookie_secure=False,
+        index_artifact_dir=tmp_path / "index-artifacts",
         initial_admin_username="bootstrap-admin",
         initial_admin_password_file=initial_password_file,
     )
@@ -541,6 +543,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                             result = await run_next_index_job(
                                 session,
                                 worker_id="test-worker",
+                                backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
                             )
                             assert result is not None
                             assert result.status == IndexJobStatus.SUCCEEDED
@@ -578,6 +581,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         result = await run_next_index_job(
                             session,
                             worker_id="test-worker",
+                            backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
                         )
                         assert result is not None
                         assert result.status == IndexJobStatus.SUCCEEDED

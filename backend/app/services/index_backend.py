@@ -5,25 +5,42 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 from uuid import UUID, uuid5
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.knowledge_base import KnowledgeBase
 from app.models.knowledge_content import (
     ChildRevision,
     ChildRevisionQuestionVariant,
     IndexJob,
 )
+from app.services.embedding import (
+    DEFAULT_EMBEDDING_DIMENSION,
+    DeterministicEmbeddingProvider,
+    EmbeddingProvider,
+)
+from app.services.embedding import (
+    deterministic_hash_vector as _deterministic_hash_vector,
+)
 
-VECTOR_DIMENSION: Final = 1024
+VECTOR_DIMENSION: Final = DEFAULT_EMBEDDING_DIMENSION
 RESPONSE_CHUNK_SIZE: Final = 1_200
 RESPONSE_CHUNK_OVERLAP: Final = 120
 SOURCE_ID_NAMESPACE: Final = UUID("2b41df37-dfbb-5e08-a4c6-b43fb0ff4f5a")
 TOKEN_PATTERN: Final = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]")
+
+
+def deterministic_hash_vector(value: str, *, dimension: int = VECTOR_DIMENSION) -> list[float]:
+    """Backward-compatible export for the offline embedding contract."""
+
+    return _deterministic_hash_vector(value, dimension=dimension)
 
 
 @dataclass(frozen=True)
@@ -36,6 +53,7 @@ class IndexFragment:
     dense_vector: list[float]
     sparse_terms: dict[str, int]
     content_hash: str
+    embedding_model: str
 
 
 def stable_source_item_id(
@@ -63,26 +81,6 @@ def _sparse_terms(value: str) -> dict[str, int]:
     return counts
 
 
-def deterministic_hash_vector(value: str, *, dimension: int = VECTOR_DIMENSION) -> list[float]:
-    """Create a reproducible local vector for development and contract tests.
-
-    This is intentionally not presented as a semantic embedding model. Production
-    deployments replace this function through the same fragment contract with the
-    pinned Qwen embedding service.
-    """
-
-    raw_values: list[float] = []
-    encoded = value.encode("utf-8")
-    for index in range(dimension):
-        digest = hashlib.sha256(index.to_bytes(4, "big") + encoded).digest()
-        integer = int.from_bytes(digest[:8], "big", signed=False)
-        raw_values.append((integer / 2**63) - 1.0)
-    norm = sum(item * item for item in raw_values) ** 0.5
-    if norm == 0:
-        return [0.0] * dimension
-    return [round(item / norm, 8) for item in raw_values]
-
-
 def _response_chunks(value: str) -> list[str]:
     if len(value) <= RESPONSE_CHUNK_SIZE:
         return [value]
@@ -105,6 +103,8 @@ def _fragment(
     field_type: str,
     field_text: str,
     ordinal: int,
+    dense_vector: list[float],
+    embedding_model: str,
 ) -> IndexFragment:
     normalized = field_text.strip()
     content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -121,9 +121,10 @@ def _fragment(
         field_type=field_type,
         field_text=normalized,
         ordinal=ordinal,
-        dense_vector=deterministic_hash_vector(normalized),
+        dense_vector=dense_vector,
         sparse_terms=_sparse_terms(normalized),
         content_hash=content_hash,
+        embedding_model=embedding_model,
     )
 
 
@@ -131,6 +132,7 @@ async def build_index_fragments(
     session: AsyncSession,
     *,
     child_revision_id: UUID,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> list[IndexFragment]:
     revision = await session.get(ChildRevision, child_revision_id)
     if revision is None:
@@ -144,32 +146,34 @@ async def build_index_fragments(
             )
         ).all()
     )
-    fragments = [
-        _fragment(
-            revision_id=revision.id,
-            field_type="question",
-            field_text=revision.question,
-            ordinal=0,
-        )
-    ]
-    fragments.extend(
-        _fragment(
-            revision_id=revision.id,
-            field_type="question_variant",
-            field_text=variant.question_text,
-            ordinal=index,
-        )
+    fragment_inputs: list[tuple[str, str, int]] = [("question", revision.question, 0)]
+    fragment_inputs.extend(
+        ("question_variant", variant.question_text, index)
         for index, variant in enumerate(variants)
     )
-    fragments.extend(
-        _fragment(
-            revision_id=revision.id,
-            field_type="response_content",
-            field_text=chunk,
-            ordinal=index,
-        )
+    fragment_inputs.extend(
+        ("response_content", chunk, index)
         for index, chunk in enumerate(_response_chunks(revision.response_content))
     )
+    provider = embedding_provider or DeterministicEmbeddingProvider(dimension=VECTOR_DIMENSION)
+    texts = [text.strip() for _field_type, text, _ordinal in fragment_inputs]
+    vectors = await provider.embed_texts(texts)
+    if len(vectors) != len(fragment_inputs):
+        raise ValueError("embedding provider returned an unexpected vector count")
+    fragments: list[IndexFragment] = []
+    for (field_type, field_text, ordinal), vector in zip(fragment_inputs, vectors, strict=True):
+        if len(vector) != provider.dimension:
+            raise ValueError(f"embedding dimension must be exactly {provider.dimension}")
+        fragments.append(
+            _fragment(
+                revision_id=revision.id,
+                field_type=field_type,
+                field_text=field_text,
+                ordinal=ordinal,
+                dense_vector=vector,
+                embedding_model=provider.model_name,
+            )
+        )
     return fragments
 
 
@@ -180,8 +184,16 @@ class LocalArtifactIndexBackend:
     later Milvus writer. It is never used as the publication source of truth.
     """
 
-    def __init__(self, artifact_dir: Path) -> None:
+    def __init__(
+        self,
+        artifact_dir: Path,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self.artifact_dir = artifact_dir
+        self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider(
+            dimension=VECTOR_DIMENSION
+        )
 
     async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
         if job.child_revision_id is None or job.knowledge_base_id is None:
@@ -189,6 +201,7 @@ class LocalArtifactIndexBackend:
         fragments = await build_index_fragments(
             session,
             child_revision_id=job.child_revision_id,
+            embedding_provider=self.embedding_provider,
         )
         if not fragments:
             raise ValueError("child revision has no indexable content")
@@ -199,6 +212,8 @@ class LocalArtifactIndexBackend:
             "knowledge_base_id": str(job.knowledge_base_id),
             "child_id": str(job.child_id) if job.child_id else None,
             "child_revision_id": str(job.child_revision_id),
+            "embedding_model": self.embedding_provider.model_name,
+            "embedding_dimension": self.embedding_provider.dimension,
             "fragments": [asdict(fragment) for fragment in fragments],
         }
         destination = (
@@ -227,3 +242,125 @@ class LocalArtifactIndexBackend:
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
+
+
+class MilvusWriter(Protocol):
+    async def upsert(
+        self,
+        *,
+        collection_name: str,
+        rows: Sequence[dict[str, object]],
+    ) -> None:
+        ...
+
+
+class MilvusHttpWriter:
+    """Write rows through Milvus REST v2's idempotent upsert endpoint.
+
+    The target collection is created and indexed by deployment tooling with a
+    VARCHAR ``source_item_id`` primary key, a 1024-dimension ``dense_vector``,
+    the metadata fields in ``_milvus_rows`` below, and a BM25 function over
+    ``field_text``. Upsert makes retries safe without treating Milvus as the
+    publication source of truth.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        timeout_seconds: float = 60.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        normalized_url = base_url.rstrip("/")
+        if not normalized_url:
+            raise ValueError("base_url must not be empty")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.base_url = normalized_url
+        self.token = token
+        self.timeout_seconds = timeout_seconds
+        self._client = client
+
+    async def upsert(
+        self,
+        *,
+        collection_name: str,
+        rows: Sequence[dict[str, object]],
+    ) -> None:
+        if not collection_name:
+            raise ValueError("collection_name must not be empty")
+        if not rows:
+            return
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        client = self._client
+        owns_client = client is None
+        if client is None:
+            client = httpx.AsyncClient(timeout=self.timeout_seconds)
+        try:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/v2/vectordb/entities/upsert",
+                    json={"collectionName": collection_name, "data": list(rows)},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise RuntimeError("Milvus upsert request failed") from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+        if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
+            raise RuntimeError(f"Milvus upsert failed: {payload.get('message', 'unknown error')}")
+
+
+class MilvusIndexBackend:
+    """Build Qwen-compatible fragments and upsert them into the current collection."""
+
+    def __init__(
+        self,
+        *,
+        writer: MilvusWriter,
+        embedding_provider: EmbeddingProvider,
+    ) -> None:
+        if embedding_provider.dimension != VECTOR_DIMENSION:
+            raise ValueError(f"embedding dimension must be exactly {VECTOR_DIMENSION}")
+        self.writer = writer
+        self.embedding_provider = embedding_provider
+
+    async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
+        if (
+            job.child_revision_id is None
+            or job.knowledge_base_id is None
+            or job.child_id is None
+        ):
+            raise ValueError("index job is missing target fields")
+        knowledge_base = await session.get(KnowledgeBase, job.knowledge_base_id)
+        if knowledge_base is None or not knowledge_base.is_active:
+            raise ValueError("knowledge base is missing or inactive")
+        fragments = await build_index_fragments(
+            session,
+            child_revision_id=job.child_revision_id,
+            embedding_provider=self.embedding_provider,
+        )
+        if not fragments:
+            raise ValueError("child revision has no indexable content")
+        rows = [
+            {
+                "source_item_id": fragment.source_item_id,
+                "child_id": str(job.child_id),
+                "child_revision_id": fragment.child_revision_id,
+                "field_type": fragment.field_type,
+                "field_text": fragment.field_text,
+                "dense_vector": fragment.dense_vector,
+                "sparse_terms": fragment.sparse_terms,
+                "content_hash": fragment.content_hash,
+                "embedding_model": fragment.embedding_model,
+            }
+            for fragment in fragments
+        ]
+        await self.writer.upsert(
+            collection_name=knowledge_base.current_physical_collection_name,
+            rows=rows,
+        )

@@ -12,10 +12,37 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.db.session import create_session_factory
-from app.services.index_backend import LocalArtifactIndexBackend
+from app.services.embedding import QwenEmbeddingProvider
+from app.services.index_backend import (
+    LocalArtifactIndexBackend,
+    MilvusHttpWriter,
+    MilvusIndexBackend,
+)
 from app.services.index_jobs import IndexBackend, IndexWorkerResult, run_index_worker_once
 
 logger = logging.getLogger("nairag.index-worker")
+
+
+def create_index_backend(settings: Settings) -> IndexBackend:
+    if settings.index_backend_mode == "local_artifact":
+        return LocalArtifactIndexBackend(settings.index_artifact_dir)
+    if settings.embedding_service_url is None or settings.milvus_url is None:
+        raise RuntimeError("Milvus indexing requires embedding and Milvus service URLs")
+    embedding_provider = QwenEmbeddingProvider(
+        settings.embedding_service_url,
+        api_key=settings.embedding_api_key,
+        model_name=settings.embedding_model,
+        dimension=settings.embedding_dimension,
+        timeout_seconds=settings.embedding_timeout_seconds,
+    )
+    return MilvusIndexBackend(
+        writer=MilvusHttpWriter(
+            settings.milvus_url,
+            token=settings.milvus_token,
+            timeout_seconds=settings.embedding_timeout_seconds,
+        ),
+        embedding_provider=embedding_provider,
+    )
 
 
 def resolve_worker_id(settings: Settings) -> str:
@@ -65,7 +92,7 @@ async def run_worker(
     active_factory = session_factory or create_session_factory(
         active_settings.database_url_with_password
     )
-    active_backend = backend or LocalArtifactIndexBackend(active_settings.index_artifact_dir)
+    active_backend = backend or create_index_backend(active_settings)
     active_stop_event = stop_event or asyncio.Event()
     if stop_event is None:
         _install_signal_handlers(active_stop_event)
@@ -129,7 +156,7 @@ async def _run_once(settings: Settings) -> None:
         result = await run_index_worker_once(
             factory,
             worker_id=resolve_worker_id(settings),
-            backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
+            backend=create_index_backend(settings),
             lease_seconds=settings.worker_lease_seconds,
         )
         if result is not None:
