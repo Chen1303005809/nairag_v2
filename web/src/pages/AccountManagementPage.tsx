@@ -146,15 +146,19 @@ export function AccountManagementPage(): JSX.Element {
           <Button type="link" onClick={() => openEdit(user)}>
             编辑
           </Button>
-          <Popconfirm
-            title={`重置 ${user.display_name} 的密码？`}
-            description="旧登录令牌会立即失效。"
-            okText="重置"
-            cancelText="取消"
-            onConfirm={() => resetPassword(user)}
-          >
-            <Button type="link">重置密码</Button>
-          </Popconfirm>
+          {user.role === "system_admin" ? (
+            <Typography.Text type="secondary">请本人自定义修改</Typography.Text>
+          ) : (
+            <Popconfirm
+              title={`重置 ${user.display_name} 的密码？`}
+              description="旧登录令牌会立即失效。"
+              okText="重置"
+              cancelText="取消"
+              onConfirm={() => resetPassword(user)}
+            >
+              <Button type="link">重置密码</Button>
+            </Popconfirm>
+          )}
         </Space>
       )
     }
@@ -166,7 +170,7 @@ export function AccountManagementPage(): JSX.Element {
         <div>
           <Typography.Title level={3}>账号管理</Typography.Title>
           <Typography.Paragraph type="secondary">
-            创建、启停、分配角色或重置系统账号。临时密码只会显示一次。
+            创建、启停、分配角色或重置账号；系统管理员密码需由本人输入当前密码后自定义修改。临时密码只会显示一次。
           </Typography.Paragraph>
         </div>
         <Button type="primary" onClick={() => setCreateOpen(true)}>
@@ -241,4 +245,3 @@ export function AccountManagementPage(): JSX.Element {
     </section>
   );
 }
-

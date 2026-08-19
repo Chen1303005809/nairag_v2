@@ -45,6 +45,7 @@ const SearchPage = lazy(async () => {
 function App(): JSX.Element {
   const [user, setUser] = useState<User>();
   const [loading, setLoading] = useState(true);
+  const [changingPassword, setChangingPassword] = useState(false);
 
   useEffect(() => {
     const loadSession = async (): Promise<void> => {
@@ -69,6 +70,7 @@ function App(): JSX.Element {
   const handlePasswordChange = async (currentPassword: string, newPassword: string): Promise<void> => {
     const result = await api.changePassword(currentPassword, newPassword);
     setUser(result.user);
+    setChangingPassword(false);
     message.success("密码已修改");
   };
 
@@ -94,11 +96,23 @@ function App(): JSX.Element {
   if (!user) {
     return <LoginPage onLogin={handleLogin} />;
   }
-  if (user.must_change_password) {
-    return <ChangePasswordPage onChangePassword={handlePasswordChange} />;
+  if (user.must_change_password || changingPassword) {
+    return (
+      <ChangePasswordPage
+        forced={user.must_change_password}
+        onChangePassword={handlePasswordChange}
+        onCancel={user.must_change_password ? undefined : () => setChangingPassword(false)}
+      />
+    );
   }
 
   const menuItems = [
+    {
+      key: "change-password",
+      icon: <UserOutlined />,
+      label: "修改密码",
+      onClick: () => setChangingPassword(true)
+    },
     {
       key: "logout",
       icon: <LogoutOutlined />,

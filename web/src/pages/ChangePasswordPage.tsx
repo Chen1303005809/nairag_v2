@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Form, Input, Typography } from "antd";
+import { Alert, Button, Card, Form, Input, Space, Typography } from "antd";
 import { useState } from "react";
 
 interface ChangePasswordValues {
@@ -9,9 +9,15 @@ interface ChangePasswordValues {
 
 interface ChangePasswordPageProps {
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  forced?: boolean;
+  onCancel?: () => void;
 }
 
-export function ChangePasswordPage({ onChangePassword }: ChangePasswordPageProps): JSX.Element {
+export function ChangePasswordPage({
+  onChangePassword,
+  forced = false,
+  onCancel
+}: ChangePasswordPageProps): JSX.Element {
   const [form] = Form.useForm<ChangePasswordValues>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -31,9 +37,11 @@ export function ChangePasswordPage({ onChangePassword }: ChangePasswordPageProps
   return (
     <main className="auth-page">
       <Card className="auth-card" variant="borderless">
-        <Typography.Title level={2}>请修改临时密码</Typography.Title>
+        <Typography.Title level={2}>{forced ? "请修改临时密码" : "修改密码"}</Typography.Title>
         <Typography.Paragraph type="secondary">
-          为保护账号安全，临时密码不能继续用于系统操作。
+          {forced
+            ? "为保护账号安全，临时密码不能继续用于系统操作。"
+            : "请输入当前密码，并设置由你本人选择的新密码。"}
         </Typography.Paragraph>
         {error ? <Alert className="form-alert" type="error" showIcon message={error} /> : null}
         <Form<ChangePasswordValues> form={form} layout="vertical" onFinish={submit} requiredMark={false}>
@@ -71,9 +79,16 @@ export function ChangePasswordPage({ onChangePassword }: ChangePasswordPageProps
           >
             <Input.Password autoComplete="new-password" />
           </Form.Item>
-          <Button type="primary" htmlType="submit" block loading={submitting}>
-            保存新密码
-          </Button>
+          <Space direction="vertical" size="small" style={{ width: "100%" }}>
+            <Button type="primary" htmlType="submit" block loading={submitting}>
+              保存新密码
+            </Button>
+            {onCancel ? (
+              <Button block disabled={submitting} onClick={onCancel}>
+                取消
+              </Button>
+            ) : null}
+          </Space>
         </Form>
       </Card>
     </main>

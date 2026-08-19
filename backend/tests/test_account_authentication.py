@@ -154,6 +154,13 @@ async def test_initial_admin_must_change_password_and_csrf_is_required(tmp_path:
                 assert users.status_code == 200
                 assert [user["username"] for user in users.json()] == ["bootstrap-admin"]
 
+                reset_system_admin = await client.post(
+                    f"/api/v1/users/{users.json()[0]['id']}/reset-password",
+                    headers=csrf_headers(client, settings),
+                )
+                assert reset_system_admin.status_code == 400
+                assert "自定义新密码" in reset_system_admin.json()["detail"]
+
                 cannot_disable_last_admin = await client.patch(
                     f"/api/v1/users/{users.json()[0]['id']}",
                     headers=csrf_headers(client, settings),

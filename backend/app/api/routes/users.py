@@ -176,6 +176,11 @@ async def reset_user_password(
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> TemporaryPasswordResponse:
     user = await get_target_user(session, user_id)
+    if user.role == UserRole.SYSTEM_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="系统管理员必须使用本人当前密码设置自定义新密码",
+        )
     temporary_password = new_temporary_password()
     user.password_hash = hash_password(temporary_password, settings)
     user.must_change_password = True
