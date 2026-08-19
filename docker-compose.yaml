@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16.8-alpine
+    environment:
+      POSTGRES_DB: nairag
+      POSTGRES_USER: nairag
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nairag -d nairag"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ./backend
+    command: >-
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      APP_ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://nairag@postgres:5432/nairag
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      JWT_SECRET_FILE: /run/secrets/jwt_signing_key
+      INITIAL_ADMIN_PASSWORD_FILE: /run/secrets/initial_admin_password
+      INITIAL_ADMIN_USERNAME: admin
+      COOKIE_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    secrets:
+      - postgres_password
+      - jwt_signing_key
+      - initial_admin_password
+
+volumes:
+  postgres_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  jwt_signing_key:
+    file: ./secrets/jwt_signing_key.txt
+  initial_admin_password:
+    file: ./secrets/initial_admin_password.txt

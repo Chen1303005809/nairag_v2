@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.api.router import api_router
+from app.core.config import Settings, get_settings
+from app.db.session import create_session_factory
+from app.services.users import bootstrap_initial_admin
+
+
+def create_app(
+    *,
+    settings: Settings | None = None,
+    db_session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> FastAPI:
+    active_settings = settings or get_settings()
+    active_session_factory = db_session_factory or create_session_factory(
+        active_settings.database_url_with_password
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await bootstrap_initial_admin(app.state.session_factory, app.state.settings)
+        yield
+
+    app = FastAPI(title=active_settings.app_name, version="0.1.0", lifespan=lifespan)
+    app.state.settings = active_settings
+    app.state.session_factory = active_session_factory
+
+    @app.get("/health", tags=["system"])
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    app.include_router(api_router)
+    return app
+
+
+app = create_app()
