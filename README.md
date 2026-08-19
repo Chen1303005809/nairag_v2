@@ -55,4 +55,4 @@ Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登�
 
 ## 容器开发
 
-`docker compose up --build` 会启动 PostgreSQL、API、前端和独立索引 worker。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。API 与 worker 共享只读/读写隔离的 `index_artifacts` volume：worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
+`docker compose up --build` 会启动 PostgreSQL、API、前端和独立索引 worker。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
