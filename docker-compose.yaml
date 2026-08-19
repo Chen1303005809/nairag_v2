@@ -28,11 +28,15 @@ services:
       INITIAL_ADMIN_PASSWORD_FILE: /run/secrets/initial_admin_password
       INITIAL_ADMIN_USERNAME: admin
       COOKIE_SECURE: "false"
+      INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
+      INDEX_BACKEND_MODE: local_artifact
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - index_artifacts:/var/lib/nairag/index-artifacts:ro
     healthcheck:
       test:
         ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

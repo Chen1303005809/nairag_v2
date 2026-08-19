@@ -34,6 +34,13 @@
    uvicorn app.main:app --reload
    ```
 
+   另开一个终端启动文本索引 worker：
+
+   ```bash
+   cd backend
+   python worker.py
+   ```
+
 API 文档位于 `http://127.0.0.1:8000/docs`。登录前需先请求 `GET /api/v1/auth/csrf` 获取 `nairag_pre_auth_csrf` Cookie；所有已认证的变更请求则需要 `nairag_csrf` Cookie 及匹配的 `X-CSRF-Token` 请求头。前端已自动处理这两个步骤。
 
 4. 启动前端（另开一个终端）：
@@ -48,4 +55,4 @@ Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登�
 
 ## 容器开发
 
-`docker compose up --build` 会启动 PostgreSQL、API 和独立索引 worker。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，将开发用的确定性索引产物写入 `index_artifacts` volume，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
+`docker compose up --build` 会启动 PostgreSQL、API 和独立索引 worker。API 与 worker 共享只读/读写隔离的 `index_artifacts` volume：worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。

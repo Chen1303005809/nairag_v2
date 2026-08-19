@@ -23,7 +23,7 @@ from app.models.knowledge_content import (
     ReviewTargetStatus,
 )
 from app.services.index_backend import LocalArtifactIndexBackend
-from app.services.index_jobs import run_next_index_job
+from app.services.index_jobs import run_index_worker_once
 
 
 async def build_test_app(tmp_path: Path) -> tuple[object, AsyncEngine]:
@@ -539,15 +539,14 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         jobs = list((await session.scalars(select(IndexJob))).all())
                         assert len(jobs) == 2
                         assert {job.status for job in jobs} == {IndexJobStatus.PENDING}
-                        for _ in jobs:
-                            result = await run_next_index_job(
-                                session,
-                                worker_id="test-worker",
-                                backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
-                            )
-                            assert result is not None
-                            assert result.status == IndexJobStatus.SUCCEEDED
-                        await session.commit()
+                    for _ in jobs:
+                        result = await run_index_worker_once(
+                            app.state.session_factory,  # type: ignore[attr-defined]
+                            worker_id="test-worker",
+                            backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
+                        )
+                        assert result is not None
+                        assert result.status == IndexJobStatus.SUCCEEDED
 
                     parent_id = submitted.json()["parent_id"]
                     available = await author.get("/api/v1/knowledge-content/parents/available")
@@ -577,15 +576,13 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         json={"decision": "approved"},
                     )
                     assert approve_child.status_code == 201
-                    async with app.state.session_factory() as session:  # type: ignore[attr-defined]
-                        result = await run_next_index_job(
-                            session,
-                            worker_id="test-worker",
-                            backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
-                        )
-                        assert result is not None
-                        assert result.status == IndexJobStatus.SUCCEEDED
-                        await session.commit()
+                    result = await run_index_worker_once(
+                        app.state.session_factory,  # type: ignore[attr-defined]
+                        worker_id="test-worker",
+                        backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
+                    )
+                    assert result is not None
+                    assert result.status == IndexJobStatus.SUCCEEDED
 
                     reject_child = await reviewer.post(
                         f"/api/v1/knowledge-content/review-submissions/{child_submission_id}"
@@ -611,6 +608,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     search_payload = search.json()
                     assert search_payload["no_match"] is False
                     result_item = search_payload["groups"][0]["children"][0]
+                    assert result_item["match_reason"].startswith("hybrid_dense_bm25")
                     feedback = await author.post(
                         f"/api/v1/search/events/{search_payload['search_event_id']}/feedback",
                         headers=csrf_headers(author, settings),
