@@ -51,8 +51,8 @@ API 文档位于 `http://127.0.0.1:8000/docs`。登录前需先请求 `GET /api/
    npm run dev
    ```
 
-Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登录。生产环境将由后续部署模块使用 Nginx 托管并反向代理。
+Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登录。Compose 容器运行时则由 `web` 服务中的 Nginx 托管构建产物，并将 `/api/` 反向代理到 `api` 服务。
 
 ## 容器开发
 
-`docker compose up --build` 会启动 PostgreSQL、API 和独立索引 worker。API 与 worker 共享只读/读写隔离的 `index_artifacts` volume：worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
+`docker compose up --build` 会启动 PostgreSQL、API、前端和独立索引 worker。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。API 与 worker 共享只读/读写隔离的 `index_artifacts` volume：worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
