@@ -49,7 +49,6 @@ interface ParentSubmissionFormValues {
     name: string;
     canonical_keyword: string;
     aliases?: string;
-    regexes?: string;
   };
   primary_child: ChildContentFormValues;
   knowledge_base_ids: string[];
@@ -73,6 +72,12 @@ function lines(value: string | undefined): string[] {
     .map((line) => line.trim())
     .filter(Boolean);
 }
+
+const parentTypeOptions = [
+  { label: "问题反馈", value: "问题反馈" },
+  { label: "需求提交", value: "需求提交" },
+  { label: "配置项咨询", value: "配置项咨询" }
+];
 
 function nullable(value: string | undefined): string | null {
   const normalized = value?.trim();
@@ -99,16 +104,10 @@ function toParentContent(values: ParentSubmissionFormValues["parent"]): ParentCo
   return {
     name: values.name,
     canonical_keyword: values.canonical_keyword,
-    lexical_rules: [
-      ...lines(values.aliases).map((ruleValue) => ({
-        rule_type: "alias" as const,
-        rule_value: ruleValue
-      })),
-      ...lines(values.regexes).map((ruleValue) => ({
-        rule_type: "regex" as const,
-        rule_value: ruleValue
-      }))
-    ]
+    lexical_rules: lines(values.aliases).map((ruleValue) => ({
+      rule_type: "alias" as const,
+      rule_value: ruleValue
+    }))
   };
 }
 
@@ -135,10 +134,6 @@ function toParentFormValues(revision: ReviewParentRevision): ParentSubmissionFor
     aliases: revision.lexical_rules
       .filter((rule) => rule.rule_type === "alias")
       .map((rule) => rule.rule_value)
-      .join("\n"),
-    regexes: revision.lexical_rules
-      .filter((rule) => rule.rule_type === "regex")
-      .map((rule) => rule.rule_value)
       .join("\n")
   };
 }
@@ -146,7 +141,11 @@ function toParentFormValues(revision: ReviewParentRevision): ParentSubmissionFor
 function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.Element {
   return (
     <>
-      <Form.Item name={[root, "question"]} label="问题" rules={[{ required: true, message: "请输入问题" }]}>
+      <Form.Item
+        name={[root, "question"]}
+        label="具体问题所属小类"
+        rules={[{ required: true, message: "请输入具体问题所属小类" }]}
+      >
         <Input.TextArea rows={2} placeholder="用户会提出的具体问题" />
       </Form.Item>
       <Form.Item
@@ -473,24 +472,25 @@ export function ContentSubmissionPage(): JSX.Element {
                     form={parentForm}
                     layout="vertical"
                     onFinish={(values) => void submitParent(values)}
-                    requiredMark={false}
+                    requiredMark
                   >
                     <Typography.Title level={5}>父类字段</Typography.Title>
-                    <Form.Item name={["parent", "name"]} label="父类名称" rules={[{ required: true }]}>
-                      <Input placeholder="例如：账号登录" />
+                    <Form.Item
+                      name={["parent", "name"]}
+                      label="类型"
+                      rules={[{ required: true, message: "请选择类型" }]}
+                    >
+                      <Select placeholder="请选择类型" options={parentTypeOptions} />
                     </Form.Item>
                     <Form.Item
                       name={["parent", "canonical_keyword"]}
-                      label="规范关键词"
-                      rules={[{ required: true }]}
+                      label="问题主关键词"
+                      rules={[{ required: true, message: "请输入问题主关键词" }]}
                     >
                       <Input placeholder="例如：登录" />
                     </Form.Item>
                     <Form.Item name={["parent", "aliases"]} label="别名">
                       <Input.TextArea rows={2} placeholder="每行一个，例如：登陆" />
-                    </Form.Item>
-                    <Form.Item name={["parent", "regexes"]} label="受控正则">
-                      <Input.TextArea rows={2} placeholder="每行一个；仅在确有必要时填写" />
                     </Form.Item>
                     <Typography.Title level={5}>主子条目字段</Typography.Title>
                     <ChildContentFields root="primary_child" />
@@ -526,7 +526,7 @@ export function ContentSubmissionPage(): JSX.Element {
                     form={childForm}
                     layout="vertical"
                     onFinish={(values) => void submitChild(values)}
-                    requiredMark={false}
+                    requiredMark
                   >
                     <Form.Item name="parent_id" label="父类" rules={[{ required: true, message: "请选择父类" }]}>
                       <Select
@@ -602,26 +602,27 @@ export function ContentSubmissionPage(): JSX.Element {
               form={resubmissionForm}
               layout="vertical"
               onFinish={(values) => void resubmitSubmission(values)}
-              requiredMark={false}
+              requiredMark
               style={{ marginTop: 16 }}
             >
               {editingSubmission.submission_kind === "parent_with_primary" && (
                 <>
                   <Typography.Title level={5}>父类字段</Typography.Title>
-                  <Form.Item name={["parent", "name"]} label="父类名称" rules={[{ required: true }]}>
-                    <Input />
+                  <Form.Item
+                    name={["parent", "name"]}
+                    label="类型"
+                    rules={[{ required: true, message: "请选择类型" }]}
+                  >
+                    <Select placeholder="请选择类型" options={parentTypeOptions} />
                   </Form.Item>
                   <Form.Item
                     name={["parent", "canonical_keyword"]}
-                    label="规范关键词"
-                    rules={[{ required: true }]}
+                    label="问题主关键词"
+                    rules={[{ required: true, message: "请输入问题主关键词" }]}
                   >
                     <Input />
                   </Form.Item>
                   <Form.Item name={["parent", "aliases"]} label="别名">
-                    <Input.TextArea rows={2} />
-                  </Form.Item>
-                  <Form.Item name={["parent", "regexes"]} label="受控正则">
                     <Input.TextArea rows={2} />
                   </Form.Item>
                   <Typography.Title level={5}>主子条目字段</Typography.Title>
