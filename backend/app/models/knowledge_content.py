@@ -280,6 +280,92 @@ class ChildRevisionQuestionVariant(Base):
     )
 
 
+class EvidenceAttachment(Base):
+    """A revision-scoped reference to an attachment shown with a knowledge answer.
+
+    An uploaded attachment starts unbound, then is atomically attached to an
+    immutable child revision when that revision is submitted. A later revision
+    receives a new metadata row that can safely reference the same stored object.
+    """
+
+    __tablename__ = "evidence_attachment"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint(
+            "child_revision_id",
+            "sort_order",
+            name="uq_evidence_attachment_revision_order",
+        ),
+        CheckConstraint(
+            "(child_revision_id IS NULL AND sort_order IS NULL) "
+            "OR (child_revision_id IS NOT NULL AND sort_order >= 0)",
+            name="ck_evidence_attachment_binding_shape",
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_evidence_attachment_size_positive"),
+        CheckConstraint(
+            "length(checksum_sha256) = 64",
+            name="ck_evidence_attachment_checksum_length",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    child_revision_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child_revision.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_by_user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("user_account.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    sort_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class WebLink(Base):
+    """A revision-scoped related web link shown with a knowledge answer."""
+
+    __tablename__ = "web_link"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint(
+            "child_revision_id",
+            "sort_order",
+            name="uq_web_link_revision_order",
+        ),
+        UniqueConstraint(
+            "child_revision_id",
+            "url",
+            name="uq_web_link_revision_url",
+        ),
+        CheckConstraint("sort_order >= 0", name="ck_web_link_order_nonnegative"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    child_revision_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("child_revision.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class ReviewSubmission(Base):
     """A candidate revision unit submitted for one or more knowledge bases."""
 
@@ -423,9 +509,7 @@ class ReviewDecision(Base):
     review_submission_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), nullable=False, index=True
     )
-    knowledge_base_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), nullable=False, index=True
-    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     decision: Mapped[ReviewDecisionKind] = mapped_column(
         SqlEnum(
             ReviewDecisionKind,

@@ -4,6 +4,7 @@ import {
   Card,
   Divider,
   Descriptions,
+  Image,
   Input,
   Select,
   Space,
@@ -456,13 +457,46 @@ export function SearchPage(): JSX.Element {
                             </Typography.Paragraph>
                           </Descriptions.Item>
                         ) : null}
-                        {item.internal_notes ? (
-                          <Descriptions.Item label="内部备注">
-                            <Typography.Paragraph
-                              style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                            >
-                              {item.internal_notes}
-                            </Typography.Paragraph>
+                        {item.attachments.length > 0 ? (
+                          <Descriptions.Item label="附件">
+                            <Space size={[8, 8]} wrap>
+                              {item.attachments.map((attachment) => {
+                                const downloadUrl = api.knowledgeAttachmentDownloadUrl(attachment.id);
+                                return attachment.content_type.startsWith("image/") ? (
+                                  <Image
+                                    key={attachment.id}
+                                    alt={attachment.name}
+                                    src={downloadUrl}
+                                    width={120}
+                                  />
+                                ) : (
+                                  <a
+                                    key={attachment.id}
+                                    href={downloadUrl}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  >
+                                    {attachment.name}
+                                  </a>
+                                );
+                              })}
+                            </Space>
+                          </Descriptions.Item>
+                        ) : null}
+                        {item.web_links.length > 0 ? (
+                          <Descriptions.Item label="相关网页链接">
+                            <Space direction="vertical" size={4}>
+                              {item.web_links.map((webLink) => (
+                                <a
+                                  key={webLink.url}
+                                  href={webLink.url}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  {webLink.title}
+                                </a>
+                              ))}
+                            </Space>
                           </Descriptions.Item>
                         ) : null}
                       </Descriptions>

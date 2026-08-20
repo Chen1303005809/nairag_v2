@@ -127,4 +127,3 @@ async def bootstrap_initial_admin(
 
 def mark_login(user: UserAccount) -> None:
     user.last_login_at = datetime.now(UTC)
-

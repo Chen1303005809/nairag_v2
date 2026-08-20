@@ -6,6 +6,7 @@ from app.models.knowledge_content import (
     ChildPublicationStatus,
     ChildRevision,
     ChildRevisionQuestionVariant,
+    EvidenceAttachment,
     HelpfulFeedbackEvent,
     IndexJob,
     IndexJobKind,
@@ -24,6 +25,7 @@ from app.models.knowledge_content import (
     SearchEvent,
     SearchQueryMode,
     SearchResultItem,
+    WebLink,
 )
 from app.models.user_account import UserAccount, UserRole
 
@@ -34,6 +36,7 @@ __all__ = [
     "ChildPublicationStatus",
     "ChildRevision",
     "ChildRevisionQuestionVariant",
+    "EvidenceAttachment",
     "HelpfulFeedbackEvent",
     "IndexJob",
     "IndexJobKind",
@@ -56,4 +59,5 @@ __all__ = [
     "SearchResultItem",
     "UserAccount",
     "UserRole",
+    "WebLink",
 ]

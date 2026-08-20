@@ -15,6 +15,7 @@ from app.models.knowledge_content import (
     ChildPublicationStatus,
     ChildRevision,
     ChildRevisionQuestionVariant,
+    EvidenceAttachment,
     IndexJob,
     IndexJobKind,
     IndexJobStatus,
@@ -28,6 +29,7 @@ from app.models.knowledge_content import (
     ReviewSubmissionStatus,
     ReviewSubmissionTarget,
     ReviewTargetStatus,
+    WebLink,
 )
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.knowledge_content import ChildContentInput, ParentContentInput
@@ -102,6 +104,17 @@ class RejectedTargetNotAllowedError(Exception):
     pass
 
 
+class AttachmentNotFoundError(Exception):
+    pass
+
+
+class AttachmentNotAllowedError(Exception):
+    pass
+
+
+MAX_ATTACHMENT_TOTAL_BYTES = 100 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class AvailableParentDetails:
     parent: Parent
@@ -119,6 +132,8 @@ class SubmissionDetails:
     parent_lexical_rules: list[ParentLexicalRule] = field(default_factory=list)
     child_revision: ChildRevision | None = None
     child_question_variants: list[ChildRevisionQuestionVariant] = field(default_factory=list)
+    child_attachments: list[EvidenceAttachment] = field(default_factory=list)
+    child_web_links: list[WebLink] = field(default_factory=list)
     submitter: UserAccount | None = None
     target_reviews: dict[UUID, TargetReviewDetails] = field(default_factory=dict)
 
@@ -139,6 +154,8 @@ class ReviewQueueDetails:
     parent_lexical_rules: list[ParentLexicalRule]
     child_revision: ChildRevision
     child_question_variants: list[ChildRevisionQuestionVariant]
+    child_attachments: list[EvidenceAttachment]
+    child_web_links: list[WebLink]
     review_decision: ReviewDecision | None = None
     reviewer: UserAccount | None = None
 
@@ -152,6 +169,8 @@ class ManagedKnowledgeDetails:
     parent_revision: ParentRevision | None
     child_revision: ChildRevision
     child_question_variants: list[ChildRevisionQuestionVariant]
+    child_attachments: list[EvidenceAttachment]
+    child_web_links: list[WebLink]
     submitter: UserAccount
     submitted_at: datetime
     embedded_at: datetime | None
@@ -165,6 +184,8 @@ class EditableContentDetails:
     parent_lexical_rules: list[ParentLexicalRule]
     child_revision: ChildRevision
     child_question_variants: list[ChildRevisionQuestionVariant]
+    child_attachments: list[EvidenceAttachment]
+    child_web_links: list[WebLink]
     knowledge_bases: list[KnowledgeBase]
 
 
@@ -315,6 +336,128 @@ async def _next_child_revision_number(session: AsyncSession, child_id: UUID) -> 
     return int(latest or 0) + 1
 
 
+async def _load_child_revision_evidence(
+    session: AsyncSession,
+    child_revision_ids: set[UUID],
+) -> tuple[dict[UUID, list[EvidenceAttachment]], dict[UUID, list[WebLink]]]:
+    """Load the ordered, revision-scoped evidence fields in two bounded queries."""
+
+    if not child_revision_ids:
+        return {}, {}
+
+    attachments_by_revision: dict[UUID, list[EvidenceAttachment]] = {}
+    attachments = await session.scalars(
+        select(EvidenceAttachment)
+        .where(EvidenceAttachment.child_revision_id.in_(child_revision_ids))
+        .order_by(EvidenceAttachment.child_revision_id, EvidenceAttachment.sort_order)
+    )
+    for attachment in attachments:
+        if attachment.child_revision_id is not None:
+            attachments_by_revision.setdefault(attachment.child_revision_id, []).append(attachment)
+
+    web_links_by_revision: dict[UUID, list[WebLink]] = {}
+    web_links = await session.scalars(
+        select(WebLink)
+        .where(WebLink.child_revision_id.in_(child_revision_ids))
+        .order_by(WebLink.child_revision_id, WebLink.sort_order)
+    )
+    for web_link in web_links:
+        web_links_by_revision.setdefault(web_link.child_revision_id, []).append(web_link)
+    return attachments_by_revision, web_links_by_revision
+
+
+async def _bind_attachments_to_child_revision(
+    session: AsyncSession,
+    *,
+    child_id: UUID,
+    child_revision: ChildRevision,
+    attachment_ids: list[UUID],
+    submitted_by_user_id: UUID,
+) -> None:
+    """Bind staged uploads or copy published references into a new revision.
+
+    A new revision never mutates evidence already attached to an older revision.
+    It receives a fresh metadata row that points at the same object when an
+    author retains an existing attachment.
+    """
+
+    if not attachment_ids:
+        return
+
+    attachments = list(
+        (
+            await session.scalars(
+                select(EvidenceAttachment)
+                .where(EvidenceAttachment.id.in_(attachment_ids))
+                .with_for_update()
+            )
+        ).all()
+    )
+    attachments_by_id = {attachment.id: attachment for attachment in attachments}
+    if len(attachments_by_id) != len(attachment_ids):
+        raise AttachmentNotFoundError()
+
+    total_bytes = sum(
+        attachments_by_id[attachment_id].size_bytes for attachment_id in attachment_ids
+    )
+    if total_bytes > MAX_ATTACHMENT_TOTAL_BYTES:
+        raise AttachmentNotAllowedError()
+
+    bound_attachment_ids = {
+        attachment.child_revision_id
+        for attachment in attachments
+        if attachment.child_revision_id is not None
+    }
+    source_children: dict[UUID, UUID] = {}
+    if bound_attachment_ids:
+        source_rows = await session.execute(
+            select(ChildRevision.id, ChildRevision.child_id).where(
+                ChildRevision.id.in_(bound_attachment_ids)
+            )
+        )
+        source_children = dict(source_rows.all())
+    published_source_revision_ids = set(
+        (
+            await session.scalars(
+                select(ChildKnowledgeBasePublication.active_revision_id).where(
+                    ChildKnowledgeBasePublication.status == ChildPublicationStatus.PUBLISHED,
+                    ChildKnowledgeBasePublication.active_revision_id.in_(bound_attachment_ids),
+                )
+            )
+        ).all()
+    )
+
+    for sort_order, attachment_id in enumerate(attachment_ids):
+        attachment = attachments_by_id[attachment_id]
+        if attachment.child_revision_id is None:
+            if attachment.uploaded_by_user_id != submitted_by_user_id:
+                raise AttachmentNotAllowedError()
+            attachment.child_revision_id = child_revision.id
+            attachment.sort_order = sort_order
+            continue
+
+        source_revision_id = attachment.child_revision_id
+        if source_children.get(source_revision_id) != child_id:
+            raise AttachmentNotAllowedError()
+        if (
+            attachment.uploaded_by_user_id != submitted_by_user_id
+            and source_revision_id not in published_source_revision_ids
+        ):
+            raise AttachmentNotAllowedError()
+        session.add(
+            EvidenceAttachment(
+                child_revision_id=child_revision.id,
+                name=attachment.name,
+                storage_key=attachment.storage_key,
+                content_type=attachment.content_type,
+                size_bytes=attachment.size_bytes,
+                checksum_sha256=attachment.checksum_sha256,
+                uploaded_by_user_id=attachment.uploaded_by_user_id,
+                sort_order=sort_order,
+            )
+        )
+
+
 async def _create_parent_revision(
     session: AsyncSession,
     *,
@@ -374,6 +517,22 @@ async def _create_child_revision(
             sort_order=index,
         )
         for index, question_variant in enumerate(content.question_variants)
+    )
+    await _bind_attachments_to_child_revision(
+        session,
+        child_id=child_id,
+        child_revision=child_revision,
+        attachment_ids=content.attachments,
+        submitted_by_user_id=created_by_user_id,
+    )
+    session.add_all(
+        WebLink(
+            child_revision_id=child_revision.id,
+            title=web_link.title,
+            url=web_link.url,
+            sort_order=index,
+        )
+        for index, web_link in enumerate(content.web_links)
     )
     return child_revision
 
@@ -774,9 +933,7 @@ async def resubmit_rejected_parent_aggregate(
     return SubmissionDetails(
         submission=submission,
         title=parent_revision.name,
-        targets=[
-            (target, knowledge_bases_by_id[target.knowledge_base_id]) for target in targets
-        ],
+        targets=[(target, knowledge_bases_by_id[target.knowledge_base_id]) for target in targets],
     )
 
 
@@ -862,8 +1019,7 @@ async def list_submissions_by_author(
             rules_by_revision.setdefault(rule.parent_revision_id, []).append(rule)
 
     child_revision_ids = {
-        child_revision.id
-        for _submission, _parent_revision, child_revision, _submitter in rows
+        child_revision.id for _submission, _parent_revision, child_revision, _submitter in rows
     }
     variants_by_revision: dict[UUID, list[ChildRevisionQuestionVariant]] = {}
     variant_rows = await session.scalars(
@@ -876,6 +1032,10 @@ async def list_submissions_by_author(
     )
     for variant in variant_rows:
         variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+    attachments_by_revision, web_links_by_revision = await _load_child_revision_evidence(
+        session,
+        child_revision_ids,
+    )
 
     reviewer = aliased(UserAccount)
     decision_rows = (
@@ -900,12 +1060,12 @@ async def list_submissions_by_author(
             targets=targets_by_submission_id.get(submission.id, []),
             parent_revision=parent_revision,
             parent_lexical_rules=(
-                rules_by_revision.get(parent_revision.id, [])
-                if parent_revision is not None
-                else []
+                rules_by_revision.get(parent_revision.id, []) if parent_revision is not None else []
             ),
             child_revision=child_revision,
             child_question_variants=variants_by_revision.get(child_revision.id, []),
+            child_attachments=attachments_by_revision.get(child_revision.id, []),
+            child_web_links=web_links_by_revision.get(child_revision.id, []),
             submitter=submitter,
             target_reviews={
                 target.knowledge_base_id: reviews_by_target[
@@ -1002,6 +1162,10 @@ async def list_managed_knowledge_entries(
     )
     for variant in variant_rows:
         variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+    attachments_by_revision, web_links_by_revision = await _load_child_revision_evidence(
+        session,
+        child_revision_ids,
+    )
 
     embedded_at_by_revision_and_knowledge_base: dict[tuple[UUID, UUID], datetime] = {}
     index_rows = (
@@ -1049,6 +1213,8 @@ async def list_managed_knowledge_entries(
                 parent_revision=parent_revision,
                 child_revision=child_revision,
                 child_question_variants=variants_by_revision.get(child_revision.id, []),
+                child_attachments=attachments_by_revision.get(child_revision.id, []),
+                child_web_links=web_links_by_revision.get(child_revision.id, []),
                 submitter=submitter,
                 submitted_at=submission.submitted_at,
                 embedded_at=embedded_at_by_revision_and_knowledge_base.get(
@@ -1108,6 +1274,8 @@ async def list_editable_content_entries(
                 ),
                 child_revision=first.child_revision,
                 child_question_variants=first.child_question_variants,
+                child_attachments=first.child_attachments,
+                child_web_links=first.child_web_links,
                 knowledge_bases=[entry.knowledge_base for entry in entries],
             )
         )
@@ -1208,7 +1376,8 @@ async def list_review_queue(
         return []
 
     parent_revision_ids = {
-        parent_revision.id for _target, _submission, _kb, _user, parent_revision, _child in rows
+        parent_revision.id
+        for _target, _submission, _kb, _user, parent_revision, _child in rows
         if parent_revision is not None
     }
     child_revision_ids = {child_revision.id for *_prefix, child_revision in rows}
@@ -1232,6 +1401,10 @@ async def list_review_queue(
     )
     for variant in variant_rows:
         variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+    attachments_by_revision, web_links_by_revision = await _load_child_revision_evidence(
+        session,
+        child_revision_ids,
+    )
 
     return [
         ReviewQueueDetails(
@@ -1241,12 +1414,12 @@ async def list_review_queue(
             submitter=submitter,
             parent_revision=parent_revision,
             parent_lexical_rules=(
-                rules_by_revision.get(parent_revision.id, [])
-                if parent_revision is not None
-                else []
+                rules_by_revision.get(parent_revision.id, []) if parent_revision is not None else []
             ),
             child_revision=child_revision,
             child_question_variants=variants_by_revision.get(child_revision.id, []),
+            child_attachments=attachments_by_revision.get(child_revision.id, []),
+            child_web_links=web_links_by_revision.get(child_revision.id, []),
         )
         for target, submission, knowledge_base, submitter, parent_revision, child_revision in rows
     ]
@@ -1345,6 +1518,10 @@ async def list_review_history(
     )
     for variant in variant_rows:
         variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+    attachments_by_revision, web_links_by_revision = await _load_child_revision_evidence(
+        session,
+        child_revision_ids,
+    )
 
     return [
         ReviewQueueDetails(
@@ -1354,12 +1531,12 @@ async def list_review_history(
             submitter=submitter,
             parent_revision=parent_revision,
             parent_lexical_rules=(
-                rules_by_revision.get(parent_revision.id, [])
-                if parent_revision is not None
-                else []
+                rules_by_revision.get(parent_revision.id, []) if parent_revision is not None else []
             ),
             child_revision=child_revision,
             child_question_variants=variants_by_revision.get(child_revision.id, []),
+            child_attachments=attachments_by_revision.get(child_revision.id, []),
+            child_web_links=web_links_by_revision.get(child_revision.id, []),
             review_decision=decision,
             reviewer=reviewer,
         )

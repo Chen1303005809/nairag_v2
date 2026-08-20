@@ -80,6 +80,18 @@ export interface ParentContentInput {
   lexical_rules: ParentLexicalRuleInput[];
 }
 
+export interface EvidenceAttachment {
+  id: string;
+  name: string;
+  content_type: string;
+  size_bytes: number;
+}
+
+export interface WebLinkInput {
+  title: string;
+  url: string;
+}
+
 export interface ChildContentInput {
   question: string;
   response_content: string;
@@ -92,6 +104,8 @@ export interface ChildContentInput {
   feature_explanation?: string | null;
   example?: string | null;
   internal_notes?: string | null;
+  attachments: string[];
+  web_links: WebLinkInput[];
 }
 
 export interface AvailableKnowledgeBase {
@@ -146,9 +160,10 @@ export interface ReviewParentRevision {
   lexical_rules: ParentLexicalRuleInput[];
 }
 
-export interface ReviewChildRevision extends ChildContentInput {
+export interface ReviewChildRevision extends Omit<ChildContentInput, "attachments"> {
   id: string;
   revision_number: number;
+  attachments: EvidenceAttachment[];
 }
 
 export interface ReviewQueueItem {
@@ -225,7 +240,8 @@ export interface SearchResult {
   customer_type: string | null;
   feature_explanation: string | null;
   example: string | null;
-  internal_notes: string | null;
+  attachments: EvidenceAttachment[];
+  web_links: WebLinkInput[];
   helpful_count: number;
   match_reason: string;
 }

@@ -56,6 +56,9 @@ services:
       OCR_MAX_IMAGE_BYTES: ${OCR_MAX_IMAGE_BYTES:-10485760}
       OCR_TICKET_TTL_SECONDS: ${OCR_TICKET_TTL_SECONDS:-600}
       OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE: ${OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE:-0.9}
+      ATTACHMENT_STORAGE_BACKEND: local
+      ATTACHMENT_STORAGE_DIR: /var/lib/nairag/attachments
+      ATTACHMENT_MAX_FILE_BYTES: ${ATTACHMENT_MAX_FILE_BYTES:-20971520}
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,6 +68,7 @@ services:
       - "8000:8000"
     volumes:
       - ./volumes/index_artifacts:/var/lib/nairag/index-artifacts:ro
+      - ./volumes/attachments:/var/lib/nairag/attachments
     healthcheck:
       test:
         ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

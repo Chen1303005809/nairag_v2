@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -28,6 +29,19 @@ def normalize_optional_content(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def normalize_http_url(value: str, label: str) -> str:
+    normalized = value.strip()
+    parsed = urlsplit(normalized)
+    if (
+        not normalized
+        or any(character.isspace() for character in normalized)
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+    ):
+        raise ValueError(f"{label}必须是有效的 http 或 https 链接")
+    return normalized
 
 
 class ParentLexicalRuleInput(BaseModel):
@@ -83,6 +97,28 @@ class ParentContentInput(BaseModel):
         return self
 
 
+class EvidenceAttachmentResponse(BaseModel):
+    id: UUID
+    name: str
+    content_type: str
+    size_bytes: int
+
+
+class WebLinkInput(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    url: str = Field(min_length=1, max_length=2_048)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        return normalize_required_content(value, "网页链接标题")
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return normalize_http_url(value, "网页链接")
+
+
 class ChildContentInput(BaseModel):
     question: str = Field(min_length=1, max_length=4_000)
     response_content: str = Field(min_length=1, max_length=16_000)
@@ -95,6 +131,8 @@ class ChildContentInput(BaseModel):
     feature_explanation: str | None = Field(default=None, max_length=4_000)
     example: str | None = Field(default=None, max_length=4_000)
     internal_notes: str | None = Field(default=None, max_length=4_000)
+    attachments: list[UUID] = Field(default_factory=list, max_length=10)
+    web_links: list[WebLinkInput] = Field(default_factory=list, max_length=20)
 
     @field_validator("question")
     @classmethod
@@ -127,6 +165,23 @@ class ChildContentInput(BaseModel):
         if len({value.casefold() for value in normalized_values}) != len(normalized_values):
             raise ValueError("同义问句不能重复")
         return normalized_values
+
+    @field_validator("attachments")
+    @classmethod
+    def validate_attachments(
+        cls,
+        values: list[UUID],
+    ) -> list[UUID]:
+        if len(set(values)) != len(values):
+            raise ValueError("附件不能重复")
+        return values
+
+    @field_validator("web_links")
+    @classmethod
+    def validate_web_links(cls, values: list[WebLinkInput]) -> list[WebLinkInput]:
+        if len({web_link.url.casefold() for web_link in values}) != len(values):
+            raise ValueError("网页链接不能重复")
+        return values
 
     @model_validator(mode="after")
     def prevent_question_as_its_own_variant(self) -> ChildContentInput:
@@ -215,6 +270,8 @@ class ReviewChildRevisionResponse(BaseModel):
     feature_explanation: str | None
     example: str | None
     internal_notes: str | None
+    attachments: list[EvidenceAttachmentResponse]
+    web_links: list[WebLinkInput]
 
 
 class ReviewSubmissionResponse(BaseModel):

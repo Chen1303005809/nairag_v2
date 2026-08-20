@@ -36,6 +36,7 @@ async def build_test_app(tmp_path: Path) -> tuple[object, AsyncEngine]:
         jwt_secret="test-signing-key-that-is-long-enough",
         cookie_secure=False,
         index_artifact_dir=tmp_path / "index-artifacts",
+        attachment_storage_dir=tmp_path / "attachments",
         initial_admin_username="bootstrap-admin",
         initial_admin_password_file=initial_password_file,
     )
@@ -573,6 +574,32 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert available.status_code == 200
                     assert available.json()[0]["id"] == parent_id
 
+                    uploaded_attachment = await author.post(
+                        "/api/v1/knowledge-content/attachments",
+                        headers=csrf_headers(author, settings),
+                        files={
+                            "attachment_file": (
+                                "password-reset.txt",
+                                "请先确认用户身份。".encode(),
+                                "text/plain",
+                            )
+                        },
+                    )
+                    assert uploaded_attachment.status_code == 201
+                    attachment_payload = uploaded_attachment.json()
+                    attachment_id = attachment_payload["id"]
+                    assert attachment_payload == {
+                        "id": attachment_id,
+                        "name": "password-reset.txt",
+                        "content_type": "text/plain",
+                        "size_bytes": len("请先确认用户身份。".encode()),
+                    }
+                    uploaded_download = await author.get(
+                        f"/api/v1/knowledge-content/attachments/{attachment_id}/download"
+                    )
+                    assert uploaded_download.status_code == 200
+                    assert uploaded_download.content == "请先确认用户身份。".encode()
+
                     ordinary = await author.post(
                         "/api/v1/knowledge-content/child-submissions",
                         headers=csrf_headers(author, settings),
@@ -590,6 +617,13 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                                 "feature_explanation": "用于处理账号密码找回问题。",
                                 "example": "用户忘记登录密码。",
                                 "internal_notes": "仅供支持人员参考。",
+                                "attachments": [attachment_id],
+                                "web_links": [
+                                    {
+                                        "title": "密码重置操作说明",
+                                        "url": "https://docs.example.test/password-reset",
+                                    }
+                                ],
                             },
                             "knowledge_base_ids": knowledge_base_ids,
                         },
@@ -597,6 +631,27 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert ordinary.status_code == 201
                     child_submission_id = ordinary.json()["id"]
                     child_id = ordinary.json()["child_id"]
+
+                    child_queue = await reviewer.get("/api/v1/knowledge-content/review-queue")
+                    assert child_queue.status_code == 200
+                    child_queue_item = next(
+                        item
+                        for item in child_queue.json()
+                        if item["review_submission_id"] == child_submission_id
+                    )
+                    assert child_queue_item["child_revision"]["attachments"] == [
+                        attachment_payload
+                    ]
+                    assert child_queue_item["child_revision"]["web_links"] == [
+                        {
+                            "title": "密码重置操作说明",
+                            "url": "https://docs.example.test/password-reset",
+                        }
+                    ]
+                    reviewer_download = await reviewer.get(
+                        f"/api/v1/knowledge-content/attachments/{attachment_id}/download"
+                    )
+                    assert reviewer_download.status_code == 200
 
                     approve_child = await reviewer.post(
                         f"/api/v1/knowledge-content/review-submissions/{child_submission_id}"
@@ -629,6 +684,15 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert (
                         child_submission["child_revision"]["response_content"] == "请联系管理员。"
                     )
+                    assert child_submission["child_revision"]["attachments"] == [
+                        attachment_payload
+                    ]
+                    assert child_submission["child_revision"]["web_links"] == [
+                        {
+                            "title": "密码重置操作说明",
+                            "url": "https://docs.example.test/password-reset",
+                        }
+                    ]
                     child_targets = {
                         target["id"]: target for target in child_submission["targets"]
                     }
@@ -661,6 +725,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         and entry["child_id"] == child_id
                         and [item["id"] for item in entry["knowledge_bases"]]
                         == [knowledge_base_ids[0]]
+                        and entry["child_revision"]["attachments"] == [attachment_payload]
                         for entry in editable_payload
                     )
 
@@ -672,6 +737,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                             "child": {
                                 "question": "如何找回密码？",
                                 "response_content": "请先验证身份，再联系管理员重置密码。",
+                                "attachments": [attachment_id],
                             },
                             "knowledge_base_ids": [knowledge_base_ids[1]],
                         },
@@ -790,7 +856,18 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert filtered_item["customer_type"] == "个人客户"
                     assert filtered_item["feature_explanation"] == "用于处理账号密码找回问题。"
                     assert filtered_item["example"] == "用户忘记登录密码。"
-                    assert filtered_item["internal_notes"] == "仅供支持人员参考。"
+                    assert "internal_notes" not in filtered_item
+                    assert filtered_item["attachments"] == [attachment_payload]
+                    assert filtered_item["web_links"] == [
+                        {
+                            "title": "密码重置操作说明",
+                            "url": "https://docs.example.test/password-reset",
+                        }
+                    ]
+                    published_download = await author.get(
+                        f"/api/v1/knowledge-content/attachments/{attachment_id}/download"
+                    )
+                    assert published_download.status_code == 200
 
                     all_entries_search = await author.post(
                         "/api/v1/search",

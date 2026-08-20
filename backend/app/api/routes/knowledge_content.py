@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuthenticatedSession,
+    get_app_settings,
     require_csrf,
     require_fully_authenticated_session,
     require_system_administrator,
 )
+from app.core.config import Settings
 from app.db.session import get_db_session
 from app.models.knowledge_content import (
     ChildRevision,
     ChildRevisionQuestionVariant,
+    EvidenceAttachment,
     ParentLexicalRule,
     ParentRevision,
+    WebLink,
 )
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.knowledge_content import (
@@ -28,6 +33,7 @@ from app.schemas.knowledge_content import (
     CreateParentRevisionSubmissionRequest,
     CreateParentSubmissionRequest,
     EditableContentEntryResponse,
+    EvidenceAttachmentResponse,
     ManagedKnowledgeEntryResponse,
     ParentLexicalRuleInput,
     PublicationResponse,
@@ -39,9 +45,18 @@ from app.schemas.knowledge_content import (
     ReviewSubmissionResponse,
     ReviewSubmissionTargetResponse,
     ReviewSubmitterResponse,
+    WebLinkInput,
+)
+from app.services.attachment_storage import AttachmentStorage, AttachmentStorageError
+from app.services.attachments import (
+    AttachmentValidationError,
+    attachment_is_readable_by,
+    validate_attachment_upload,
 )
 from app.services.index_jobs import enqueue_clean_publication_job
 from app.services.knowledge_content import (
+    AttachmentNotAllowedError,
+    AttachmentNotFoundError,
     AvailableParentDetails,
     ChildNotFoundError,
     EditableContentDetails,
@@ -133,6 +148,8 @@ def as_parent_revision_response(
 def as_child_revision_response(
     child_revision: ChildRevision,
     question_variants: list[ChildRevisionQuestionVariant],
+    attachments: list[EvidenceAttachment],
+    web_links: list[WebLink],
 ) -> ReviewChildRevisionResponse:
     return ReviewChildRevisionResponse(
         id=child_revision.id,
@@ -148,6 +165,25 @@ def as_child_revision_response(
         feature_explanation=child_revision.feature_explanation,
         example=child_revision.example,
         internal_notes=child_revision.internal_notes,
+        attachments=[
+            EvidenceAttachmentResponse(
+                id=attachment.id,
+                name=attachment.name,
+                content_type=attachment.content_type,
+                size_bytes=attachment.size_bytes,
+            )
+            for attachment in attachments
+        ],
+        web_links=[WebLinkInput(title=web_link.title, url=web_link.url) for web_link in web_links],
+    )
+
+
+def as_attachment_response(attachment: EvidenceAttachment) -> EvidenceAttachmentResponse:
+    return EvidenceAttachmentResponse(
+        id=attachment.id,
+        name=attachment.name,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
     )
 
 
@@ -208,6 +244,8 @@ def as_submission_response(
             as_child_revision_response(
                 details.child_revision,
                 details.child_question_variants,
+                details.child_attachments,
+                details.child_web_links,
             )
             if details.child_revision is not None
             else None
@@ -254,6 +292,13 @@ def as_content_http_error(error: Exception) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="重新提交普通子条目时只能选择原投稿中被驳回的知识库",
+        )
+    if isinstance(error, AttachmentNotFoundError):
+        return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="附件不存在")
+    if isinstance(error, AttachmentNotAllowedError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="附件不可用、无权使用或超出单个修订的总大小限制",
         )
     if isinstance(error, ReviewAccessDeniedError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="没有该知识库的审核权限")
@@ -310,6 +355,8 @@ def as_review_queue_response(details: ReviewQueueDetails) -> ReviewQueueItemResp
         child_revision=as_child_revision_response(
             details.child_revision,
             details.child_question_variants,
+            details.child_attachments,
+            details.child_web_links,
         ),
         submitted_at=details.submission.submitted_at,
         reviewed_at=(
@@ -335,6 +382,8 @@ def as_managed_knowledge_response(
         child_revision=as_child_revision_response(
             details.child_revision,
             details.child_question_variants,
+            details.child_attachments,
+            details.child_web_links,
         ),
         uploaded_by=as_user_response(details.submitter),
         uploaded_at=details.submitted_at,
@@ -364,7 +413,162 @@ def as_editable_content_response(details: EditableContentDetails) -> EditableCon
         child_revision=as_child_revision_response(
             details.child_revision,
             details.child_question_variants,
+            details.child_attachments,
+            details.child_web_links,
         ),
+    )
+
+
+@router.post(
+    "/attachments",
+    response_model=EvidenceAttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_evidence_attachment(
+    attachment_file: Annotated[
+        UploadFile,
+        File(description="PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX 或 UTF-8 TXT 附件"),
+    ],
+    request: Request,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> EvidenceAttachmentResponse:
+    try:
+        try:
+            content = await attachment_file.read(settings.attachment_max_file_bytes + 1)
+        finally:
+            await attachment_file.close()
+        upload = validate_attachment_upload(
+            filename=attachment_file.filename,
+            declared_content_type=attachment_file.content_type,
+            content=content,
+            max_file_bytes=settings.attachment_max_file_bytes,
+        )
+    except AttachmentValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    storage: AttachmentStorage = request.app.state.attachment_storage
+    try:
+        await storage.put_object(upload.storage_key, upload.content, upload.content_type)
+    except AttachmentStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="附件存储暂时不可用，请稍后重试",
+        ) from exc
+
+    attachment = EvidenceAttachment(
+        name=upload.name,
+        storage_key=upload.storage_key,
+        content_type=upload.content_type,
+        size_bytes=len(upload.content),
+        checksum_sha256=upload.checksum_sha256,
+        uploaded_by_user_id=user.user.id,
+    )
+    session.add(attachment)
+    await session.flush()
+    record_audit_event(
+        session,
+        event_type="knowledge_attachment.uploaded",
+        actor_user_id=user.user.id,
+        target_type="evidence_attachment",
+        target_id=attachment.id,
+        payload={
+            "name": attachment.name,
+            "content_type": attachment.content_type,
+            "size_bytes": attachment.size_bytes,
+            "checksum_sha256": attachment.checksum_sha256,
+        },
+    )
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        try:
+            await storage.delete_object(upload.storage_key)
+        except AttachmentStorageError:
+            pass
+        raise
+    return as_attachment_response(attachment)
+
+
+@router.delete("/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_unbound_evidence_attachment(
+    attachment_id: UUID,
+    request: Request,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Response:
+    attachment = await session.get(EvidenceAttachment, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="附件不存在")
+    if attachment.uploaded_by_user_id != user.user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除该附件")
+    if attachment.child_revision_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="已关联到知识修订的附件不能删除",
+        )
+
+    storage: AttachmentStorage = request.app.state.attachment_storage
+    try:
+        await storage.delete_object(attachment.storage_key)
+    except AttachmentStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="附件存储暂时不可用，请稍后重试",
+        ) from exc
+    await session.delete(attachment)
+    record_audit_event(
+        session,
+        event_type="knowledge_attachment.deleted",
+        actor_user_id=user.user.id,
+        target_type="evidence_attachment",
+        target_id=attachment_id,
+    )
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/attachments/{attachment_id}/download")
+async def download_evidence_attachment(
+    attachment_id: UUID,
+    request: Request,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Response:
+    attachment = await session.get(EvidenceAttachment, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="附件不存在")
+    if not await attachment_is_readable_by(
+        session,
+        attachment=attachment,
+        user_id=user.user.id,
+        user_role=user.user.role,
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该附件")
+
+    storage: AttachmentStorage = request.app.state.attachment_storage
+    try:
+        content = await storage.get_object(attachment.storage_key)
+    except AttachmentStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="附件暂时无法读取，请稍后重试",
+        ) from exc
+    disposition = "inline" if attachment.content_type.startswith("image/") else "attachment"
+    return Response(
+        content=content,
+        media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(attachment.name)}",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -374,8 +578,7 @@ async def list_selectable_parents(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> list[AvailableParentResponse]:
     return [
-        as_available_parent_response(parent)
-        for parent in await list_available_parents(session)
+        as_available_parent_response(parent) for parent in await list_available_parents(session)
     ]
 
 
@@ -429,7 +632,12 @@ async def create_parent_aggregate_submission(
             knowledge_base_ids=body.knowledge_base_ids,
             submitted_by_user_id=user.user.id,
         )
-    except (TargetKnowledgeBaseUnavailableError, TargetKnowledgeBaseNotAllowedError) as exc:
+    except (
+        AttachmentNotAllowedError,
+        AttachmentNotFoundError,
+        TargetKnowledgeBaseUnavailableError,
+        TargetKnowledgeBaseNotAllowedError,
+    ) as exc:
         raise as_content_http_error(exc) from exc
 
     record_audit_event(
@@ -473,6 +681,8 @@ async def create_parent_aggregate_revision_submission(
         ParentNotFoundError,
         ParentNotAvailableError,
         PendingSubmissionExistsError,
+        AttachmentNotAllowedError,
+        AttachmentNotFoundError,
     ) as exc:
         raise as_content_http_error(exc) from exc
 
@@ -511,6 +721,8 @@ async def create_child_submission(
         ParentNotFoundError,
         ParentNotAvailableError,
         TargetKnowledgeBaseNotAllowedError,
+        AttachmentNotAllowedError,
+        AttachmentNotFoundError,
     ) as exc:
         raise as_content_http_error(exc) from exc
 
@@ -558,6 +770,8 @@ async def create_child_revision_submission(
         PrimaryChildRevisionError,
         TargetKnowledgeBaseNotAllowedError,
         PendingSubmissionExistsError,
+        AttachmentNotAllowedError,
+        AttachmentNotFoundError,
     ) as exc:
         raise as_content_http_error(exc) from exc
 
@@ -605,6 +819,8 @@ async def resubmit_rejected_parent_submission(
         SubmissionNotFoundError,
         SubmissionNotEditableError,
         TargetKnowledgeBaseUnavailableError,
+        AttachmentNotAllowedError,
+        AttachmentNotFoundError,
     ) as exc:
         raise as_content_http_error(exc) from exc
 
@@ -652,6 +868,8 @@ async def resubmit_rejected_child_submission(
         SubmissionNotFoundError,
         SubmissionNotEditableError,
         TargetKnowledgeBaseNotAllowedError,
+        AttachmentNotAllowedError,
+        AttachmentNotFoundError,
     ) as exc:
         raise as_content_http_error(exc) from exc
 

@@ -14,6 +14,7 @@ from app.api.deps import (
 )
 from app.core.config import Settings
 from app.db.session import get_db_session
+from app.schemas.knowledge_content import EvidenceAttachmentResponse, WebLinkInput
 from app.schemas.search import (
     HelpfulFeedbackRequest,
     HelpfulFeedbackResponse,
@@ -77,7 +78,19 @@ def as_search_response(details) -> SearchResponse:
                         customer_type=candidate.child_revision.customer_type,
                         feature_explanation=candidate.child_revision.feature_explanation,
                         example=candidate.child_revision.example,
-                        internal_notes=candidate.child_revision.internal_notes,
+                        attachments=[
+                            EvidenceAttachmentResponse(
+                                id=attachment.id,
+                                name=attachment.name,
+                                content_type=attachment.content_type,
+                                size_bytes=attachment.size_bytes,
+                            )
+                            for attachment in candidate.attachments
+                        ],
+                        web_links=[
+                            WebLinkInput(title=web_link.title, url=web_link.url)
+                            for web_link in candidate.web_links
+                        ],
                         helpful_count=candidate.publication.helpful_count,
                         match_reason=result.match_reason,
                     )

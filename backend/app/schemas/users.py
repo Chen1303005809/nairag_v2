@@ -43,4 +43,3 @@ class UpdateUserRequest(BaseModel):
 class TemporaryPasswordResponse(BaseModel):
     user: UserResponse
     temporary_password: str
-

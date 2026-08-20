@@ -8,6 +8,14 @@ x-milvus-client-environment: &milvus-client-environment
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
   MILVUS_URL: http://milvus:19530
 
+x-attachment-client-environment: &attachment-client-environment
+  ATTACHMENT_STORAGE_BACKEND: minio
+  ATTACHMENT_MINIO_ENDPOINT: milvus-minio:9000
+  ATTACHMENT_MINIO_ACCESS_KEY_FILE: /run/secrets/attachment_minio_access_key
+  ATTACHMENT_MINIO_SECRET_KEY_FILE: /run/secrets/attachment_minio_secret_key
+  ATTACHMENT_MINIO_BUCKET: ${ATTACHMENT_MINIO_BUCKET:-nairag-attachments}
+  ATTACHMENT_MINIO_SECURE: "false"
+
 services:
   # Milvus standalone dependencies are production-only; local development uses
   # the deterministic local_artifact index backend instead.
@@ -75,6 +83,51 @@ services:
       timeout: 20s
       retries: 5
 
+  attachment-minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    environment:
+      MINIO_ROOT_USER: ${MILVUS_MINIO_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MILVUS_MINIO_SECRET_ACCESS_KEY:-minioadmin}
+      ATTACHMENT_MINIO_BUCKET: ${ATTACHMENT_MINIO_BUCKET:-nairag-attachments}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        attachment_access_key="$$(cat /run/secrets/attachment_minio_access_key)"
+        attachment_secret_key="$$(cat /run/secrets/attachment_minio_secret_key)"
+        mc alias set storage http://milvus-minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing "storage/$${ATTACHMENT_MINIO_BUCKET}"
+        policy_file=/tmp/nairag-attachments-policy.json
+        cat > "$${policy_file}" <<EOF
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"],
+              "Resource": ["arn:aws:s3:::$${ATTACHMENT_MINIO_BUCKET}"]
+            },
+            {
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+              "Resource": ["arn:aws:s3:::$${ATTACHMENT_MINIO_BUCKET}/*"]
+            }
+          ]
+        }
+        EOF
+        if ! mc admin policy info storage nairag-attachments-rw >/dev/null 2>&1; then
+          mc admin policy create storage nairag-attachments-rw "$${policy_file}"
+        fi
+        if ! mc admin user info storage "$${attachment_access_key}" >/dev/null 2>&1; then
+          mc admin user add storage "$${attachment_access_key}" "$${attachment_secret_key}"
+        fi
+        mc admin policy attach storage nairag-attachments-rw --user "$${attachment_access_key}"
+    depends_on:
+      milvus-minio:
+        condition: service_healthy
+    secrets:
+      - attachment_minio_access_key
+      - attachment_minio_secret_key
+
   ocr:
     build:
       dockerfile: Dockerfile.gpu
@@ -84,18 +137,34 @@ services:
 
   api:
     environment:
-      <<: *milvus-client-environment
+      <<: [*milvus-client-environment, *attachment-client-environment]
       APP_ENVIRONMENT: production
       COOKIE_SECURE: "true"
     depends_on:
       milvus:
         condition: service_healthy
+      attachment-minio-init:
+        condition: service_completed_successfully
+    secrets:
+      - attachment_minio_access_key
+      - attachment_minio_secret_key
 
   worker:
     environment:
-      <<: *milvus-client-environment
+      <<: [*milvus-client-environment, *attachment-client-environment]
       APP_ENVIRONMENT: production
       COOKIE_SECURE: "true"
     depends_on:
       milvus:
         condition: service_healthy
+      attachment-minio-init:
+        condition: service_completed_successfully
+    secrets:
+      - attachment_minio_access_key
+      - attachment_minio_secret_key
+
+secrets:
+  attachment_minio_access_key:
+    file: ./secrets/attachment_minio_access_key.txt
+  attachment_minio_secret_key:
+    file: ./secrets/attachment_minio_secret_key.txt

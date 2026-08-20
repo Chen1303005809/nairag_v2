@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.knowledge_content import SearchQueryMode
+from app.schemas.knowledge_content import EvidenceAttachmentResponse, WebLinkInput
 
 
 class SearchRequest(BaseModel):
@@ -91,7 +92,8 @@ class SearchResultResponse(BaseModel):
     customer_type: str | None
     feature_explanation: str | None
     example: str | None
-    internal_notes: str | None
+    attachments: list[EvidenceAttachmentResponse]
+    web_links: list[WebLinkInput]
     helpful_count: int
     match_reason: str
 

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.db.session import create_session_factory
+from app.services.attachment_storage import create_attachment_storage
 from app.services.ocr import create_ocr_provider
 from app.services.retrieval import create_search_index_backend
 from app.services.users import bootstrap_initial_admin
@@ -26,6 +27,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await app.state.attachment_storage.initialize()
         await bootstrap_initial_admin(app.state.session_factory, app.state.settings)
         yield
 
@@ -34,6 +36,7 @@ def create_app(
     app.state.session_factory = active_session_factory
     app.state.search_index_backend = create_search_index_backend(active_settings)
     app.state.ocr_provider = create_ocr_provider(active_settings)
+    app.state.attachment_storage = create_attachment_storage(active_settings)
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

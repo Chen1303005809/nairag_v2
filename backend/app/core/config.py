@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     ocr_max_image_bytes: int = 10 * 1024 * 1024
     ocr_ticket_ttl_seconds: int = 600
     ocr_keyword_fallback_min_confidence: float = 0.9
+    attachment_storage_backend: str = "local"
+    attachment_storage_dir: Path = Path("./var/attachments")
+    attachment_max_file_bytes: int = 20 * 1024 * 1024
+    attachment_minio_endpoint: str | None = None
+    attachment_minio_access_key_file: Path | None = None
+    attachment_minio_secret_key_file: Path | None = None
+    attachment_minio_bucket: str = "nairag-attachments"
+    attachment_minio_secure: bool = False
     milvus_url: str | None = None
     milvus_token_file: Path | None = None
     worker_id: str | None = None
@@ -117,6 +125,21 @@ class Settings(BaseSettings):
             raise ValueError("OCR_TICKET_TTL_SECONDS must be between 1 and 3600")
         if not 0 <= self.ocr_keyword_fallback_min_confidence <= 1:
             raise ValueError("OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE must be between 0 and 1")
+        if self.attachment_storage_backend not in {"local", "minio"}:
+            raise ValueError("ATTACHMENT_STORAGE_BACKEND must be local or minio")
+        if not 1 <= self.attachment_max_file_bytes <= 20 * 1024 * 1024:
+            raise ValueError("ATTACHMENT_MAX_FILE_BYTES must be between 1 and 20971520")
+        if self.app_environment == "production" and self.attachment_storage_backend != "minio":
+            raise ValueError("ATTACHMENT_STORAGE_BACKEND must be minio in production")
+        if self.attachment_storage_backend == "minio":
+            if not self.attachment_minio_endpoint:
+                raise ValueError("ATTACHMENT_MINIO_ENDPOINT is required for MinIO storage")
+            if self.attachment_minio_access_key_file is None:
+                raise ValueError("ATTACHMENT_MINIO_ACCESS_KEY_FILE is required for MinIO storage")
+            if self.attachment_minio_secret_key_file is None:
+                raise ValueError("ATTACHMENT_MINIO_SECRET_KEY_FILE is required for MinIO storage")
+            if not self.attachment_minio_bucket.strip():
+                raise ValueError("ATTACHMENT_MINIO_BUCKET must not be empty")
         if self.index_backend_mode == "milvus":
             if not self.embedding_service_url:
                 raise ValueError("EMBEDDING_SERVICE_URL is required for Milvus indexing")
@@ -183,6 +206,24 @@ class Settings(BaseSettings):
         if self.ocr_service_api_key_file is None:
             return None
         return read_secret_file(self.ocr_service_api_key_file, "OCR_SERVICE_API_KEY_FILE")
+
+    @property
+    def attachment_minio_access_key(self) -> str:
+        if self.attachment_minio_access_key_file is None:
+            raise RuntimeError("ATTACHMENT_MINIO_ACCESS_KEY_FILE must be configured")
+        return read_secret_file(
+            self.attachment_minio_access_key_file,
+            "ATTACHMENT_MINIO_ACCESS_KEY_FILE",
+        )
+
+    @property
+    def attachment_minio_secret_key(self) -> str:
+        if self.attachment_minio_secret_key_file is None:
+            raise RuntimeError("ATTACHMENT_MINIO_SECRET_KEY_FILE must be configured")
+        return read_secret_file(
+            self.attachment_minio_secret_key_file,
+            "ATTACHMENT_MINIO_SECRET_KEY_FILE",
+        )
 
 
 def read_secret_file(path: Path, setting_name: str) -> str:

@@ -71,7 +71,9 @@ const rejectedSubmission: ReviewSubmission = {
     customer_type: "个人客户",
     feature_explanation: null,
     example: null,
-    internal_notes: null
+    internal_notes: null,
+    attachments: [],
+    web_links: []
   }
 };
 

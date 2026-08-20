@@ -76,6 +76,7 @@ async def build_api_test_app(tmp_path: Path) -> tuple[object, AsyncEngine]:
         initial_admin_username="bootstrap-admin",
         initial_admin_password_file=initial_password_file,
         index_artifact_dir=tmp_path / "index-artifacts",
+        attachment_storage_dir=tmp_path / "attachments",
     )
     engine = create_async_engine(settings.database_url_with_password)
     async with engine.begin() as connection:

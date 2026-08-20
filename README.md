@@ -12,6 +12,7 @@
 4. 审查工作台与发布状态：按知识库授权过滤审核队列、不可变审核决定、父类聚合全局发布、普通子条目分库发布和归档。
 5. 异步索引与检索基础：持久化索引任务、独立 worker、租约/重试、可替换的 Qwen/Milvus 适配层、离线 artifact 混合召回、发布事实回查、父类关键词保底和有用反馈。
 6. 查询图片 OCR：前端上传 PNG/JPEG/WebP 后由本地 `PP-OCRv6_medium` 服务识别；API 只暂存请求内图片，审计与检索事件只记录清洗文本、关键词、置信度、模型版本和图片哈希。配置方式见 [backend/.env.example](backend/.env.example)。
+7. 知识子条目佐证材料：可上传 PNG/JPEG/WebP、PDF、DOCX、XLSX、PPTX 或 UTF-8 TXT 附件，并添加相关网页链接；两类材料均绑定不可变子条目修订、经过审核流程并在检索结果展示。开发/测试使用本地私有存储，生产环境使用与 Milvus 共用服务上的独立 MinIO Bucket 和独立账号。
 
 后续实施请从 [实施交接](docs/实施交接.md) 继续，并以 [已确认实施基线](docs/已确认实施基线.md) 为准。
 
@@ -73,4 +74,4 @@ EMBEDDING_SERVICE_URL=http://embedding.example.internal:9001/v1 \
   docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up --build -d
 ```
 
-前者会启动 PostgreSQL、CPU OCR、API、前端和独立索引 worker，并使用轻量的本地 artifact 索引；后者额外启动 Milvus standalone（etcd、MinIO、Milvus），将 API 与 worker 切换为 Milvus 后端，并把同一 `ocr` 服务替换为固定的 PaddlePaddle CUDA 13.0 镜像、申请 NVIDIA GPU。生产启动前必须设置 `EMBEDDING_SERVICE_URL`，使其指向提供 `Qwen/Qwen3-Embedding-0.6B` 的 OpenAI-compatible embedding HTTP 服务。首次预热时间取决于模型下载。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，生产 Milvus 使用 `volumes/milvus/` 下独立的 etcd、MinIO 和数据目录，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`；OCR 模型使用独立 Docker 命名卷 `ocr_model_cache`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，通过 Milvus 或本地 artifact 写入索引，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
+前者会启动 PostgreSQL、CPU OCR、API、前端和独立索引 worker，并使用轻量的本地 artifact 索引与本地私有附件目录；后者额外启动 Milvus standalone（etcd、MinIO、Milvus），将 API 与 worker 切换为 Milvus 后端，并在该 MinIO 服务内初始化独立、私有的附件 Bucket。生产 API 使用附件专属 MinIO 账号，不使用 Milvus 的存储凭据；请按 [secrets/README.md](secrets/README.md) 准备这两份额外 Secret。生产启动前还必须设置 `EMBEDDING_SERVICE_URL`，使其指向提供 `Qwen/Qwen3-Embedding-0.6B` 的 OpenAI-compatible embedding HTTP 服务。首次预热时间取决于模型下载。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，开发附件使用 `volumes/attachments`，生产 Milvus 使用 `volumes/milvus/` 下独立的 etcd、MinIO 和数据目录，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`；OCR 模型使用独立 Docker 命名卷 `ocr_model_cache`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，通过 Milvus 或本地 artifact 写入索引，并在索引成功后推进发布。

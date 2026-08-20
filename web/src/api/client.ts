@@ -2,6 +2,7 @@ import type {
   AvailableParent,
   ChildContentInput,
   EditableContentEntry,
+  EvidenceAttachment,
   KnowledgeBase,
   LoginResponse,
   ManagedKnowledgeBase,
@@ -199,6 +200,18 @@ export const api = {
 
   listAvailableParents: (): Promise<AvailableParent[]> =>
     request<AvailableParent[]>("/knowledge-content/parents/available"),
+
+  uploadKnowledgeAttachment: (file: File): Promise<EvidenceAttachment> => {
+    const form = new FormData();
+    form.append("attachment_file", file);
+    return sessionFormMutation<EvidenceAttachment>("POST", "/knowledge-content/attachments", form);
+  },
+
+  deleteKnowledgeAttachment: (attachmentId: string): Promise<void> =>
+    sessionMutation<void>("DELETE", `/knowledge-content/attachments/${attachmentId}`),
+
+  knowledgeAttachmentDownloadUrl: (attachmentId: string): string =>
+    apiUrl(`/knowledge-content/attachments/${attachmentId}/download`),
 
   listMyContentSubmissions: (): Promise<ReviewSubmission[]> =>
     request<ReviewSubmission[]>("/knowledge-content/submissions/mine"),

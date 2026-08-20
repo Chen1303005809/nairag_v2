@@ -127,6 +127,33 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
           {item.child_revision.question_variants.join("；")}
         </Descriptions.Item>
       ) : null}
+      {item.child_revision.attachments.length > 0 ? (
+        <Descriptions.Item label="附件">
+          <Space direction="vertical" size={4}>
+            {item.child_revision.attachments.map((attachment) => (
+              <a
+                key={attachment.id}
+                href={api.knowledgeAttachmentDownloadUrl(attachment.id)}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {attachment.name}
+              </a>
+            ))}
+          </Space>
+        </Descriptions.Item>
+      ) : null}
+      {item.child_revision.web_links.length > 0 ? (
+        <Descriptions.Item label="相关网页链接">
+          <Space direction="vertical" size={4}>
+            {item.child_revision.web_links.map((webLink) => (
+              <a key={webLink.url} href={webLink.url} rel="noreferrer" target="_blank">
+                {webLink.title}
+              </a>
+            ))}
+          </Space>
+        </Descriptions.Item>
+      ) : null}
       {item.child_revision.internal_notes ? (
         <Descriptions.Item label="内部备注">{item.child_revision.internal_notes}</Descriptions.Item>
       ) : null}

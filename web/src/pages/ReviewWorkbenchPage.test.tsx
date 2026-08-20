@@ -56,7 +56,9 @@ const historyItem: ReviewQueueItem = {
     customer_type: null,
     feature_explanation: null,
     example: null,
-    internal_notes: null
+    internal_notes: null,
+    attachments: [],
+    web_links: []
   },
   submitted_at: "2026-01-01T00:00:00Z",
   reviewed_at: "2026-01-01T00:01:02Z"

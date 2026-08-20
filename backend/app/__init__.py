@@ -1,2 +1,1 @@
 """Nairag API package."""
-

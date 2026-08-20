@@ -16,6 +16,7 @@ from app.models.knowledge_content import (
     ChildPublicationStatus,
     ChildRevision,
     ChildRevisionQuestionVariant,
+    EvidenceAttachment,
     HelpfulFeedbackEvent,
     ParentLexicalRule,
     ParentLexicalRuleType,
@@ -26,6 +27,7 @@ from app.models.knowledge_content import (
     SearchEvent,
     SearchQueryMode,
     SearchResultItem,
+    WebLink,
 )
 from app.services.ocr import OcrRecognition
 from app.services.retrieval import (
@@ -58,6 +60,8 @@ class SearchCandidate:
     child: Child
     child_revision: ChildRevision
     question_variants: list[ChildRevisionQuestionVariant]
+    attachments: list[EvidenceAttachment]
+    web_links: list[WebLink]
     parent_revision: ParentRevision
     lexical_rules: list[ParentLexicalRule]
 
@@ -176,10 +180,13 @@ def _ocr_controlled_keyword_match(
         if normalized_term in normalized_keywords:
             return True
         if re.fullmatch(r"[a-z0-9_]+", normalized_term):
-            return re.search(
-                rf"(?<![a-z0-9_]){re.escape(normalized_term)}(?![a-z0-9_])",
-                normalized_text,
-            ) is not None
+            return (
+                re.search(
+                    rf"(?<![a-z0-9_]){re.escape(normalized_term)}(?![a-z0-9_])",
+                    normalized_text,
+                )
+                is not None
+            )
         return normalized_term in normalized_text
 
     if matches_controlled_term(candidate.parent_revision.canonical_keyword):
@@ -262,10 +269,27 @@ async def _load_candidates(
     for variant in variants:
         variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
 
+    attachments_by_revision: dict[UUID, list[EvidenceAttachment]] = {}
+    attachments = await session.scalars(
+        select(EvidenceAttachment)
+        .where(EvidenceAttachment.child_revision_id.in_(child_revision_ids))
+        .order_by(EvidenceAttachment.child_revision_id, EvidenceAttachment.sort_order)
+    )
+    for attachment in attachments:
+        if attachment.child_revision_id is not None:
+            attachments_by_revision.setdefault(attachment.child_revision_id, []).append(attachment)
+
+    web_links_by_revision: dict[UUID, list[WebLink]] = {}
+    web_links = await session.scalars(
+        select(WebLink)
+        .where(WebLink.child_revision_id.in_(child_revision_ids))
+        .order_by(WebLink.child_revision_id, WebLink.sort_order)
+    )
+    for web_link in web_links:
+        web_links_by_revision.setdefault(web_link.child_revision_id, []).append(web_link)
+
     primary_child_ids = {
-        child.id
-        for _publication, _kb, child, _revision in rows
-        if child.is_primary
+        child.id for _publication, _kb, child, _revision in rows if child.is_primary
     }
     primary_publications = await session.scalars(
         select(ChildKnowledgeBasePublication).where(
@@ -299,6 +323,8 @@ async def _load_candidates(
                 child=child,
                 child_revision=child_revision,
                 question_variants=variants_by_revision.get(child_revision.id, []),
+                attachments=attachments_by_revision.get(child_revision.id, []),
+                web_links=web_links_by_revision.get(child_revision.id, []),
                 parent_revision=parent_revision,
                 lexical_rules=rules_by_revision.get(parent_revision.id, []),
             )
@@ -533,12 +559,8 @@ async def search_published_content(
         ocr_text=ocr_text,
         ocr_keywords=list(ocr_recognition.keywords) if ocr_recognition is not None else None,
         ocr_confidence=ocr_recognition.confidence if ocr_recognition is not None else None,
-        ocr_model_version=(
-            ocr_recognition.model_version if ocr_recognition is not None else None
-        ),
-        ocr_image_sha256=(
-            ocr_recognition.image_sha256 if ocr_recognition is not None else None
-        ),
+        ocr_model_version=(ocr_recognition.model_version if ocr_recognition is not None else None),
+        ocr_image_sha256=(ocr_recognition.image_sha256 if ocr_recognition is not None else None),
         query_mode=mode,
         knowledge_base_id=knowledge_base_id,
         no_match=not selected,
@@ -568,10 +590,7 @@ async def search_published_content(
             (result, item.candidate)
         )
     await session.flush()
-    groups = [
-        (result_parent_revisions[parent_id], items)
-        for parent_id, items in grouped.items()
-    ]
+    groups = [(result_parent_revisions[parent_id], items) for parent_id, items in grouped.items()]
     groups.sort(key=lambda group: max(item.score for item, _candidate in group[1]), reverse=True)
     return SearchDetails(
         event=event,

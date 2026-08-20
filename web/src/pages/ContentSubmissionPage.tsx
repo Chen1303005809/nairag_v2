@@ -13,23 +13,26 @@ import {
   Tabs,
   Tag,
   Typography,
+  Upload,
   message
 } from "antd";
 import type { TableProps } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   AvailableParent,
   ChildContentInput,
   EditableContentEntry,
+  EvidenceAttachment,
   KnowledgeBase,
   ParentContentInput,
   ReviewChildRevision,
   ReviewParentRevision,
   ReviewSubmission,
-  ReviewSubmissionStatus
+  ReviewSubmissionStatus,
+  WebLinkInput
 } from "../api/types";
 import { formatDateTime } from "../dateTime";
 import {
@@ -55,6 +58,8 @@ interface ChildContentFormValues {
   feature_explanation?: string;
   example?: string;
   internal_notes?: string;
+  attachments?: EvidenceAttachment[];
+  web_links?: WebLinkInput[];
 }
 
 interface ParentSubmissionFormValues {
@@ -109,7 +114,12 @@ function toChildContent(values: ChildContentFormValues): ChildContentInput {
     customer_type: nullable(values.customer_type),
     feature_explanation: nullable(values.feature_explanation),
     example: nullable(values.example),
-    internal_notes: nullable(values.internal_notes)
+    internal_notes: nullable(values.internal_notes),
+    attachments: (values.attachments ?? []).map((attachment) => attachment.id),
+    web_links: (values.web_links ?? []).map((webLink) => ({
+      title: webLink.title.trim(),
+      url: webLink.url.trim()
+    }))
   };
 }
 
@@ -136,7 +146,9 @@ function toChildFormValues(revision: ReviewChildRevision): ChildContentFormValue
     customer_type: revision.customer_type ?? "",
     feature_explanation: revision.feature_explanation ?? "",
     example: revision.example ?? "",
-    internal_notes: revision.internal_notes ?? ""
+    internal_notes: revision.internal_notes ?? "",
+    attachments: [...revision.attachments],
+    web_links: revision.web_links.map((webLink) => ({ ...webLink }))
   };
 }
 
@@ -186,6 +198,123 @@ function StructuredTextList({
           </Space>
         )}
       </Form.List>
+    </Form.Item>
+  );
+}
+
+function StructuredWebLinkList({ root }: { root: "primary_child" | "child" }): JSX.Element {
+  return (
+    <Form.Item label="相关网页链接">
+      <Form.List name={[root, "web_links"]}>
+        {(fields, { add, remove }) => (
+          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+            {fields.map((field) => (
+              <Space key={field.key} align="start" style={{ display: "flex", width: "100%" }}>
+                <Form.Item
+                  name={[field.name, "title"]}
+                  rules={[{ required: true, whitespace: true, message: "请输入链接标题" }]}
+                  style={{ flex: 1, marginBottom: 0 }}
+                >
+                  <Input placeholder="链接标题" />
+                </Form.Item>
+                <Form.Item
+                  name={[field.name, "url"]}
+                  rules={[
+                    { required: true, whitespace: true, message: "请输入链接地址" },
+                    { type: "url", message: "请输入有效的链接地址" }
+                  ]}
+                  style={{ flex: 2, marginBottom: 0 }}
+                >
+                  <Input placeholder="https://example.com" />
+                </Form.Item>
+                <Button type="link" danger onClick={() => remove(field.name)}>
+                  删除
+                </Button>
+              </Space>
+            ))}
+            <Button type="dashed" onClick={() => add()} block>
+              + 添加网页链接
+            </Button>
+          </Space>
+        )}
+      </Form.List>
+    </Form.Item>
+  );
+}
+
+function formatAttachmentSize(sizeBytes: number): string {
+  if (sizeBytes < 1024 * 1024) {
+    return `${Math.max(1, Math.ceil(sizeBytes / 1024))} KB`;
+  }
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ChildAttachmentField({ root }: { root: "primary_child" | "child" }): JSX.Element {
+  const form = Form.useFormInstance();
+  const name = [root, "attachments"];
+  const attachments = (Form.useWatch(name, form) as EvidenceAttachment[] | undefined) ?? [];
+  const [uploading, setUploading] = useState(false);
+
+  const upload = async (file: File): Promise<void> => {
+    if (attachments.length >= 10) {
+      message.warning("每个知识修订最多添加 10 个附件");
+      return;
+    }
+    setUploading(true);
+    try {
+      const attachment = await api.uploadKnowledgeAttachment(file);
+      form.setFieldValue(name, [...attachments, attachment]);
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "附件上传失败");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const remove = async (attachment: EvidenceAttachment): Promise<void> => {
+    try {
+      await api.deleteKnowledgeAttachment(attachment.id);
+    } catch (reason) {
+      if (!(reason instanceof ApiError) || ![404, 409].includes(reason.status)) {
+        message.error(reason instanceof Error ? reason.message : "附件删除失败");
+        return;
+      }
+    }
+    form.setFieldValue(
+      name,
+      attachments.filter((item) => item.id !== attachment.id)
+    );
+  };
+
+  return (
+    <Form.Item label="附件">
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        {attachments.map((attachment) => (
+          <Space key={attachment.id} wrap>
+            <Typography.Text>{attachment.name}</Typography.Text>
+            <Typography.Text type="secondary">{formatAttachmentSize(attachment.size_bytes)}</Typography.Text>
+            <Button type="link" danger size="small" onClick={() => void remove(attachment)}>
+              移除
+            </Button>
+          </Space>
+        ))}
+        <Upload
+          accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx,.txt"
+          beforeUpload={(file) => {
+            void upload(file);
+            return Upload.LIST_IGNORE;
+          }}
+          disabled={uploading || attachments.length >= 10}
+          showUploadList={false}
+        >
+          <Button loading={uploading} disabled={attachments.length >= 10}>
+            上传附件
+          </Button>
+        </Upload>
+        <Typography.Text type="secondary">
+          支持 PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。
+        </Typography.Text>
+      </Space>
     </Form.Item>
   );
 }
@@ -263,6 +392,8 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
                 <Form.Item name={[root, "internal_notes"]} label="内部备注">
                   <Input.TextArea rows={3} />
                 </Form.Item>
+                <ChildAttachmentField root={root} />
+                <StructuredWebLinkList root={root} />
               </>
             )
           }
