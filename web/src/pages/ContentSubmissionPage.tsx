@@ -818,7 +818,7 @@ export function ContentSubmissionPage(): JSX.Element {
                         placeholder={`选择已发布的${PARENT_CATEGORY_LABEL}`}
                         options={availableParents.map((parent) => ({
                           value: parent.id,
-                          label: `${parent.name}（${parent.canonical_keyword}）`
+                          label: `${parent.canonical_keyword}(${parent.name})`
                         }))}
                       />
                     </Form.Item>

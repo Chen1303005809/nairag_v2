@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
-import type { EditableContentEntry, KnowledgeBase, ReviewSubmission } from "../api/types";
+import type { AvailableParent, EditableContentEntry, KnowledgeBase, ReviewSubmission } from "../api/types";
 import { ContentSubmissionPage } from "./ContentSubmissionPage";
 
 vi.mock("../api/client", () => ({
@@ -85,6 +85,20 @@ const editableEntry: EditableContentEntry = {
   child_revision: rejectedSubmission.child_revision!
 };
 
+const availableParent: AvailableParent = {
+  id: "parent-1",
+  name: "问题反馈",
+  canonical_keyword: "账号登录",
+  primary_child_id: "child-1",
+  available_knowledge_bases: [
+    {
+      id: knowledgeBase.id,
+      logical_key: knowledgeBase.logical_key,
+      name: knowledgeBase.name
+    }
+  ]
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listKnowledgeBases.mockResolvedValue([knowledgeBase]);
@@ -105,7 +119,7 @@ describe("ContentSubmissionPage", () => {
 
     expect(await screen.findByRole("heading", { name: "问题大类" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "问题小类" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "新建问题大类及问题小类" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "新建问题大类" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "问题类型" })).toBeInTheDocument();
     const supplementaryFields = screen.getByRole("button", { name: /可补充说明/ });
     expect(supplementaryFields).toBeInTheDocument();
@@ -115,6 +129,16 @@ describe("ContentSubmissionPage", () => {
 
     fireEvent.click(supplementaryFields);
     expect(await screen.findByRole("textbox", { name: "功能说明" })).toBeInTheDocument();
+  });
+
+  it("shows available parent options with the keyword first", async () => {
+    mockedApi.listAvailableParents.mockResolvedValue([availableParent]);
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "新建问题小类" }));
+    fireEvent.mouseDown(await screen.findByRole("combobox", { name: "问题大类" }));
+
+    expect(await screen.findByRole("option", { name: "账号登录(问题反馈)" })).toBeInTheDocument();
   });
 
   it("opens rejected content in place and resubmits the edited revision", async () => {
