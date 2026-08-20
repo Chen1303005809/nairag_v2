@@ -27,6 +27,7 @@ from app.models.knowledge_content import (
     SearchQueryMode,
     SearchResultItem,
 )
+from app.services.ocr import OcrRecognition
 from app.services.retrieval import (
     IndexQuery,
     SearchIndexBackend,
@@ -151,6 +152,43 @@ def _parent_keyword_match(query: str, candidate: SearchCandidate) -> tuple[int, 
                 # Validation prevents this for newly-created data; ignoring a
                 # legacy malformed rule keeps search available.
                 continue
+    return None
+
+
+def _ocr_controlled_keyword_match(
+    recognition: OcrRecognition,
+    candidate: SearchCandidate,
+) -> tuple[int, str] | None:
+    """Match OCR only against exact canonical keywords or aliases.
+
+    OCR is inherently noisier than user-entered text, so its fallback path must
+    never evaluate a configurable regular expression. Chinese terms have no
+    reliable whitespace boundaries, while ASCII terms retain word boundaries.
+    """
+
+    normalized_text = _normalize_text(recognition.text)
+    normalized_keywords = {_normalize_text(value) for value in recognition.keywords}
+
+    def matches_controlled_term(value: str) -> bool:
+        normalized_term = _normalize_text(value)
+        if not normalized_term:
+            return False
+        if normalized_term in normalized_keywords:
+            return True
+        if re.fullmatch(r"[a-z0-9_]+", normalized_term):
+            return re.search(
+                rf"(?<![a-z0-9_]){re.escape(normalized_term)}(?![a-z0-9_])",
+                normalized_text,
+            ) is not None
+        return normalized_term in normalized_text
+
+    if matches_controlled_term(candidate.parent_revision.canonical_keyword):
+        return 3, "canonical_keyword"
+    for rule in candidate.lexical_rules:
+        if rule.rule_type == ParentLexicalRuleType.ALIAS and matches_controlled_term(
+            rule.rule_value
+        ):
+            return 2, "alias_keyword"
     return None
 
 
@@ -382,7 +420,13 @@ async def search_published_content(
     business_object: str | None = None,
     purpose: str | None = None,
     customer_type: str | None = None,
+    ocr_recognition: OcrRecognition | None = None,
+    ocr_keyword_fallback_min_confidence: float = 0.9,
 ) -> SearchDetails:
+    if ocr_recognition is not None and ocr_recognition.text != ocr_text:
+        raise ValueError("OCR recognition text must match ocr_text")
+    if not 0 <= ocr_keyword_fallback_min_confidence <= 1:
+        raise ValueError("ocr_keyword_fallback_min_confidence must be between 0 and 1")
     if knowledge_base_id is not None:
         knowledge_base = await session.get(KnowledgeBase, knowledge_base_id)
         if knowledge_base is None or not knowledge_base.is_active:
@@ -433,18 +477,27 @@ async def search_published_content(
             scored = [_score_candidate(item, query=query, ocr_text=ocr_text) for item in candidates]
         selected = [item for item in scored if item.score >= SEARCH_THRESHOLD]
 
-        fallback_queries = [value for value in (query, ocr_text) if value]
         fallback_candidates: list[ScoredCandidate] = []
         fallback_parent_ids: set[UUID] = set()
         for item in scored:
             if not item.candidate.child.is_primary:
                 continue
-            matches = [_parent_keyword_match(value, item.candidate) for value in fallback_queries]
-            matches = [match for match in matches if match is not None]
+            matches: list[tuple[int, str]] = []
+            if query:
+                query_match = _parent_keyword_match(query, item.candidate)
+                if query_match is not None:
+                    matches.append((query_match[0], "parent_keyword_fallback"))
+            if (
+                ocr_recognition is not None
+                and ocr_recognition.confidence >= ocr_keyword_fallback_min_confidence
+            ):
+                ocr_match = _ocr_controlled_keyword_match(ocr_recognition, item.candidate)
+                if ocr_match is not None:
+                    matches.append((ocr_match[0], "ocr_keyword_fallback"))
             if not matches or item.candidate.parent_revision.parent_id in fallback_parent_ids:
                 continue
             if item not in selected:
-                quality, _reason = max(matches, key=lambda match: match[0])
+                quality, match_reason = max(matches, key=lambda match: match[0])
                 fallback_candidates.append(
                     ScoredCandidate(
                         item.candidate,
@@ -454,7 +507,7 @@ async def search_published_content(
                             + _helpful_bonus(item.candidate.publication.helpful_count),
                             0.25,
                         ),
-                        "parent_keyword_fallback",
+                        match_reason,
                     )
                 )
                 fallback_parent_ids.add(item.candidate.parent_revision.parent_id)
@@ -478,6 +531,14 @@ async def search_published_content(
         user_id=user_id,
         query_text=query,
         ocr_text=ocr_text,
+        ocr_keywords=list(ocr_recognition.keywords) if ocr_recognition is not None else None,
+        ocr_confidence=ocr_recognition.confidence if ocr_recognition is not None else None,
+        ocr_model_version=(
+            ocr_recognition.model_version if ocr_recognition is not None else None
+        ),
+        ocr_image_sha256=(
+            ocr_recognition.image_sha256 if ocr_recognition is not None else None
+        ),
         query_mode=mode,
         knowledge_base_id=knowledge_base_id,
         no_match=not selected,

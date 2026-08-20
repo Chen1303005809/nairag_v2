@@ -1,0 +1,27 @@
+FROM paddlepaddle/paddle:3.2.1-gpu-cuda13.0-cudnn9.13@sha256:cff1d02843410aea877c80f5500262fe9a29321541c7c4dffaa90be947b321bc
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PADDLE_PDX_MODEL_SOURCE=BOS \
+    PADDLE_PDX_CACHE_HOME=/var/lib/nairag-ocr/model-cache
+
+WORKDIR /app
+
+COPY requirements.gpu.txt ./
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir -r requirements.gpu.txt \
+    && useradd --create-home --uid 10001 ocr \
+    && mkdir -p /var/lib/nairag-ocr/model-cache \
+    && chown -R ocr:ocr /app /var/lib/nairag-ocr
+
+COPY app ./app
+RUN chown -R ocr:ocr /app
+
+USER ocr
+
+EXPOSE 9003
+
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9003"]

@@ -12,6 +12,7 @@ class SearchRequest(BaseModel):
     retrieval_mode: Literal["vector", "field_filter"] = "vector"
     query: str | None = Field(default=None, max_length=4_000)
     ocr_text: str | None = Field(default=None, max_length=4_000)
+    ocr_recognition_token: str | None = Field(default=None, max_length=32_000)
     knowledge_base_id: UUID | None = None
     parent_type: str | None = Field(default=None, max_length=120)
     question_type: str | None = Field(default=None, max_length=255)
@@ -38,7 +39,13 @@ class SearchRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_retrieval_mode(self) -> SearchRequest:
-        has_text_query = self.query is not None or self.ocr_text is not None
+        if self.ocr_text is not None and self.ocr_recognition_token is not None:
+            raise ValueError("OCR 文本与 OCR 识别凭据不能同时提供")
+        has_text_query = (
+            self.query is not None
+            or self.ocr_text is not None
+            or self.ocr_recognition_token is not None
+        )
         has_field_filter = any(
             (
                 self.parent_type,
@@ -56,6 +63,14 @@ class SearchRequest(BaseModel):
         elif has_text_query:
             raise ValueError("字段筛选不支持文本问题或 OCR 文本，请使用向量检索方式")
         return self
+
+
+class OcrRecognitionResponse(BaseModel):
+    text: str
+    keywords: list[str]
+    confidence: float
+    model_version: str
+    recognition_token: str
 
 
 class SearchResultResponse(BaseModel):

@@ -240,6 +240,14 @@ export interface SearchFilters {
 
 export type SearchRetrievalMode = "vector" | "field_filter";
 
+export interface OcrRecognition {
+  text: string;
+  keywords: string[];
+  confidence: number;
+  model_version: string;
+  recognition_token: string;
+}
+
 export interface SearchGroup {
   parent_id: string;
   parent_name: string;

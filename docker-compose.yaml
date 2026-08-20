@@ -15,7 +15,7 @@ services:
     volumes:
       - ./volumes/postgres_data:/var/lib/postgresql/data
 
-  # Milvus standalone dependencies.  Keep these data directories separate from
+  # Milvus standalone dependencies. Keep these data directories separate from
   # the business attachment storage that will be added later.
   milvus-etcd:
     image: quay.io/coreos/etcd:v3.5.25
@@ -81,6 +81,27 @@ services:
       timeout: 20s
       retries: 5
 
+  ocr:
+    build:
+      context: ./ocr_service
+    environment:
+      OCR_DEVICE: cpu
+      OCR_MAX_IMAGE_BYTES: ${OCR_MAX_IMAGE_BYTES:-10485760}
+      OCR_MAX_IMAGE_PIXELS: ${OCR_MAX_IMAGE_PIXELS:-20000000}
+      OCR_CPU_THREADS: ${OCR_CPU_THREADS:-4}
+      PADDLE_PDX_MODEL_SOURCE: ${PADDLE_PDX_MODEL_SOURCE:-BOS}
+    volumes:
+      - ocr_model_cache:/var/lib/nairag-ocr/model-cache
+    expose:
+      - "9003"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9003/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 2m
+
   api:
     build:
       context: ./backend
@@ -99,10 +120,17 @@ services:
       EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
       MILVUS_URL: ${MILVUS_URL:-http://milvus:19530}
+      OCR_SERVICE_URL: ${OCR_SERVICE_URL:-http://ocr:9003}
+      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-60}
+      OCR_MAX_IMAGE_BYTES: ${OCR_MAX_IMAGE_BYTES:-10485760}
+      OCR_TICKET_TTL_SECONDS: ${OCR_TICKET_TTL_SECONDS:-600}
+      OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE: ${OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE:-0.9}
     depends_on:
       postgres:
         condition: service_healthy
       milvus:
+        condition: service_healthy
+      ocr:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -145,8 +173,8 @@ services:
       INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
       INDEX_BACKEND_MODE: ${INDEX_BACKEND_MODE:-local_artifact}
       EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      MILVUS_URL: ${MILVUS_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      MILVUS_URL: ${MILVUS_URL:-http://milvus:19530}
       WORKER_POLL_INTERVAL_SECONDS: "2"
       WORKER_LEASE_SECONDS: "300"
       COOKIE_SECURE: "false"
@@ -162,6 +190,9 @@ services:
     secrets:
       - postgres_password
       - jwt_signing_key
+
+volumes:
+  ocr_model_cache:
 
 secrets:
   postgres_password:

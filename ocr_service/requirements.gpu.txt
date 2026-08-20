@@ -1,0 +1,6 @@
+# The base image already contains the pinned PaddlePaddle 3.2.1 CUDA runtime.
+fastapi==0.115.8
+numpy==1.26.4
+paddleocr==3.7.0
+pillow==11.1.0
+uvicorn[standard]==0.34.0

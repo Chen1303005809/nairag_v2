@@ -3,22 +3,35 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuthenticatedSession,
+    get_app_settings,
     require_csrf,
     require_fully_authenticated_session,
 )
+from app.core.config import Settings
 from app.db.session import get_db_session
 from app.schemas.search import (
     HelpfulFeedbackRequest,
     HelpfulFeedbackResponse,
+    OcrRecognitionResponse,
     SearchParentGroupResponse,
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
+)
+from app.services.ocr import (
+    OcrInputError,
+    OcrNoTextError,
+    OcrProvider,
+    OcrProviderError,
+    OcrRecognitionTokenError,
+    create_ocr_recognition_token,
+    decode_ocr_recognition_token,
+    validate_ocr_image,
 )
 from app.services.search import (
     SearchKnowledgeBaseUnavailableError,
@@ -27,6 +40,7 @@ from app.services.search import (
     record_helpful_feedback,
     search_published_content,
 )
+from app.services.users import record_audit_event
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -75,6 +89,80 @@ def as_search_response(details) -> SearchResponse:
     )
 
 
+@router.post("/ocr", response_model=OcrRecognitionResponse)
+async def recognize_search_image(
+    image: Annotated[UploadFile, File(description="PNG、JPEG 或 WebP 查询图片")],
+    request: Request,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> OcrRecognitionResponse:
+    """Recognize a transient query image and return a short-lived trusted result."""
+
+    try:
+        try:
+            image_bytes = await image.read(settings.ocr_max_image_bytes + 1)
+        finally:
+            await image.close()
+        media_type = validate_ocr_image(image_bytes, max_bytes=settings.ocr_max_image_bytes)
+    except OcrInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    provider: OcrProvider | None = getattr(request.app.state, "ocr_provider", None)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OCR 服务尚未配置，请联系管理员",
+        )
+    try:
+        recognition = await provider.recognize(image_bytes, media_type)
+    except OcrInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except OcrNoTextError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except OcrProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OCR 服务暂时不可用，请稍后重试",
+        ) from exc
+
+    record_audit_event(
+        session,
+        event_type="search.ocr_recognized",
+        actor_user_id=user.user.id,
+        target_type="search_ocr",
+        payload={
+            "ocr_text": recognition.text,
+            "keywords": list(recognition.keywords),
+            "confidence": recognition.confidence,
+            "model_version": recognition.model_version,
+            "image_sha256": recognition.image_sha256,
+        },
+    )
+    await session.commit()
+    return OcrRecognitionResponse(
+        text=recognition.text,
+        keywords=list(recognition.keywords),
+        confidence=recognition.confidence,
+        model_version=recognition.model_version,
+        recognition_token=create_ocr_recognition_token(
+            recognition,
+            user_id=user.user.id,
+            settings=settings,
+        ),
+    )
+
+
 @router.post("", response_model=SearchResponse)
 async def search_content(
     body: SearchRequest,
@@ -82,13 +170,29 @@ async def search_content(
     user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
     _csrf: Annotated[None, Depends(require_csrf)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> SearchResponse:
+    ocr_text = body.ocr_text
+    ocr_recognition = None
+    if body.ocr_recognition_token is not None:
+        try:
+            ocr_recognition = decode_ocr_recognition_token(
+                body.ocr_recognition_token,
+                user_id=user.user.id,
+                settings=settings,
+            )
+        except OcrRecognitionTokenError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="OCR 识别凭据无效或已过期，请重新上传图片",
+            ) from exc
+        ocr_text = ocr_recognition.text
     try:
         details = await search_published_content(
             session,
             user_id=user.user.id,
             query=body.query,
-            ocr_text=body.ocr_text,
+            ocr_text=ocr_text,
             knowledge_base_id=body.knowledge_base_id,
             retrieval_mode=body.retrieval_mode,
             parent_type=body.parent_type,
@@ -98,6 +202,8 @@ async def search_content(
             customer_type=body.customer_type,
             limit=body.limit,
             index_backend=request.app.state.search_index_backend,
+            ocr_recognition=ocr_recognition,
+            ocr_keyword_fallback_min_confidence=settings.ocr_keyword_fallback_min_confidence,
         )
     except SearchKnowledgeBaseUnavailableError as exc:
         raise HTTPException(

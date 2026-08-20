@@ -11,6 +11,7 @@
 3. 父类、子条目与审核提交：不可变修订、父类—主子条目原子投稿、普通子条目目标库门禁和投稿界面。
 4. 审查工作台与发布状态：按知识库授权过滤审核队列、不可变审核决定、父类聚合全局发布、普通子条目分库发布和归档。
 5. 异步索引与检索基础：持久化索引任务、独立 worker、租约/重试、可替换的 Qwen/Milvus 适配层、离线 artifact 混合召回、发布事实回查、父类关键词保底和有用反馈。
+6. 查询图片 OCR：前端上传 PNG/JPEG/WebP 后由本地 `PP-OCRv6_medium` 服务识别；API 只暂存请求内图片，审计与检索事件只记录清洗文本、关键词、置信度、模型版本和图片哈希。配置方式见 [backend/.env.example](backend/.env.example)。
 
 后续实施请从 [实施交接](docs/实施交接.md) 继续，并以 [已确认实施基线](docs/已确认实施基线.md) 为准。
 
@@ -53,6 +54,22 @@ API 文档位于 `http://127.0.0.1:8000/docs`。登录前需先请求 `GET /api/
 
 Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登录。Compose 容器运行时则由 `web` 服务中的 Nginx 托管构建产物，并将 `/api/` 反向代理到 `api` 服务。
 
+Compose 已内置本地 `PP-OCRv6_medium` 服务，API 默认通过内部地址 `http://ocr:9003` 调用它；OCR 容器不暴露宿主机端口。开发环境使用 CPU 容器，生产环境通过 `docker-compose.prod.yaml` 切换为 NVIDIA CUDA 容器，二者保持同一 HTTP 协议、模型版本与缓存位置。首次启动会下载固定的检测与识别模型到 Docker 命名卷 `ocr_model_cache`，后续启动复用该缓存。查询原图只在 API 和 OCR 服务的请求内存中处理，不会写入该卷或数据库。离线交付前应在受控网络中先启动一次 `ocr` 服务并备份/随交付物携带该模型缓存；模型权重不提交到仓库。
+
+若 API 在 Compose 外单独运行，可按 [backend/.env.example](backend/.env.example) 设置 `OCR_SERVICE_URL`，接入同一 HTTP 协议的本地服务。
+
 ## 容器开发
 
-`docker compose up --build` 会启动 PostgreSQL、API、前端和独立索引 worker。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
+开发环境运行：
+
+```bash
+docker compose up --build
+```
+
+生产环境运行（Linux x86_64、NVIDIA 驱动与 NVIDIA Container Toolkit）：
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up --build -d
+```
+
+前者会启动 PostgreSQL、Milvus standalone（etcd、MinIO、Milvus）、CPU OCR、API、前端和独立索引 worker；后者只将同一 `ocr` 服务替换为固定的 PaddlePaddle CUDA 13.0 镜像，并申请 NVIDIA GPU。首次预热时间取决于模型下载。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，Milvus 使用 `volumes/milvus/` 下独立的 etcd、MinIO 和数据目录，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`；OCR 模型使用独立 Docker 命名卷 `ocr_model_cache`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。

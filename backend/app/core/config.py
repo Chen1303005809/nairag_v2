@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     reranker_service_api_key_file: Path | None = None
     reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
     reranker_timeout_seconds: float = 60.0
+    ocr_service_url: str | None = None
+    ocr_service_api_key_file: Path | None = None
+    ocr_model: str = "PP-OCRv6_medium"
+    ocr_timeout_seconds: float = 60.0
+    ocr_max_image_bytes: int = 10 * 1024 * 1024
+    ocr_ticket_ttl_seconds: int = 600
+    ocr_keyword_fallback_min_confidence: float = 0.9
     milvus_url: str | None = None
     milvus_token_file: Path | None = None
     worker_id: str | None = None
@@ -54,6 +61,13 @@ class Settings(BaseSettings):
     argon2_parallelism: int = 1
     password_min_length: int = 12
     password_max_length: int = 256
+
+    @field_validator("ocr_service_url", mode="before")
+    @classmethod
+    def normalize_optional_ocr_service_url(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_security_settings(self) -> Settings:
@@ -93,6 +107,16 @@ class Settings(BaseSettings):
             raise ValueError("EMBEDDING_TIMEOUT_SECONDS must be positive")
         if self.reranker_timeout_seconds <= 0:
             raise ValueError("RERANKER_TIMEOUT_SECONDS must be positive")
+        if self.ocr_model != "PP-OCRv6_medium":
+            raise ValueError("OCR_MODEL must be exactly PP-OCRv6_medium")
+        if self.ocr_timeout_seconds <= 0:
+            raise ValueError("OCR_TIMEOUT_SECONDS must be positive")
+        if not 1 <= self.ocr_max_image_bytes <= 20 * 1024 * 1024:
+            raise ValueError("OCR_MAX_IMAGE_BYTES must be between 1 and 20971520")
+        if not 1 <= self.ocr_ticket_ttl_seconds <= 3600:
+            raise ValueError("OCR_TICKET_TTL_SECONDS must be between 1 and 3600")
+        if not 0 <= self.ocr_keyword_fallback_min_confidence <= 1:
+            raise ValueError("OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE must be between 0 and 1")
         if self.index_backend_mode == "milvus":
             if not self.embedding_service_url:
                 raise ValueError("EMBEDDING_SERVICE_URL is required for Milvus indexing")
@@ -153,6 +177,12 @@ class Settings(BaseSettings):
             self.reranker_service_api_key_file,
             "RERANKER_SERVICE_API_KEY_FILE",
         )
+
+    @property
+    def ocr_api_key(self) -> str | None:
+        if self.ocr_service_api_key_file is None:
+            return None
+        return read_secret_file(self.ocr_service_api_key_file, "OCR_SERVICE_API_KEY_FILE")
 
 
 def read_secret_file(path: Path, setting_name: str) -> str:

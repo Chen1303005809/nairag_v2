@@ -6,6 +6,7 @@ import type {
   LoginResponse,
   ManagedKnowledgeBase,
   ManagedKnowledgeEntry,
+  OcrRecognition,
   ParentContentInput,
   ReviewerAssignment,
   ReviewDecision,
@@ -106,6 +107,14 @@ async function sessionMutation<T>(method: string, path: string, body?: object): 
       ? { method, headers: { "X-CSRF-Token": csrfToken } }
       : jsonRequest(method, body, csrfToken)
   );
+}
+
+async function sessionFormMutation<T>(method: string, path: string, body: FormData): Promise<T> {
+  return request<T>(path, {
+    method,
+    headers: { "X-CSRF-Token": sessionCsrfToken() },
+    body
+  });
 }
 
 export const api = {
@@ -224,11 +233,13 @@ export const api = {
     retrievalMode: SearchRetrievalMode,
     query: string | undefined,
     knowledgeBaseId?: string,
-    filters: SearchFilters = {}
+    filters: SearchFilters = {},
+    ocrRecognitionToken?: string
   ): Promise<SearchResponse> =>
     sessionMutation<SearchResponse>("POST", "/search", {
       retrieval_mode: retrievalMode,
       query: query || null,
+      ocr_recognition_token: ocrRecognitionToken || null,
       knowledge_base_id: knowledgeBaseId || null,
       parent_type: filters.parent_type || null,
       question_type: filters.question_type || null,
@@ -237,6 +248,12 @@ export const api = {
       customer_type: filters.customer_type || null,
       limit: 10
     }),
+
+  recognizeSearchImage: (image: File): Promise<OcrRecognition> => {
+    const form = new FormData();
+    form.append("image", image);
+    return sessionFormMutation<OcrRecognition>("POST", "/search/ocr", form);
+  },
 
   submitHelpfulFeedback: (
     searchEventId: string,

@@ -5,6 +5,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -610,6 +611,10 @@ class SearchEvent(Base):
     )
     query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ocr_keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    ocr_confidence: Mapped[float | None] = mapped_column(nullable=True)
+    ocr_model_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    ocr_image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     query_mode: Mapped[SearchQueryMode] = mapped_column(
         SqlEnum(
             SearchQueryMode,

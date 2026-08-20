@@ -1,0 +1,30 @@
+# Production overlay. Apply it together with docker-compose.yaml:
+# docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up --build -d
+#
+# This requires a Linux x86_64 host with the NVIDIA Container Toolkit installed.
+services:
+  ocr:
+    build:
+      context: ./ocr_service
+      dockerfile: Dockerfile.gpu
+    image: nairag-ocr:ppocrv6-medium-gpu
+    platform: linux/amd64
+    environment:
+      OCR_DEVICE: gpu:0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  api:
+    environment:
+      APP_ENVIRONMENT: production
+      COOKIE_SECURE: "true"
+
+  worker:
+    environment:
+      APP_ENVIRONMENT: production
+      COOKIE_SECURE: "true"

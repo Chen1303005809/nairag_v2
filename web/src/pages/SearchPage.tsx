@@ -10,14 +10,16 @@ import {
   Tag,
   Tabs,
   Typography,
+  Upload,
   message
 } from "antd";
-import { SearchOutlined, LikeOutlined } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { DeleteOutlined, LikeOutlined, PictureOutlined, SearchOutlined } from "@ant-design/icons";
+import { useCallback, useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type {
   KnowledgeBase,
+  OcrRecognition,
   SearchResponse,
   SearchResult,
   SearchRetrievalMode
@@ -30,11 +32,26 @@ import {
   questionTypeOptions
 } from "../constants/knowledgeOptions";
 
+function imageFromClipboard(clipboardData: DataTransfer | null): File | undefined {
+  const items = Array.from(clipboardData?.items ?? []);
+  for (const item of items) {
+    if (item.kind === "file" && (item.type.startsWith("image/") || !item.type)) {
+      const image = item.getAsFile();
+      if (image) {
+        return image;
+      }
+    }
+  }
+  const files = Array.from(clipboardData?.files ?? []);
+  return files.find((file) => file.type.startsWith("image/")) ?? files.find((file) => !file.type);
+}
+
 export function SearchPage(): JSX.Element {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseId, setKnowledgeBaseId] = useState<string>();
   const [retrievalMode, setRetrievalMode] = useState<SearchRetrievalMode>("vector");
   const [query, setQuery] = useState("");
+  const [ocrRecognition, setOcrRecognition] = useState<OcrRecognition>();
   const [parentType, setParentType] = useState<string>();
   const [questionType, setQuestionType] = useState<string>();
   const [businessObject, setBusinessObject] = useState<string>();
@@ -42,6 +59,7 @@ export function SearchPage(): JSX.Element {
   const [customerType, setCustomerType] = useState<string>();
   const [result, setResult] = useState<SearchResponse>();
   const [loading, setLoading] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
   const [feedbackIds, setFeedbackIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -55,8 +73,8 @@ export function SearchPage(): JSX.Element {
 
   const runSearch = async (): Promise<void> => {
     const normalizedQuery = query.trim();
-    if (retrievalMode === "vector" && !normalizedQuery) {
-      message.warning("请输入要查询的问题");
+    if (retrievalMode === "vector" && !normalizedQuery && !ocrRecognition) {
+      message.warning("请输入问题或上传包含文字的图片");
       return;
     }
     setLoading(true);
@@ -74,7 +92,8 @@ export function SearchPage(): JSX.Element {
                 purpose,
                 customer_type: customerType
               }
-            : {}
+            : {},
+          retrievalMode === "vector" ? ocrRecognition?.recognition_token : undefined
         )
       );
       setFeedbackIds(new Set());
@@ -85,8 +104,56 @@ export function SearchPage(): JSX.Element {
     }
   };
 
+  const recognizeImage = useCallback(async (file: File): Promise<void> => {
+    const supportedTypes = ["image/png", "image/jpeg", "image/webp"];
+    if (file.type && !supportedTypes.includes(file.type)) {
+      message.warning("仅支持 PNG、JPEG 或 WebP 图片");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      message.warning("图片不能超过 10 MB");
+      return;
+    }
+    setOcrLoading(true);
+    setOcrRecognition(undefined);
+    setResult(undefined);
+    setFeedbackIds(new Set());
+    try {
+      const recognition = await api.recognizeSearchImage(file);
+      setOcrRecognition(recognition);
+      message.success("图片文字识别完成");
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "图片文字识别失败");
+    } finally {
+      setOcrLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (retrievalMode !== "vector") {
+      return;
+    }
+    const recognizePastedImage = (event: ClipboardEvent): void => {
+      const image = imageFromClipboard(event.clipboardData);
+      if (!image) {
+        return;
+      }
+      event.preventDefault();
+      if (ocrLoading || loading) {
+        message.info("当前操作尚未完成，请稍后再粘贴图片");
+        return;
+      }
+      void recognizeImage(image);
+    };
+    window.addEventListener("paste", recognizePastedImage);
+    return () => window.removeEventListener("paste", recognizePastedImage);
+  }, [loading, ocrLoading, recognizeImage, retrievalMode]);
+
   const changeRetrievalMode = (value: string): void => {
     setRetrievalMode(value as SearchRetrievalMode);
+    if (value !== "vector") {
+      setOcrRecognition(undefined);
+    }
     setResult(undefined);
     setFeedbackIds(new Set());
   };
@@ -129,7 +196,7 @@ export function SearchPage(): JSX.Element {
         <div>
           <Typography.Title level={3}>知识检索</Typography.Title>
           <Typography.Paragraph type="secondary">
-            向量检索与字段筛选相互独立；字段筛选会返回所有符合条件的已发布条目。
+            可输入问题、上传包含文字的图片，或将两者结合检索；字段筛选会返回所有符合条件的已发布条目。
           </Typography.Paragraph>
         </div>
       </div>
@@ -142,29 +209,75 @@ export function SearchPage(): JSX.Element {
               key: "vector",
               label: "向量检索",
               children: (
-                <Space.Compact style={{ width: "100%" }}>
-                  <Input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    onPressEnter={() => void runSearch()}
-                    placeholder="例如：如何找回密码？"
-                    prefix={<SearchOutlined />}
-                  />
-                  <Select
-                    allowClear
-                    value={knowledgeBaseId}
-                    onChange={setKnowledgeBaseId}
-                    placeholder="全部知识库"
-                    options={knowledgeBases.map((knowledgeBase) => ({
-                      value: knowledgeBase.id,
-                      label: knowledgeBase.name
-                    }))}
-                    style={{ minWidth: 180 }}
-                  />
-                  <Button type="primary" loading={loading} onClick={() => void runSearch()}>
-                    向量检索
-                  </Button>
-                </Space.Compact>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Space.Compact style={{ width: "100%" }}>
+                    <Input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      onPressEnter={() => void runSearch()}
+                      placeholder="例如：如何找回密码？"
+                      prefix={<SearchOutlined />}
+                    />
+                    <Select
+                      allowClear
+                      value={knowledgeBaseId}
+                      onChange={setKnowledgeBaseId}
+                      placeholder="全部知识库"
+                      options={knowledgeBases.map((knowledgeBase) => ({
+                        value: knowledgeBase.id,
+                        label: knowledgeBase.name
+                      }))}
+                      style={{ minWidth: 180 }}
+                    />
+                    <Button type="primary" loading={loading} onClick={() => void runSearch()}>
+                      向量检索
+                    </Button>
+                  </Space.Compact>
+                  <Space wrap>
+                    <Upload
+                      accept="image/png,image/jpeg,image/webp"
+                      beforeUpload={(file) => {
+                        void recognizeImage(file);
+                        return Upload.LIST_IGNORE;
+                      }}
+                      disabled={ocrLoading || loading}
+                      showUploadList={false}
+                    >
+                      <Button icon={<PictureOutlined />} loading={ocrLoading}>
+                        上传图片识别
+                      </Button>
+                    </Upload>
+                    <Typography.Text type="secondary">
+                      支持 PNG、JPEG、WebP，最大 10 MB；也可按 ⌘V / Ctrl+V 粘贴截图。
+                    </Typography.Text>
+                  </Space>
+                  {ocrRecognition ? (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message={`已识别文字（置信度 ${(ocrRecognition.confidence * 100).toFixed(1)}%）`}
+                      description={
+                        <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                          <Typography.Text>{ocrRecognition.text}</Typography.Text>
+                          <Space wrap>
+                            <Tag>{ocrRecognition.model_version}</Tag>
+                            {ocrRecognition.keywords.map((keyword) => (
+                              <Tag key={keyword}>{keyword}</Tag>
+                            ))}
+                            <Button
+                              type="link"
+                              danger
+                              icon={<DeleteOutlined />}
+                              onClick={() => setOcrRecognition(undefined)}
+                            >
+                              移除图片
+                            </Button>
+                          </Space>
+                        </Space>
+                      }
+                    />
+                  ) : null}
+                </Space>
               )
             },
             {
@@ -261,7 +374,8 @@ export function SearchPage(): JSX.Element {
                         <Tag color="blue">{item.knowledge_base_name}</Tag>
                         <Tag
                           color={
-                            item.match_reason === "parent_keyword_fallback"
+                            item.match_reason === "parent_keyword_fallback" ||
+                            item.match_reason === "ocr_keyword_fallback"
                               ? "gold"
                               : item.match_reason === "field_filter"
                                 ? "cyan"
@@ -270,6 +384,8 @@ export function SearchPage(): JSX.Element {
                         >
                           {item.match_reason === "parent_keyword_fallback"
                             ? "关键词保底"
+                            : item.match_reason === "ocr_keyword_fallback"
+                              ? "OCR 关键词保底"
                             : item.match_reason === "field_filter"
                               ? "字段筛选"
                               : "相关命中"}
