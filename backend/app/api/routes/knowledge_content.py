@@ -12,7 +12,13 @@ from app.api.deps import (
     require_fully_authenticated_session,
 )
 from app.db.session import get_db_session
-from app.models.user_account import UserRole
+from app.models.knowledge_content import (
+    ChildRevision,
+    ChildRevisionQuestionVariant,
+    ParentLexicalRule,
+    ParentRevision,
+)
+from app.models.user_account import UserAccount, UserRole
 from app.schemas.knowledge_content import (
     AvailableKnowledgeBaseResponse,
     AvailableParentResponse,
@@ -55,6 +61,7 @@ from app.services.knowledge_content import (
     decide_review_target,
     get_publication,
     list_available_parents,
+    list_review_history,
     list_review_queue,
     list_submissions_by_author,
     resubmit_rejected_child,
@@ -86,8 +93,65 @@ def as_available_parent_response(details: AvailableParentDetails) -> AvailablePa
     )
 
 
-def as_submission_response(details: SubmissionDetails) -> ReviewSubmissionResponse:
+def as_user_response(user: UserAccount) -> ReviewSubmitterResponse:
+    return ReviewSubmitterResponse(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+    )
+
+
+def as_parent_revision_response(
+    parent_revision: ParentRevision | None,
+    lexical_rules: list[ParentLexicalRule],
+) -> ReviewParentRevisionResponse | None:
+    if parent_revision is None:
+        return None
+    return ReviewParentRevisionResponse(
+        id=parent_revision.id,
+        revision_number=parent_revision.revision_number,
+        name=parent_revision.name,
+        canonical_keyword=parent_revision.canonical_keyword,
+        lexical_rules=[
+            ParentLexicalRuleInput(
+                rule_type=rule.rule_type,
+                rule_value=rule.rule_value,
+            )
+            for rule in lexical_rules
+        ],
+    )
+
+
+def as_child_revision_response(
+    child_revision: ChildRevision,
+    question_variants: list[ChildRevisionQuestionVariant],
+) -> ReviewChildRevisionResponse:
+    return ReviewChildRevisionResponse(
+        id=child_revision.id,
+        revision_number=child_revision.revision_number,
+        question=child_revision.question,
+        response_content=child_revision.response_content,
+        question_variants=[variant.question_text for variant in question_variants],
+        follow_up_guidance=child_revision.follow_up_guidance,
+        question_type=child_revision.question_type,
+        business_object=child_revision.business_object,
+        purpose=child_revision.purpose,
+        customer_type=child_revision.customer_type,
+        feature_explanation=child_revision.feature_explanation,
+        example=child_revision.example,
+        internal_notes=child_revision.internal_notes,
+    )
+
+
+def as_submission_response(
+    details: SubmissionDetails,
+    *,
+    submitter: UserAccount | None = None,
+) -> ReviewSubmissionResponse:
     submission = details.submission
+    author = details.submitter or submitter
+    if author is None:
+        raise RuntimeError("submission response requires its submitter")
     return ReviewSubmissionResponse(
         id=submission.id,
         submission_kind=submission.submission_kind,
@@ -97,51 +161,45 @@ def as_submission_response(details: SubmissionDetails) -> ReviewSubmissionRespon
         child_id=submission.child_id,
         child_revision_id=submission.child_revision_id,
         title=details.title,
+        submitter=as_user_response(author),
         targets=[
             ReviewSubmissionTargetResponse(
                 id=knowledge_base.id,
                 logical_key=knowledge_base.logical_key,
                 name=knowledge_base.name,
                 status=target.status,
-                review_comment=details.target_comments.get(target.knowledge_base_id),
+                review_comment=(
+                    details.target_reviews[target.knowledge_base_id].decision.comment
+                    if target.knowledge_base_id in details.target_reviews
+                    else None
+                ),
+                reviewer=(
+                    as_user_response(details.target_reviews[target.knowledge_base_id].reviewer)
+                    if target.knowledge_base_id in details.target_reviews
+                    else None
+                ),
+                reviewed_at=(
+                    details.target_reviews[target.knowledge_base_id].decision.decided_at
+                    if target.knowledge_base_id in details.target_reviews
+                    else None
+                ),
+                review_decision=(
+                    details.target_reviews[target.knowledge_base_id].decision.decision
+                    if target.knowledge_base_id in details.target_reviews
+                    else None
+                ),
             )
             for target, knowledge_base in details.targets
         ],
         submitted_at=submission.submitted_at,
-        parent_revision=(
-            ReviewParentRevisionResponse(
-                id=details.parent_revision.id,
-                revision_number=details.parent_revision.revision_number,
-                name=details.parent_revision.name,
-                canonical_keyword=details.parent_revision.canonical_keyword,
-                lexical_rules=[
-                    ParentLexicalRuleInput(
-                        rule_type=rule.rule_type,
-                        rule_value=rule.rule_value,
-                    )
-                    for rule in details.parent_lexical_rules
-                ],
-            )
-            if details.parent_revision is not None
-            else None
+        parent_revision=as_parent_revision_response(
+            details.parent_revision,
+            details.parent_lexical_rules,
         ),
         child_revision=(
-            ReviewChildRevisionResponse(
-                id=details.child_revision.id,
-                revision_number=details.child_revision.revision_number,
-                question=details.child_revision.question,
-                response_content=details.child_revision.response_content,
-                question_variants=[
-                    variant.question_text for variant in details.child_question_variants
-                ],
-                follow_up_guidance=details.child_revision.follow_up_guidance,
-                question_type=details.child_revision.question_type,
-                business_object=details.child_revision.business_object,
-                purpose=details.child_revision.purpose,
-                customer_type=details.child_revision.customer_type,
-                feature_explanation=details.child_revision.feature_explanation,
-                example=details.child_revision.example,
-                internal_notes=details.child_revision.internal_notes,
+            as_child_revision_response(
+                details.child_revision,
+                details.child_question_variants,
             )
             if details.child_revision is not None
             else None
@@ -213,7 +271,6 @@ def _require_review_actor(user: AuthenticatedSession) -> None:
 
 
 def as_review_queue_response(details: ReviewQueueDetails) -> ReviewQueueItemResponse:
-    parent_revision = details.parent_revision
     return ReviewQueueItemResponse(
         id=details.submission.id,
         review_submission_id=details.submission.id,
@@ -230,46 +287,26 @@ def as_review_queue_response(details: ReviewQueueDetails) -> ReviewQueueItemResp
             logical_key=details.knowledge_base.logical_key,
             name=details.knowledge_base.name,
         ),
-        submitter=ReviewSubmitterResponse(
-            id=details.submitter.id,
-            username=details.submitter.username,
-            display_name=details.submitter.display_name,
+        submitter=as_user_response(details.submitter),
+        reviewer=(as_user_response(details.reviewer) if details.reviewer is not None else None),
+        review_decision=(
+            details.review_decision.decision if details.review_decision is not None else None
         ),
-        parent_revision=(
-            ReviewParentRevisionResponse(
-                id=parent_revision.id,
-                revision_number=parent_revision.revision_number,
-                name=parent_revision.name,
-                canonical_keyword=parent_revision.canonical_keyword,
-                lexical_rules=[
-                    ParentLexicalRuleInput(
-                        rule_type=rule.rule_type,
-                        rule_value=rule.rule_value,
-                    )
-                    for rule in details.parent_lexical_rules
-                ],
-            )
-            if parent_revision is not None
-            else None
+        review_comment=(
+            details.review_decision.comment if details.review_decision is not None else None
         ),
-        child_revision=ReviewChildRevisionResponse(
-            id=details.child_revision.id,
-            revision_number=details.child_revision.revision_number,
-            question=details.child_revision.question,
-            response_content=details.child_revision.response_content,
-            question_variants=[
-                variant.question_text for variant in details.child_question_variants
-            ],
-            follow_up_guidance=details.child_revision.follow_up_guidance,
-            question_type=details.child_revision.question_type,
-            business_object=details.child_revision.business_object,
-            purpose=details.child_revision.purpose,
-            customer_type=details.child_revision.customer_type,
-            feature_explanation=details.child_revision.feature_explanation,
-            example=details.child_revision.example,
-            internal_notes=details.child_revision.internal_notes,
+        parent_revision=as_parent_revision_response(
+            details.parent_revision,
+            details.parent_lexical_rules,
+        ),
+        child_revision=as_child_revision_response(
+            details.child_revision,
+            details.child_question_variants,
         ),
         submitted_at=details.submission.submitted_at,
+        reviewed_at=(
+            details.review_decision.decided_at if details.review_decision is not None else None
+        ),
     )
 
 
@@ -329,7 +366,7 @@ async def create_parent_aggregate_submission(
         },
     )
     await session.commit()
-    return as_submission_response(submission)
+    return as_submission_response(submission, submitter=user.user)
 
 
 @router.post(
@@ -368,7 +405,7 @@ async def create_parent_aggregate_revision_submission(
         payload={"review_submission_id": str(submission.submission.id)},
     )
     await session.commit()
-    return as_submission_response(submission)
+    return as_submission_response(submission, submitter=user.user)
 
 
 @router.post(
@@ -412,7 +449,7 @@ async def create_child_submission(
         },
     )
     await session.commit()
-    return as_submission_response(submission)
+    return as_submission_response(submission, submitter=user.user)
 
 
 @router.post(
@@ -458,7 +495,7 @@ async def create_child_revision_submission(
         },
     )
     await session.commit()
-    return as_submission_response(submission)
+    return as_submission_response(submission, submitter=user.user)
 
 
 @router.post(
@@ -503,7 +540,7 @@ async def resubmit_rejected_parent_submission(
         },
     )
     await session.commit()
-    return as_submission_response(submission)
+    return as_submission_response(submission, submitter=user.user)
 
 
 @router.post(
@@ -553,7 +590,7 @@ async def resubmit_rejected_child_submission(
         },
     )
     await session.commit()
-    return as_submission_response(submission)
+    return as_submission_response(submission, submitter=user.user)
 
 
 @router.get(
@@ -581,6 +618,24 @@ async def list_content_review_queue(
     except ReviewAccessDeniedError as exc:
         raise as_content_http_error(exc) from exc
     return [as_review_queue_response(item) for item in queue]
+
+
+@router.get(
+    "/review-history",
+    response_model=list[ReviewQueueItemResponse],
+)
+@router.get(
+    "/reviews/history",
+    response_model=list[ReviewQueueItemResponse],
+    include_in_schema=False,
+)
+async def list_current_reviewer_history(
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[ReviewQueueItemResponse]:
+    _require_review_actor(user)
+    history = await list_review_history(session, reviewer_user_id=user.user.id)
+    return [as_review_queue_response(item) for item in history]
 
 
 @router.post(

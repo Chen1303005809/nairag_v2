@@ -29,6 +29,7 @@ import type {
   ReviewSubmission,
   ReviewSubmissionStatus
 } from "../api/types";
+import { formatDateTime } from "../dateTime";
 import {
   businessObjectOptions,
   customerTypeOptions,
@@ -462,16 +463,51 @@ export function ContentSubmissionPage(): JSX.Element {
       )
     },
     {
+      title: "上传者",
+      key: "submitter",
+      render: (_value: unknown, submission: ReviewSubmission) =>
+        `${submission.submitter.display_name}（${submission.submitter.username}）`
+    },
+    {
       title: "状态",
       dataIndex: "status",
       key: "status",
       render: (value: ReviewSubmissionStatus) => submissionStatus(value)
     },
     {
-      title: "提交时间",
+      title: "上传时间",
       dataIndex: "submitted_at",
       key: "submitted_at",
-      render: (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false })
+      render: (value: string) => formatDateTime(value)
+    },
+    {
+      title: "审核者",
+      key: "reviewer",
+      render: (_value: unknown, submission: ReviewSubmission) => (
+        <Space direction="vertical" size={0}>
+          {submission.targets.map((target) => (
+            <Typography.Text key={target.id} type={target.reviewer ? undefined : "secondary"}>
+              {target.name}：
+              {target.reviewer
+                ? `${target.reviewer.display_name}（${target.reviewer.username}）`
+                : "待审核"}
+            </Typography.Text>
+          ))}
+        </Space>
+      )
+    },
+    {
+      title: "实际审核时间",
+      key: "reviewed_at",
+      render: (_value: unknown, submission: ReviewSubmission) => (
+        <Space direction="vertical" size={0}>
+          {submission.targets.map((target) => (
+            <Typography.Text key={target.id} type={target.reviewed_at ? undefined : "secondary"}>
+              {target.name}：{formatDateTime(target.reviewed_at)}
+            </Typography.Text>
+          ))}
+        </Space>
+      )
     },
     {
       title: "操作",
@@ -626,6 +662,7 @@ export function ContentSubmissionPage(): JSX.Element {
                 loading={loading}
                 columns={submissionColumns}
                 dataSource={submissions}
+                scroll={{ x: 1300 }}
                 pagination={{ pageSize: 10, hideOnSinglePage: true }}
                 locale={{ emptyText: "尚未提交知识内容" }}
               />

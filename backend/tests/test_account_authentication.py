@@ -543,6 +543,18 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         await reviewer.get("/api/v1/knowledge-content/review-queue")
                     ).json() == []
 
+                    review_history = await reviewer.get(
+                        "/api/v1/knowledge-content/review-history"
+                    )
+                    assert review_history.status_code == 200
+                    history_items = review_history.json()
+                    assert len(history_items) == 2
+                    assert {item["submitter"]["username"] for item in history_items} == {"author"}
+                    assert {item["reviewer"]["username"] for item in history_items} == {"reviewer"}
+                    assert {item["review_decision"] for item in history_items} == {"approved"}
+                    assert all(item["submitted_at"] for item in history_items)
+                    assert all(item["reviewed_at"] for item in history_items)
+
                     async with app.state.session_factory() as session:  # type: ignore[attr-defined]
                         jobs = list((await session.scalars(select(IndexJob))).all())
                         assert len(jobs) == 2
@@ -620,6 +632,12 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     child_targets = {
                         target["id"]: target for target in child_submission["targets"]
                     }
+                    assert child_submission["submitter"]["username"] == "author"
+                    assert (
+                        child_targets[knowledge_base_ids[0]]["reviewer"]["username"]
+                        == "reviewer"
+                    )
+                    assert child_targets[knowledge_base_ids[0]]["reviewed_at"] is not None
                     assert child_targets[knowledge_base_ids[1]]["status"] == "rejected"
                     assert (
                         child_targets[knowledge_base_ids[1]]["review_comment"]
@@ -654,6 +672,9 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                             "name": "销售帮助",
                             "status": "pending_review",
                             "review_comment": None,
+                            "reviewer": None,
+                            "reviewed_at": None,
+                            "review_decision": None,
                         }
                     ]
 

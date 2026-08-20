@@ -39,9 +39,21 @@ const rejectedSubmission: ReviewSubmission = {
     {
       ...knowledgeBase,
       status: "rejected",
-      review_comment: "请补充身份校验说明"
+      review_comment: "请补充身份校验说明",
+      reviewer: {
+        id: "reviewer-1",
+        username: "reviewer",
+        display_name: "审核管理员"
+      },
+      reviewed_at: "2026-01-01T00:01:00Z",
+      review_decision: "rejected"
     }
   ],
+  submitter: {
+    id: "user-1",
+    username: "author",
+    display_name: "投稿人"
+  },
   submitted_at: "2026-01-01T00:00:00Z",
   parent_revision: null,
   child_revision: {

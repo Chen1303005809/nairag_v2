@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.knowledge_base import KnowledgeBase, ReviewerKnowledgeBase
 from app.models.knowledge_content import (
@@ -115,7 +116,14 @@ class SubmissionDetails:
     parent_lexical_rules: list[ParentLexicalRule] = field(default_factory=list)
     child_revision: ChildRevision | None = None
     child_question_variants: list[ChildRevisionQuestionVariant] = field(default_factory=list)
-    target_comments: dict[UUID, str | None] = field(default_factory=dict)
+    submitter: UserAccount | None = None
+    target_reviews: dict[UUID, TargetReviewDetails] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TargetReviewDetails:
+    decision: ReviewDecision
+    reviewer: UserAccount
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,8 @@ class ReviewQueueDetails:
     parent_lexical_rules: list[ParentLexicalRule]
     child_revision: ChildRevision
     child_question_variants: list[ChildRevisionQuestionVariant]
+    review_decision: ReviewDecision | None = None
+    reviewer: UserAccount | None = None
 
 
 async def _get_parent(
@@ -780,9 +790,10 @@ async def list_submissions_by_author(
     submitted_by_user_id: UUID,
 ) -> list[SubmissionDetails]:
     statement = (
-        select(ReviewSubmission, ParentRevision, ChildRevision)
+        select(ReviewSubmission, ParentRevision, ChildRevision, UserAccount)
         .outerjoin(ParentRevision, ParentRevision.id == ReviewSubmission.parent_revision_id)
         .join(ChildRevision, ChildRevision.id == ReviewSubmission.child_revision_id)
+        .join(UserAccount, UserAccount.id == ReviewSubmission.submitted_by_user_id)
         .where(ReviewSubmission.submitted_by_user_id == submitted_by_user_id)
         .order_by(ReviewSubmission.submitted_at.desc(), ReviewSubmission.id.desc())
     )
@@ -790,7 +801,9 @@ async def list_submissions_by_author(
     if not rows:
         return []
 
-    submission_ids = [submission.id for submission, _parent_revision, _child_revision in rows]
+    submission_ids = [
+        submission.id for submission, _parent_revision, _child_revision, _submitter in rows
+    ]
     target_rows = (
         await session.execute(
             select(ReviewSubmissionTarget, KnowledgeBase)
@@ -807,7 +820,7 @@ async def list_submissions_by_author(
 
     parent_revision_ids = {
         parent_revision.id
-        for _submission, parent_revision, _child_revision in rows
+        for _submission, parent_revision, _child_revision, _submitter in rows
         if parent_revision is not None
     }
     rules_by_revision: dict[UUID, list[ParentLexicalRule]] = {}
@@ -821,7 +834,8 @@ async def list_submissions_by_author(
             rules_by_revision.setdefault(rule.parent_revision_id, []).append(rule)
 
     child_revision_ids = {
-        child_revision.id for _submission, _parent_revision, child_revision in rows
+        child_revision.id
+        for _submission, _parent_revision, child_revision, _submitter in rows
     }
     variants_by_revision: dict[UUID, list[ChildRevisionQuestionVariant]] = {}
     variant_rows = await session.scalars(
@@ -835,12 +849,20 @@ async def list_submissions_by_author(
     for variant in variant_rows:
         variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
 
-    decision_rows = await session.scalars(
-        select(ReviewDecision).where(ReviewDecision.review_submission_id.in_(submission_ids))
-    )
-    comments_by_target = {
-        (decision.review_submission_id, decision.knowledge_base_id): decision.comment
-        for decision in decision_rows
+    reviewer = aliased(UserAccount)
+    decision_rows = (
+        await session.execute(
+            select(ReviewDecision, reviewer)
+            .join(reviewer, reviewer.id == ReviewDecision.decided_by_user_id)
+            .where(ReviewDecision.review_submission_id.in_(submission_ids))
+        )
+    ).all()
+    reviews_by_target = {
+        (decision.review_submission_id, decision.knowledge_base_id): TargetReviewDetails(
+            decision=decision,
+            reviewer=reviewer_account,
+        )
+        for decision, reviewer_account in decision_rows
     }
 
     return [
@@ -856,14 +878,16 @@ async def list_submissions_by_author(
             ),
             child_revision=child_revision,
             child_question_variants=variants_by_revision.get(child_revision.id, []),
-            target_comments={
-                target.knowledge_base_id: comments_by_target.get(
+            submitter=submitter,
+            target_reviews={
+                target.knowledge_base_id: reviews_by_target[
                     (submission.id, target.knowledge_base_id)
-                )
+                ]
                 for target, _knowledge_base in targets_by_submission_id.get(submission.id, [])
+                if (submission.id, target.knowledge_base_id) in reviews_by_target
             },
         )
-        for submission, parent_revision, child_revision in rows
+        for submission, parent_revision, child_revision, submitter in rows
     ]
 
 
@@ -994,6 +1018,130 @@ async def list_review_queue(
             child_question_variants=variants_by_revision.get(child_revision.id, []),
         )
         for target, submission, knowledge_base, submitter, parent_revision, child_revision in rows
+    ]
+
+
+async def list_review_history(
+    session: AsyncSession,
+    *,
+    reviewer_user_id: UUID,
+) -> list[ReviewQueueDetails]:
+    """Return immutable decisions made by one reviewer, including their source content.
+
+    This deliberately does not depend on the reviewer's *current* assignment. A
+    removed assignment must not erase that administrator's historical audit trail.
+    """
+
+    submitter_account = aliased(UserAccount)
+    reviewer_account = aliased(UserAccount)
+    statement = (
+        select(
+            ReviewDecision,
+            ReviewSubmissionTarget,
+            ReviewSubmission,
+            KnowledgeBase,
+            submitter_account,
+            reviewer_account,
+            ParentRevision,
+            ChildRevision,
+        )
+        .join(
+            ReviewSubmissionTarget,
+            (ReviewSubmissionTarget.review_submission_id == ReviewDecision.review_submission_id)
+            & (ReviewSubmissionTarget.knowledge_base_id == ReviewDecision.knowledge_base_id),
+        )
+        .join(
+            ReviewSubmission,
+            ReviewSubmission.id == ReviewDecision.review_submission_id,
+        )
+        .join(KnowledgeBase, KnowledgeBase.id == ReviewDecision.knowledge_base_id)
+        .join(submitter_account, submitter_account.id == ReviewSubmission.submitted_by_user_id)
+        .join(reviewer_account, reviewer_account.id == ReviewDecision.decided_by_user_id)
+        .outerjoin(ParentRevision, ParentRevision.id == ReviewSubmission.parent_revision_id)
+        .join(ChildRevision, ChildRevision.id == ReviewSubmission.child_revision_id)
+        .where(ReviewDecision.decided_by_user_id == reviewer_user_id)
+        .order_by(ReviewDecision.decided_at.desc(), ReviewDecision.id.desc())
+    )
+    rows = (await session.execute(statement)).all()
+    if not rows:
+        return []
+
+    parent_revision_ids = {
+        parent_revision.id
+        for (
+            _decision,
+            _target,
+            _submission,
+            _knowledge_base,
+            _submitter,
+            _reviewer,
+            parent_revision,
+            _child_revision,
+        ) in rows
+        if parent_revision is not None
+    }
+    rules_by_revision: dict[UUID, list[ParentLexicalRule]] = {}
+    if parent_revision_ids:
+        rule_rows = await session.scalars(
+            select(ParentLexicalRule)
+            .where(ParentLexicalRule.parent_revision_id.in_(parent_revision_ids))
+            .order_by(ParentLexicalRule.parent_revision_id, ParentLexicalRule.sort_order)
+        )
+        for rule in rule_rows:
+            rules_by_revision.setdefault(rule.parent_revision_id, []).append(rule)
+
+    child_revision_ids = {
+        child_revision.id
+        for (
+            _decision,
+            _target,
+            _submission,
+            _knowledge_base,
+            _submitter,
+            _reviewer,
+            _parent_revision,
+            child_revision,
+        ) in rows
+    }
+    variants_by_revision: dict[UUID, list[ChildRevisionQuestionVariant]] = {}
+    variant_rows = await session.scalars(
+        select(ChildRevisionQuestionVariant)
+        .where(ChildRevisionQuestionVariant.child_revision_id.in_(child_revision_ids))
+        .order_by(
+            ChildRevisionQuestionVariant.child_revision_id,
+            ChildRevisionQuestionVariant.sort_order,
+        )
+    )
+    for variant in variant_rows:
+        variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+
+    return [
+        ReviewQueueDetails(
+            submission=submission,
+            target=target,
+            knowledge_base=knowledge_base,
+            submitter=submitter,
+            parent_revision=parent_revision,
+            parent_lexical_rules=(
+                rules_by_revision.get(parent_revision.id, [])
+                if parent_revision is not None
+                else []
+            ),
+            child_revision=child_revision,
+            child_question_variants=variants_by_revision.get(child_revision.id, []),
+            review_decision=decision,
+            reviewer=reviewer,
+        )
+        for (
+            decision,
+            target,
+            submission,
+            knowledge_base,
+            submitter,
+            reviewer,
+            parent_revision,
+            child_revision,
+        ) in rows
     ]
 
 

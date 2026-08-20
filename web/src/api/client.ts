@@ -197,6 +197,9 @@ export const api = {
       `/knowledge-content/review-queue${knowledgeBaseId ? `?knowledge_base_id=${knowledgeBaseId}` : ""}`
     ),
 
+  listMyReviewHistory: (): Promise<ReviewQueueItem[]> =>
+    request<ReviewQueueItem[]>("/knowledge-content/review-history"),
+
   decideReviewTarget: (
     submissionId: string,
     knowledgeBaseId: string,

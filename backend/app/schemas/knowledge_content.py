@@ -179,9 +179,18 @@ class AvailableParentResponse(BaseModel):
     available_knowledge_bases: list[AvailableKnowledgeBaseResponse]
 
 
+class ReviewSubmitterResponse(BaseModel):
+    id: UUID
+    username: str
+    display_name: str
+
+
 class ReviewSubmissionTargetResponse(AvailableKnowledgeBaseResponse):
     status: ReviewTargetStatus
     review_comment: str | None = None
+    reviewer: ReviewSubmitterResponse | None = None
+    reviewed_at: datetime | None = None
+    review_decision: ReviewDecisionKind | None = None
 
 
 class ReviewParentRevisionResponse(BaseModel):
@@ -217,6 +226,7 @@ class ReviewSubmissionResponse(BaseModel):
     child_id: UUID
     child_revision_id: UUID
     title: str
+    submitter: ReviewSubmitterResponse
     targets: list[ReviewSubmissionTargetResponse]
     submitted_at: datetime
     parent_revision: ReviewParentRevisionResponse | None = None
@@ -243,12 +253,6 @@ class ReviewDecisionResponse(BaseModel):
     decided_at: datetime
 
 
-class ReviewSubmitterResponse(BaseModel):
-    id: UUID
-    username: str
-    display_name: str
-
-
 class ReviewQueueItemResponse(BaseModel):
     id: UUID
     review_submission_id: UUID
@@ -262,9 +266,13 @@ class ReviewQueueItemResponse(BaseModel):
     knowledge_base_id: UUID
     knowledge_base: AvailableKnowledgeBaseResponse
     submitter: ReviewSubmitterResponse
+    reviewer: ReviewSubmitterResponse | None = None
+    review_decision: ReviewDecisionKind | None = None
+    review_comment: str | None = None
     parent_revision: ReviewParentRevisionResponse | None
     child_revision: ReviewChildRevisionResponse
     submitted_at: datetime
+    reviewed_at: datetime | None = None
 
 
 class PublicationResponse(BaseModel):

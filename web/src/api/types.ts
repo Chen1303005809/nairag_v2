@@ -107,9 +107,18 @@ export interface AvailableParent {
   available_knowledge_bases: AvailableKnowledgeBase[];
 }
 
+export interface ReviewActor {
+  id: string;
+  username: string;
+  display_name: string;
+}
+
 export interface ReviewSubmissionTarget extends AvailableKnowledgeBase {
   status: ReviewTargetStatus;
   review_comment: string | null;
+  reviewer: ReviewActor | null;
+  reviewed_at: string | null;
+  review_decision: ReviewDecisionKind | null;
 }
 
 export interface ReviewSubmission {
@@ -121,6 +130,7 @@ export interface ReviewSubmission {
   child_id: string;
   child_revision_id: string;
   title: string;
+  submitter: ReviewActor;
   targets: ReviewSubmissionTarget[];
   submitted_at: string;
   parent_revision: ReviewParentRevision | null;
@@ -152,14 +162,14 @@ export interface ReviewQueueItem {
   child_revision_id: string;
   knowledge_base_id: string;
   knowledge_base: AvailableKnowledgeBase;
-  submitter: {
-    id: string;
-    username: string;
-    display_name: string;
-  };
+  submitter: ReviewActor;
+  reviewer: ReviewActor | null;
+  review_decision: ReviewDecisionKind | null;
+  review_comment: string | null;
   parent_revision: ReviewParentRevision | null;
   child_revision: ReviewChildRevision;
   submitted_at: string;
+  reviewed_at: string | null;
 }
 
 export interface ReviewDecision {
