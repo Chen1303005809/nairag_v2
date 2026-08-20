@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { formatDateTime } from "../dateTime";
 import type { ManagedKnowledgeBase, ManagedKnowledgeEntry, ReviewerAssignment, User } from "../api/types";
+import { uniqueTableFilterOptions } from "../tableFilters";
 
 interface CreateKnowledgeBaseValues {
   logicalKey: string;
@@ -202,6 +203,25 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     return reviewAdministrators.filter((reviewer) => !assignedIds.has(reviewer.id));
   }, [assignments, reviewAdministrators]);
 
+  const managedKnowledgeBaseFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(managedKnowledge, (entry) => [
+        { text: entry.knowledge_base.name, value: entry.knowledge_base.id }
+      ]),
+    [managedKnowledge]
+  );
+
+  const managedKnowledgeUploaderFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(managedKnowledge, (entry) => [
+        {
+          text: `${entry.uploaded_by.display_name}（${entry.uploaded_by.username}）`,
+          value: entry.uploaded_by.id
+        }
+      ]),
+    [managedKnowledge]
+  );
+
   const columns: ColumnsType<ManagedKnowledgeBase> = [
     {
       title: "知识库",
@@ -274,11 +294,17 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     {
       title: "知识库",
       key: "knowledge_base",
+      filters: managedKnowledgeBaseFilters,
+      filterSearch: true,
+      onFilter: (value, entry) => entry.knowledge_base.id === String(value),
       render: (_, entry) => entry.knowledge_base.name
     },
     {
       title: "上传者",
       key: "uploaded_by",
+      filters: managedKnowledgeUploaderFilters,
+      filterSearch: true,
+      onFilter: (value, entry) => entry.uploaded_by.id === String(value),
       render: (_, entry) => `${entry.uploaded_by.display_name}（${entry.uploaded_by.username}）`
     },
     {

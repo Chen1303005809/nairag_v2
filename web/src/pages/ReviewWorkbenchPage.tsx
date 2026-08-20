@@ -14,10 +14,11 @@ import {
   message
 } from "antd";
 import type { TableProps } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { formatDateTime } from "../dateTime";
+import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   KnowledgeBase,
   ReviewDecisionKind,
@@ -132,6 +133,44 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     </Descriptions>
   );
 
+  const queueKnowledgeBaseFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(queue, (item) => [
+        { text: item.knowledge_base.name, value: item.knowledge_base.id }
+      ]),
+    [queue]
+  );
+
+  const queueUploaderFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(queue, (item) => [
+        {
+          text: `${item.submitter.display_name}（${item.submitter.username}）`,
+          value: item.submitter.id
+        }
+      ]),
+    [queue]
+  );
+
+  const historyKnowledgeBaseFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(history, (item) => [
+        { text: item.knowledge_base.name, value: item.knowledge_base.id }
+      ]),
+    [history]
+  );
+
+  const historyUploaderFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(history, (item) => [
+        {
+          text: `${item.submitter.display_name}（${item.submitter.username}）`,
+          value: item.submitter.id
+        }
+      ]),
+    [history]
+  );
+
   const queueColumns: TableProps<ReviewQueueItem>["columns"] = [
     {
       title: "投稿内容",
@@ -141,11 +180,17 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "目标知识库",
       dataIndex: ["knowledge_base", "name"],
-      key: "knowledge_base"
+      key: "knowledge_base",
+      filters: queueKnowledgeBaseFilters,
+      filterSearch: true,
+      onFilter: (value, item) => item.knowledge_base.id === String(value)
     },
     {
       title: "上传者",
       key: "submitter",
+      filters: queueUploaderFilters,
+      filterSearch: true,
+      onFilter: (value, item) => item.submitter.id === String(value),
       render: (_value: unknown, item: ReviewQueueItem) =>
         `${item.submitter.display_name}（${item.submitter.username}）`
     },
@@ -191,11 +236,17 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "目标知识库",
       dataIndex: ["knowledge_base", "name"],
-      key: "knowledge_base"
+      key: "knowledge_base",
+      filters: historyKnowledgeBaseFilters,
+      filterSearch: true,
+      onFilter: (value, item) => item.knowledge_base.id === String(value)
     },
     {
       title: "上传者",
       key: "submitter",
+      filters: historyUploaderFilters,
+      filterSearch: true,
+      onFilter: (value, item) => item.submitter.id === String(value),
       render: (_value: unknown, item: ReviewQueueItem) =>
         `${item.submitter.display_name}（${item.submitter.username}）`
     },

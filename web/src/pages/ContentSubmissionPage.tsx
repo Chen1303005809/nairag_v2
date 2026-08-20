@@ -19,6 +19,7 @@ import type { TableProps } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   AvailableParent,
   ChildContentInput,
@@ -512,6 +513,33 @@ export function ContentSubmissionPage(): JSX.Element {
     }
   };
 
+  const submissionKnowledgeBaseFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(submissions, (submission) =>
+        submission.targets.map((target) => ({ text: target.name, value: target.id }))
+      ),
+    [submissions]
+  );
+
+  const submissionUploaderFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(submissions, (submission) => [
+        {
+          text: `${submission.submitter.display_name}（${submission.submitter.username}）`,
+          value: submission.submitter.id
+        }
+      ]),
+    [submissions]
+  );
+
+  const editableKnowledgeBaseFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(editableEntries, (entry) =>
+        entry.knowledge_bases.map((knowledgeBase) => ({ text: knowledgeBase.name, value: knowledgeBase.id }))
+      ),
+    [editableEntries]
+  );
+
   const submissionColumns: TableProps<ReviewSubmission>["columns"] = [
     {
       title: "投稿内容",
@@ -529,6 +557,9 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "目标知识库",
       key: "targets",
+      filters: submissionKnowledgeBaseFilters,
+      filterSearch: true,
+      onFilter: (value, submission) => submission.targets.some((target) => target.id === String(value)),
       render: (_value: unknown, submission: ReviewSubmission) => (
         <Space size={[4, 4]} wrap>
           {submission.targets.map((target) => (
@@ -546,6 +577,9 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "上传者",
       key: "submitter",
+      filters: submissionUploaderFilters,
+      filterSearch: true,
+      onFilter: (value, submission) => submission.submitter.id === String(value),
       render: (_value: unknown, submission: ReviewSubmission) =>
         `${submission.submitter.display_name}（${submission.submitter.username}）`
     },
@@ -628,6 +662,9 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "已发布知识库",
       key: "knowledge_bases",
+      filters: editableKnowledgeBaseFilters,
+      filterSearch: true,
+      onFilter: (value, entry) => entry.knowledge_bases.some((knowledgeBase) => knowledgeBase.id === String(value)),
       render: (_value: unknown, entry: EditableContentEntry) => (
         <Space size={[4, 4]} wrap>
           {entry.knowledge_bases.map((knowledgeBase) => (
