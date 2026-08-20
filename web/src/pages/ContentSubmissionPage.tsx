@@ -22,6 +22,7 @@ import { api } from "../api/client";
 import type {
   AvailableParent,
   ChildContentInput,
+  EditableContentEntry,
   KnowledgeBase,
   ParentContentInput,
   ReviewChildRevision,
@@ -72,6 +73,13 @@ interface ResubmissionFormValues {
   parent?: ParentSubmissionFormValues["parent"];
   primary_child?: ChildContentFormValues;
   child?: ChildContentFormValues;
+}
+
+interface PublishedRevisionFormValues {
+  parent?: ParentSubmissionFormValues["parent"];
+  primary_child?: ChildContentFormValues;
+  child?: ChildContentFormValues;
+  knowledge_base_ids?: string[];
 }
 
 function normalizeList(values: string[] | undefined): string[] {
@@ -274,14 +282,18 @@ export function ContentSubmissionPage(): JSX.Element {
   const [parentForm] = Form.useForm<ParentSubmissionFormValues>();
   const [childForm] = Form.useForm<ChildSubmissionFormValues>();
   const [resubmissionForm] = Form.useForm<ResubmissionFormValues>();
+  const [publishedRevisionForm] = Form.useForm<PublishedRevisionFormValues>();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [availableParents, setAvailableParents] = useState<AvailableParent[]>([]);
   const [submissions, setSubmissions] = useState<ReviewSubmission[]>([]);
+  const [editableEntries, setEditableEntries] = useState<EditableContentEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [submittingParent, setSubmittingParent] = useState(false);
   const [submittingChild, setSubmittingChild] = useState(false);
   const [editingSubmission, setEditingSubmission] = useState<ReviewSubmission | null>(null);
   const [resubmitting, setResubmitting] = useState(false);
+  const [editingPublishedEntry, setEditingPublishedEntry] = useState<EditableContentEntry | null>(null);
+  const [savingPublishedRevision, setSavingPublishedRevision] = useState(false);
   const selectedParentId = Form.useWatch("parent_id", childForm);
 
   const selectedParent = useMemo(
@@ -292,14 +304,16 @@ export function ContentSubmissionPage(): JSX.Element {
   const refresh = async (): Promise<void> => {
     setLoading(true);
     try {
-      const [nextKnowledgeBases, nextParents, nextSubmissions] = await Promise.all([
+      const [nextKnowledgeBases, nextParents, nextSubmissions, nextEditableEntries] = await Promise.all([
         api.listKnowledgeBases(),
         api.listAvailableParents(),
-        api.listMyContentSubmissions()
+        api.listMyContentSubmissions(),
+        api.listEditableContentEntries()
       ]);
       setKnowledgeBases(nextKnowledgeBases);
       setAvailableParents(nextParents);
       setSubmissions(nextSubmissions);
+      setEditableEntries(nextEditableEntries);
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "无法加载投稿信息");
     } finally {
@@ -431,6 +445,73 @@ export function ContentSubmissionPage(): JSX.Element {
     }
   };
 
+  const openPublishedRevision = (entry: EditableContentEntry): void => {
+    if (entry.is_primary) {
+      if (!entry.parent_revision) {
+        message.error("父类内容尚未加载，无法发起修订");
+        return;
+      }
+      publishedRevisionForm.setFieldsValue({
+        parent: toParentFormValues(entry.parent_revision),
+        primary_child: toChildFormValues(entry.child_revision)
+      });
+    } else {
+      publishedRevisionForm.setFieldsValue({
+        child: toChildFormValues(entry.child_revision),
+        knowledge_base_ids: entry.knowledge_bases.map((knowledgeBase) => knowledgeBase.id)
+      });
+    }
+    setEditingPublishedEntry(entry);
+  };
+
+  const closePublishedRevision = (): void => {
+    if (savingPublishedRevision) {
+      return;
+    }
+    setEditingPublishedEntry(null);
+    publishedRevisionForm.resetFields();
+  };
+
+  const submitPublishedRevision = async (values: PublishedRevisionFormValues): Promise<void> => {
+    if (!editingPublishedEntry) {
+      return;
+    }
+    setSavingPublishedRevision(true);
+    try {
+      if (editingPublishedEntry.is_primary) {
+        if (!values.parent || !values.primary_child) {
+          throw new Error("父类和主子条目内容不能为空");
+        }
+        await api.createParentRevision(
+          editingPublishedEntry.parent_id,
+          toParentContent(values.parent),
+          toChildContent(values.primary_child)
+        );
+      } else {
+        if (!values.child) {
+          throw new Error("子条目内容不能为空");
+        }
+        const knowledgeBaseIds = values.knowledge_base_ids ?? [];
+        if (knowledgeBaseIds.length === 0) {
+          throw new Error("请选择至少一个目标知识库");
+        }
+        await api.createChildRevision(
+          editingPublishedEntry.child_id,
+          toChildContent(values.child),
+          knowledgeBaseIds
+        );
+      }
+      message.success("已生成新修订并提交审核，审核通过后会重新嵌入");
+      setEditingPublishedEntry(null);
+      publishedRevisionForm.resetFields();
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "提交修订失败，请稍后重试");
+    } finally {
+      setSavingPublishedRevision(false);
+    }
+  };
+
   const submissionColumns: TableProps<ReviewSubmission>["columns"] = [
     {
       title: "投稿内容",
@@ -523,6 +604,47 @@ export function ContentSubmissionPage(): JSX.Element {
           </Button>
         ) : null;
       }
+    }
+  ];
+
+  const editableEntryColumns: TableProps<EditableContentEntry>["columns"] = [
+    {
+      title: "父类",
+      key: "parent",
+      render: (_value: unknown, entry: EditableContentEntry) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{entry.parent_name}</Typography.Text>
+          <Typography.Text type="secondary">
+            {entry.is_primary ? "父类 + 主子条目" : "普通子条目"}
+          </Typography.Text>
+        </Space>
+      )
+    },
+    {
+      title: "当前子条目",
+      dataIndex: ["child_revision", "question"],
+      key: "question"
+    },
+    {
+      title: "已发布知识库",
+      key: "knowledge_bases",
+      render: (_value: unknown, entry: EditableContentEntry) => (
+        <Space size={[4, 4]} wrap>
+          {entry.knowledge_bases.map((knowledgeBase) => (
+            <Tag key={knowledgeBase.id}>{knowledgeBase.name}</Tag>
+          ))}
+        </Space>
+      )
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 120,
+      render: (_value: unknown, entry: EditableContentEntry) => (
+        <Button type="link" onClick={() => openPublishedRevision(entry)}>
+          修改并提交审核
+        </Button>
+      )
     }
   ];
 
@@ -654,6 +776,30 @@ export function ContentSubmissionPage(): JSX.Element {
             )
           },
           {
+            key: "revise",
+            label: "修改已发布内容",
+            children: (
+              <Card>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="修改会创建新的候选修订"
+                  description="普通子条目按下方列出的知识库重新审核；主子条目会连同父类一起在全部已发布知识库重新审核和嵌入。"
+                  style={{ marginBottom: 16 }}
+                />
+                <Table<EditableContentEntry>
+                  rowKey={(entry) => `${entry.child_id}:${entry.child_revision.id}`}
+                  loading={loading}
+                  columns={editableEntryColumns}
+                  dataSource={editableEntries}
+                  scroll={{ x: 900 }}
+                  pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                  locale={{ emptyText: "当前没有可修改的已发布知识" }}
+                />
+              </Card>
+            )
+          },
+          {
             key: "mine",
             label: "我的投稿",
             children: (
@@ -753,6 +899,93 @@ export function ContentSubmissionPage(): JSX.Element {
               </Form.Item>
               <Button type="primary" htmlType="submit" loading={resubmitting}>
                 重新提交审核
+              </Button>
+            </Form>
+          </>
+        )}
+      </Modal>
+      <Modal
+        open={editingPublishedEntry !== null}
+        title="修改已发布知识并提交审核"
+        onCancel={closePublishedRevision}
+        footer={null}
+        destroyOnClose
+        width={760}
+      >
+        {editingPublishedEntry && (
+          <>
+            <Alert
+              type="warning"
+              showIcon
+              message="线上版本会继续服务，直到新修订审核并重新嵌入成功"
+              description={
+                editingPublishedEntry.is_primary
+                  ? "主子条目必须与父类一起修订，并在全部已发布目标知识库完成审核后统一生效。"
+                  : "普通子条目会仅在选中的目标知识库创建新候选并重新嵌入。"
+              }
+            />
+            <Form<PublishedRevisionFormValues>
+              form={publishedRevisionForm}
+              layout="vertical"
+              onFinish={(values) => void submitPublishedRevision(values)}
+              requiredMark
+              style={{ marginTop: 16 }}
+            >
+              {editingPublishedEntry.is_primary ? (
+                <>
+                  <Typography.Title level={5}>父类字段</Typography.Title>
+                  <Form.Item
+                    name={["parent", "name"]}
+                    label="类型"
+                    rules={[{ required: true, message: "请选择类型" }]}
+                  >
+                    <Select placeholder="请选择类型" options={parentTypeOptions} />
+                  </Form.Item>
+                  <Form.Item
+                    name={["parent", "canonical_keyword"]}
+                    label="问题主关键词"
+                    rules={[{ required: true, message: "请输入问题主关键词" }]}
+                  >
+                    <Input />
+                  </Form.Item>
+                  <StructuredTextList
+                    name={["parent", "aliases"]}
+                    label="别名"
+                    addLabel="添加别名"
+                    placeholder="例如：登陆"
+                  />
+                  <Typography.Title level={5}>主子条目字段</Typography.Title>
+                  <ChildContentFields root="primary_child" />
+                  <Form.Item label="重新审核知识库">
+                    <Space size={[4, 4]} wrap>
+                      {editingPublishedEntry.knowledge_bases.map((knowledgeBase) => (
+                        <Tag key={knowledgeBase.id}>{knowledgeBase.name}</Tag>
+                      ))}
+                    </Space>
+                  </Form.Item>
+                </>
+              ) : (
+                <>
+                  <Typography.Text type="secondary">
+                    父类：{editingPublishedEntry.parent_name}
+                  </Typography.Text>
+                  <ChildContentFields root="child" />
+                  <Form.Item
+                    name="knowledge_base_ids"
+                    label="重新审核知识库"
+                    rules={[{ required: true, message: "请选择至少一个知识库" }]}
+                  >
+                    <Checkbox.Group
+                      options={editingPublishedEntry.knowledge_bases.map((knowledgeBase) => ({
+                        label: knowledgeBase.name,
+                        value: knowledgeBase.id
+                      }))}
+                    />
+                  </Form.Item>
+                </>
+              )}
+              <Button type="primary" htmlType="submit" loading={savingPublishedRevision}>
+                提交新修订审核
               </Button>
             </Form>
           </>

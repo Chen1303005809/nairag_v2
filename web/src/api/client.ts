@@ -1,9 +1,11 @@
 import type {
   AvailableParent,
   ChildContentInput,
+  EditableContentEntry,
   KnowledgeBase,
   LoginResponse,
   ManagedKnowledgeBase,
+  ManagedKnowledgeEntry,
   ParentContentInput,
   ReviewerAssignment,
   ReviewDecision,
@@ -192,6 +194,12 @@ export const api = {
   listMyContentSubmissions: (): Promise<ReviewSubmission[]> =>
     request<ReviewSubmission[]>("/knowledge-content/submissions/mine"),
 
+  listEditableContentEntries: (): Promise<EditableContentEntry[]> =>
+    request<EditableContentEntry[]>("/knowledge-content/entries/editable"),
+
+  listManagedKnowledgeEntries: (): Promise<ManagedKnowledgeEntry[]> =>
+    request<ManagedKnowledgeEntry[]>("/knowledge-content/admin/knowledge"),
+
   listReviewQueue: (knowledgeBaseId?: string): Promise<ReviewQueueItem[]> =>
     request<ReviewQueueItem[]>(
       `/knowledge-content/review-queue${knowledgeBaseId ? `?knowledge_base_id=${knowledgeBaseId}` : ""}`
@@ -262,6 +270,26 @@ export const api = {
       knowledge_base_ids: knowledgeBaseIds
     }),
 
+  createParentRevision: (
+    parentId: string,
+    parent: ParentContentInput,
+    primaryChild: ChildContentInput
+  ): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>("POST", `/knowledge-content/parents/${parentId}/revisions`, {
+      parent,
+      primary_child: primaryChild
+    }),
+
+  createChildRevision: (
+    childId: string,
+    child: ChildContentInput,
+    knowledgeBaseIds: string[]
+  ): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>("POST", `/knowledge-content/children/${childId}/revisions`, {
+      child,
+      knowledge_base_ids: knowledgeBaseIds
+    }),
+
   resubmitRejectedParent: (
     reviewSubmissionId: string,
     parent: ParentContentInput,
@@ -282,5 +310,11 @@ export const api = {
       "POST",
       `/knowledge-content/review-submissions/${reviewSubmissionId}/resubmit-child`,
       { child, knowledge_base_ids: knowledgeBaseIds }
+    ),
+
+  archiveManagedKnowledge: (childId: string, knowledgeBaseId: string): Promise<void> =>
+    sessionMutation<void>(
+      "DELETE",
+      `/knowledge-content/admin/knowledge/${childId}/knowledge-bases/${knowledgeBaseId}`
     )
 };

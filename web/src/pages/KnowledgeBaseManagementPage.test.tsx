@@ -8,12 +8,14 @@ import { KnowledgeBaseManagementPage } from "./KnowledgeBaseManagementPage";
 vi.mock("../api/client", () => ({
   api: {
     listManagedKnowledgeBases: vi.fn(),
+    listManagedKnowledgeEntries: vi.fn(),
     listUsers: vi.fn(),
     listKnowledgeBaseReviewers: vi.fn(),
     createKnowledgeBase: vi.fn(),
     updateKnowledgeBase: vi.fn(),
     assignKnowledgeBaseReviewer: vi.fn(),
-    unassignKnowledgeBaseReviewer: vi.fn()
+    unassignKnowledgeBaseReviewer: vi.fn(),
+    archiveManagedKnowledge: vi.fn()
   }
 }));
 
@@ -49,6 +51,7 @@ const reviewerUser: User = { ...normalUser, role: "review_admin" };
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listManagedKnowledgeBases.mockResolvedValue([knowledgeBase]);
+  mockedApi.listManagedKnowledgeEntries.mockResolvedValue([]);
   mockedApi.listUsers.mockResolvedValue([normalUser]);
   mockedApi.listKnowledgeBaseReviewers.mockResolvedValue([] as ReviewerAssignment[]);
 });

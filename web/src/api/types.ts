@@ -67,6 +67,7 @@ export type ReviewTargetStatus =
   | "published"
   | "index_failed";
 export type ReviewDecisionKind = "approved" | "rejected";
+export type ChildPublicationStatus = "pending" | "published" | "archived";
 
 export interface ParentLexicalRuleInput {
   rule_type: ParentLexicalRuleType;
@@ -170,6 +171,30 @@ export interface ReviewQueueItem {
   child_revision: ReviewChildRevision;
   submitted_at: string;
   reviewed_at: string | null;
+}
+
+export interface ManagedKnowledgeEntry {
+  child_id: string;
+  parent_id: string;
+  parent_name: string;
+  is_primary: boolean;
+  knowledge_base: AvailableKnowledgeBase;
+  status: ChildPublicationStatus;
+  child_revision: ReviewChildRevision;
+  uploaded_by: ReviewActor;
+  uploaded_at: string;
+  embedded_at: string | null;
+  archived_at: string | null;
+}
+
+export interface EditableContentEntry {
+  child_id: string;
+  parent_id: string;
+  parent_name: string;
+  is_primary: boolean;
+  knowledge_bases: AvailableKnowledgeBase[];
+  parent_revision: ReviewParentRevision | null;
+  child_revision: ReviewChildRevision;
 }
 
 export interface ReviewDecision {

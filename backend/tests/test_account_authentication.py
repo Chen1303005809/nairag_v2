@@ -644,6 +644,26 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         == "不适用于该知识库"
                     )
 
+                    editable_entries = await author.get(
+                        "/api/v1/knowledge-content/entries/editable"
+                    )
+                    assert editable_entries.status_code == 200
+                    editable_payload = editable_entries.json()
+                    assert any(
+                        entry["is_primary"]
+                        and entry["parent_revision"] is not None
+                        and set(item["id"] for item in entry["knowledge_bases"])
+                        == set(knowledge_base_ids)
+                        for entry in editable_payload
+                    )
+                    assert any(
+                        not entry["is_primary"]
+                        and entry["child_id"] == child_id
+                        and [item["id"] for item in entry["knowledge_bases"]]
+                        == [knowledge_base_ids[0]]
+                        for entry in editable_payload
+                    )
+
                     child_resubmitted = await author.post(
                         f"/api/v1/knowledge-content/review-submissions/{child_submission_id}"
                         "/resubmit-child",
@@ -825,6 +845,84 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     )
                     assert duplicate_feedback.status_code == 200
                     assert duplicate_feedback.json()["already_recorded"] is True
+
+                    revised_child = await author.post(
+                        f"/api/v1/knowledge-content/children/{child_id}/revisions",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "child": {
+                                "question": "如何找回密码？",
+                                "response_content": "请先确认身份，再联系管理员重置密码。",
+                            },
+                            "knowledge_base_ids": [knowledge_base_ids[0]],
+                        },
+                    )
+                    assert revised_child.status_code == 201
+                    revised_child_payload = revised_child.json()
+                    assert revised_child_payload["child_id"] == child_id
+                    assert (
+                        revised_child_payload["child_revision_id"]
+                        != child_submission["child_revision_id"]
+                    )
+
+                    reject_revised_child = await reviewer.post(
+                        f"/api/v1/knowledge-content/review-submissions/{revised_child_payload['id']}"
+                        f"/targets/{knowledge_base_ids[0]}/decision",
+                        headers=csrf_headers(reviewer, settings),
+                        json={"decision": "rejected", "comment": "保留当前线上版本"},
+                    )
+                    assert reject_revised_child.status_code == 201
+
+                    managed_knowledge = await admin.get("/api/v1/knowledge-content/admin/knowledge")
+                    assert managed_knowledge.status_code == 200
+                    managed_entry = next(
+                        entry
+                        for entry in managed_knowledge.json()
+                        if entry["child_id"] == child_id
+                        and entry["knowledge_base"]["id"] == knowledge_base_ids[0]
+                    )
+                    assert managed_entry["uploaded_by"]["username"] == "author"
+                    assert managed_entry["uploaded_at"]
+                    assert managed_entry["embedded_at"]
+                    assert managed_entry["status"] == "published"
+
+                    deleted_knowledge = await admin.delete(
+                        f"/api/v1/knowledge-content/admin/knowledge/{child_id}"
+                        f"/knowledge-bases/{knowledge_base_ids[0]}",
+                        headers=csrf_headers(admin, settings),
+                    )
+                    assert deleted_knowledge.status_code == 204
+
+                    archived_publication = await author.get(
+                        f"/api/v1/knowledge-content/children/{child_id}/publications/{knowledge_base_ids[0]}"
+                    )
+                    assert archived_publication.status_code == 200
+                    assert archived_publication.json()["status"] == "archived"
+
+                    cleanup_result = await run_index_worker_once(
+                        app.state.session_factory,  # type: ignore[attr-defined]
+                        worker_id="test-worker",
+                        backend=LocalArtifactIndexBackend(settings.index_artifact_dir),
+                    )
+                    assert cleanup_result is not None
+                    assert cleanup_result.status == IndexJobStatus.SUCCEEDED
+                    artifact_path = (
+                        settings.index_artifact_dir
+                        / knowledge_base_ids[0]
+                        / f"{child_submission['child_revision_id']}.json"
+                    )
+                    assert not artifact_path.exists()
+
+                    managed_after_delete = await admin.get(
+                        "/api/v1/knowledge-content/admin/knowledge"
+                    )
+                    assert managed_after_delete.status_code == 200
+                    assert any(
+                        entry["child_id"] == child_id
+                        and entry["knowledge_base"]["id"] == knowledge_base_ids[0]
+                        and entry["status"] == "archived"
+                        for entry in managed_after_delete.json()
+                    )
     finally:
         await engine.dispose()
 

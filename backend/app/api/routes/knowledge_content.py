@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuthenticatedSession,
     require_csrf,
     require_fully_authenticated_session,
+    require_system_administrator,
 )
 from app.db.session import get_db_session
 from app.models.knowledge_content import (
@@ -26,6 +27,8 @@ from app.schemas.knowledge_content import (
     CreateChildSubmissionRequest,
     CreateParentRevisionSubmissionRequest,
     CreateParentSubmissionRequest,
+    EditableContentEntryResponse,
+    ManagedKnowledgeEntryResponse,
     ParentLexicalRuleInput,
     PublicationResponse,
     ReviewChildRevisionResponse,
@@ -37,9 +40,12 @@ from app.schemas.knowledge_content import (
     ReviewSubmissionTargetResponse,
     ReviewSubmitterResponse,
 )
+from app.services.index_jobs import enqueue_clean_publication_job
 from app.services.knowledge_content import (
     AvailableParentDetails,
     ChildNotFoundError,
+    EditableContentDetails,
+    ManagedKnowledgeDetails,
     ParentNotAvailableError,
     ParentNotFoundError,
     PendingSubmissionExistsError,
@@ -61,6 +67,8 @@ from app.services.knowledge_content import (
     decide_review_target,
     get_publication,
     list_available_parents,
+    list_editable_content_entries,
+    list_managed_knowledge_entries,
     list_review_history,
     list_review_queue,
     list_submissions_by_author,
@@ -310,6 +318,56 @@ def as_review_queue_response(details: ReviewQueueDetails) -> ReviewQueueItemResp
     )
 
 
+def as_managed_knowledge_response(
+    details: ManagedKnowledgeDetails,
+) -> ManagedKnowledgeEntryResponse:
+    return ManagedKnowledgeEntryResponse(
+        child_id=details.child.id,
+        parent_id=details.child.parent_id,
+        parent_name=details.parent_name,
+        is_primary=details.child.is_primary,
+        knowledge_base=AvailableKnowledgeBaseResponse(
+            id=details.knowledge_base.id,
+            logical_key=details.knowledge_base.logical_key,
+            name=details.knowledge_base.name,
+        ),
+        status=details.publication.status,
+        child_revision=as_child_revision_response(
+            details.child_revision,
+            details.child_question_variants,
+        ),
+        uploaded_by=as_user_response(details.submitter),
+        uploaded_at=details.submitted_at,
+        embedded_at=details.embedded_at,
+        archived_at=details.publication.archived_at,
+    )
+
+
+def as_editable_content_response(details: EditableContentDetails) -> EditableContentEntryResponse:
+    return EditableContentEntryResponse(
+        child_id=details.child.id,
+        parent_id=details.child.parent_id,
+        parent_name=details.parent_name,
+        is_primary=details.child.is_primary,
+        knowledge_bases=[
+            AvailableKnowledgeBaseResponse(
+                id=knowledge_base.id,
+                logical_key=knowledge_base.logical_key,
+                name=knowledge_base.name,
+            )
+            for knowledge_base in details.knowledge_bases
+        ],
+        parent_revision=as_parent_revision_response(
+            details.parent_revision,
+            details.parent_lexical_rules,
+        ),
+        child_revision=as_child_revision_response(
+            details.child_revision,
+            details.child_question_variants,
+        ),
+    )
+
+
 @router.get("/parents/available", response_model=list[AvailableParentResponse])
 async def list_selectable_parents(
     _user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
@@ -328,6 +386,28 @@ async def list_my_content_submissions(
 ) -> list[ReviewSubmissionResponse]:
     submissions = await list_submissions_by_author(session, user.user.id)
     return [as_submission_response(submission) for submission in submissions]
+
+
+@router.get("/entries/editable", response_model=list[EditableContentEntryResponse])
+async def list_currently_editable_content(
+    _user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[EditableContentEntryResponse]:
+    return [
+        as_editable_content_response(entry)
+        for entry in await list_editable_content_entries(session)
+    ]
+
+
+@router.get("/admin/knowledge", response_model=list[ManagedKnowledgeEntryResponse])
+async def list_all_managed_knowledge(
+    _actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[ManagedKnowledgeEntryResponse]:
+    return [
+        as_managed_knowledge_response(entry)
+        for entry in await list_managed_knowledge_entries(session)
+    ]
 
 
 @router.post(
@@ -755,13 +835,21 @@ async def archive_child_publication(
         ReviewTargetStateError,
     ) as exc:
         raise as_content_http_error(exc) from exc
+    cleanup_job = await enqueue_clean_publication_job(
+        session,
+        child_id=publication.child_id,
+        knowledge_base_id=publication.knowledge_base_id,
+    )
     record_audit_event(
         session,
         event_type="content.publication_archived",
         actor_user_id=user.user.id,
         target_type="child_knowledge_base_publication",
         target_id=child_id,
-        payload={"knowledge_base_id": str(knowledge_base_id)},
+        payload={
+            "knowledge_base_id": str(knowledge_base_id),
+            "cleanup_index_job_id": str(cleanup_job.id),
+        },
     )
     await session.commit()
     return PublicationResponse(
@@ -772,3 +860,56 @@ async def archive_child_publication(
         pending_submission_id=publication.pending_submission_id,
         archived_at=publication.archived_at,
     )
+
+
+@router.delete(
+    "/admin/knowledge/{child_id}/knowledge-bases/{knowledge_base_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_managed_knowledge(
+    child_id: UUID,
+    knowledge_base_id: UUID,
+    actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Response:
+    """Remove a knowledge publication from retrieval and enqueue vector cleanup.
+
+    The durable revision and its audit evidence remain intact; "delete" is an
+    archival operation so an administrator can still trace what was removed.
+    """
+
+    try:
+        publication = await archive_publication(
+            session,
+            child_id=child_id,
+            knowledge_base_id=knowledge_base_id,
+            actor_user_id=actor.user.id,
+            actor_role=actor.user.role,
+        )
+    except (
+        ReviewAccessDeniedError,
+        ReviewPublicationNotFoundError,
+        PendingSubmissionExistsError,
+        ReviewTargetStateError,
+    ) as exc:
+        raise as_content_http_error(exc) from exc
+
+    cleanup_job = await enqueue_clean_publication_job(
+        session,
+        child_id=publication.child_id,
+        knowledge_base_id=publication.knowledge_base_id,
+    )
+    record_audit_event(
+        session,
+        event_type="content.managed_knowledge_deleted",
+        actor_user_id=actor.user.id,
+        target_type="child_knowledge_base_publication",
+        target_id=child_id,
+        payload={
+            "knowledge_base_id": str(knowledge_base_id),
+            "cleanup_index_job_id": str(cleanup_job.id),
+        },
+    )
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -243,6 +243,22 @@ class LocalArtifactIndexBackend:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
+    async def clean_publication(self, session: AsyncSession, job: IndexJob) -> None:
+        if job.knowledge_base_id is None or job.child_id is None:
+            raise ValueError("cleanup job is missing publication fields")
+        knowledge_base_directory = self.artifact_dir / str(job.knowledge_base_id)
+        if not knowledge_base_directory.is_dir():
+            return
+        for artifact_path in knowledge_base_directory.glob("*.json"):
+            try:
+                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # A malformed artifact is not proof that it belongs to this
+                # publication, so leave it intact for diagnostics.
+                continue
+            if payload.get("child_id") == str(job.child_id):
+                artifact_path.unlink(missing_ok=True)
+
 
 class MilvusWriter(Protocol):
     async def upsert(
@@ -250,6 +266,14 @@ class MilvusWriter(Protocol):
         *,
         collection_name: str,
         rows: Sequence[dict[str, object]],
+    ) -> None:
+        ...
+
+    async def delete(
+        self,
+        *,
+        collection_name: str,
+        filter_expression: str,
     ) -> None:
         ...
 
@@ -314,6 +338,38 @@ class MilvusHttpWriter:
         if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
             raise RuntimeError(f"Milvus upsert failed: {payload.get('message', 'unknown error')}")
 
+    async def delete(
+        self,
+        *,
+        collection_name: str,
+        filter_expression: str,
+    ) -> None:
+        if not collection_name:
+            raise ValueError("collection_name must not be empty")
+        if not filter_expression:
+            raise ValueError("filter_expression must not be empty")
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        client = self._client
+        owns_client = client is None
+        if client is None:
+            client = httpx.AsyncClient(timeout=self.timeout_seconds)
+        try:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/v2/vectordb/entities/delete",
+                    json={"collectionName": collection_name, "filter": filter_expression},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise RuntimeError("Milvus delete request failed") from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+        if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
+            raise RuntimeError(f"Milvus delete failed: {payload.get('message', 'unknown error')}")
+
 
 class MilvusIndexBackend:
     """Build Qwen-compatible fragments and upsert them into the current collection."""
@@ -363,4 +419,15 @@ class MilvusIndexBackend:
         await self.writer.upsert(
             collection_name=knowledge_base.current_physical_collection_name,
             rows=rows,
+        )
+
+    async def clean_publication(self, session: AsyncSession, job: IndexJob) -> None:
+        if job.knowledge_base_id is None or job.child_id is None:
+            raise ValueError("cleanup job is missing publication fields")
+        knowledge_base = await session.get(KnowledgeBase, job.knowledge_base_id)
+        if knowledge_base is None:
+            raise ValueError("knowledge base is missing")
+        await self.writer.delete(
+            collection_name=knowledge_base.current_physical_collection_name,
+            filter_expression=f'child_id == "{job.child_id}"',
         )

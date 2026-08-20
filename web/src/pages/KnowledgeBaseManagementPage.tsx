@@ -8,6 +8,7 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
   message
@@ -16,7 +17,8 @@ import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import type { ManagedKnowledgeBase, ReviewerAssignment, User } from "../api/types";
+import { formatDateTime } from "../dateTime";
+import type { ManagedKnowledgeBase, ManagedKnowledgeEntry, ReviewerAssignment, User } from "../api/types";
 
 interface CreateKnowledgeBaseValues {
   logicalKey: string;
@@ -46,6 +48,7 @@ function activeReviewAdministrators(users: User[]): User[] {
 
 export function KnowledgeBaseManagementPage(): JSX.Element {
   const [knowledgeBases, setKnowledgeBases] = useState<ManagedKnowledgeBase[]>([]);
+  const [managedKnowledge, setManagedKnowledge] = useState<ManagedKnowledgeEntry[]>([]);
   const [reviewAdministrators, setReviewAdministrators] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -61,12 +64,14 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
   const loadManagementData = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const [managedKnowledgeBases, users] = await Promise.all([
+      const [managedKnowledgeBases, users, managedKnowledgeEntries] = await Promise.all([
         api.listManagedKnowledgeBases(),
-        api.listUsers(false)
+        api.listUsers(false),
+        api.listManagedKnowledgeEntries()
       ]);
       setKnowledgeBases(managedKnowledgeBases);
       setReviewAdministrators(activeReviewAdministrators(users));
+      setManagedKnowledge(managedKnowledgeEntries);
     } catch (reason) {
       message.error(errorMessage(reason));
     } finally {
@@ -179,6 +184,19 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     }
   };
 
+  const deleteManagedKnowledge = async (entry: ManagedKnowledgeEntry): Promise<void> => {
+    setSubmitting(true);
+    try {
+      await api.archiveManagedKnowledge(entry.child_id, entry.knowledge_base.id);
+      await loadManagementData();
+      message.success("知识已删除，相关嵌入正在后台清理");
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const unassignedReviewers = useMemo(() => {
     const assignedIds = new Set(assignments.map((assignment) => assignment.reviewer.id));
     return reviewAdministrators.filter((reviewer) => !assignedIds.has(reviewer.id));
@@ -239,13 +257,85 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     }
   ];
 
+  const managedKnowledgeColumns: ColumnsType<ManagedKnowledgeEntry> = [
+    {
+      title: "知识内容",
+      key: "content",
+      render: (_, entry) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{entry.child_revision.question}</Typography.Text>
+          <Typography.Text type="secondary">
+            {entry.parent_name} · {entry.is_primary ? "主子条目" : "普通子条目"} · v
+            {entry.child_revision.revision_number}
+          </Typography.Text>
+        </Space>
+      )
+    },
+    {
+      title: "知识库",
+      key: "knowledge_base",
+      render: (_, entry) => entry.knowledge_base.name
+    },
+    {
+      title: "上传者",
+      key: "uploaded_by",
+      render: (_, entry) => `${entry.uploaded_by.display_name}（${entry.uploaded_by.username}）`
+    },
+    {
+      title: "上传时间",
+      dataIndex: "uploaded_at",
+      key: "uploaded_at",
+      render: (value: string) => formatDateTime(value)
+    },
+    {
+      title: "实际嵌入时间",
+      dataIndex: "embedded_at",
+      key: "embedded_at",
+      render: (value: string | null) => formatDateTime(value)
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      key: "status",
+      render: (value: ManagedKnowledgeEntry["status"]) => {
+        if (value === "published") {
+          return <Tag color="green">已发布</Tag>;
+        }
+        if (value === "archived") {
+          return <Tag color="default">已删除（已归档）</Tag>;
+        }
+        return <Tag color="processing">待处理</Tag>;
+      }
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 110,
+      render: (_, entry) => (
+        <Popconfirm
+          title="删除该知识及其嵌入？"
+          description="删除后立即停止检索可见性，并在后台清理该知识库中的全部派生嵌入；修订和审计历史会保留。"
+          okText="删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true, loading: submitting }}
+          onConfirm={() => void deleteManagedKnowledge(entry)}
+          disabled={entry.status !== "published"}
+        >
+          <Button type="link" danger disabled={entry.status !== "published"}>
+            删除
+          </Button>
+        </Popconfirm>
+      )
+    }
+  ];
+
   return (
     <section>
       <div className="page-heading">
         <div>
           <Typography.Title level={3}>知识库管理</Typography.Title>
           <Typography.Paragraph type="secondary">
-            管理业务知识库及其审查管理员授权。逻辑标识创建后保持不变。
+            管理业务知识库、全部已发布知识及审查管理员授权。逻辑标识创建后保持不变。
           </Typography.Paragraph>
         </div>
         <Button type="primary" onClick={() => setCreateOpen(true)}>
@@ -253,13 +343,38 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
         </Button>
       </div>
 
-      <Table<ManagedKnowledgeBase>
-        rowKey="id"
-        columns={columns}
-        dataSource={knowledgeBases}
-        loading={loading}
-        scroll={{ x: 850 }}
-        pagination={{ pageSize: 10, showSizeChanger: false }}
+      <Tabs
+        items={[
+          {
+            key: "knowledge-bases",
+            label: "知识库",
+            children: (
+              <Table<ManagedKnowledgeBase>
+                rowKey="id"
+                columns={columns}
+                dataSource={knowledgeBases}
+                loading={loading}
+                scroll={{ x: 850 }}
+                pagination={{ pageSize: 10, showSizeChanger: false }}
+              />
+            )
+          },
+          {
+            key: "knowledge",
+            label: "全部知识",
+            children: (
+              <Table<ManagedKnowledgeEntry>
+                rowKey={(entry) => `${entry.child_id}:${entry.knowledge_base.id}`}
+                columns={managedKnowledgeColumns}
+                dataSource={managedKnowledge}
+                loading={loading}
+                scroll={{ x: 1350 }}
+                pagination={{ pageSize: 10, showSizeChanger: false }}
+                locale={{ emptyText: "尚无已发布或已删除知识" }}
+              />
+            )
+          }
+        ]}
       />
 
       <Modal

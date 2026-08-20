@@ -35,6 +35,10 @@ class IndexTargetFieldsError(Exception):
     pass
 
 
+class CleanPublicationFieldsError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class IndexWorkerResult:
     job_id: UUID
@@ -48,6 +52,9 @@ class IndexBackend(Protocol):
     async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
         ...
 
+    async def clean_publication(self, session: AsyncSession, job: IndexJob) -> None:
+        ...
+
 
 class NoopIndexBackend:
     """Test-only backend for exercising the durable state machine without writes."""
@@ -55,9 +62,16 @@ class NoopIndexBackend:
     async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
         return None
 
+    async def clean_publication(self, session: AsyncSession, job: IndexJob) -> None:
+        return None
+
 
 def _index_job_key(submission_id: UUID, knowledge_base_id: UUID, revision_id: UUID) -> str:
     return f"index-target:{submission_id}:{knowledge_base_id}:{revision_id}"
+
+
+def _clean_publication_job_key(child_id: UUID, knowledge_base_id: UUID) -> str:
+    return f"clean-publication:{knowledge_base_id}:{child_id}"
 
 
 async def enqueue_index_jobs_for_submission(
@@ -125,6 +139,42 @@ async def enqueue_index_jobs_for_submission(
     return jobs
 
 
+async def enqueue_clean_publication_job(
+    session: AsyncSession,
+    *,
+    child_id: UUID,
+    knowledge_base_id: UUID,
+) -> IndexJob:
+    """Queue idempotent removal of every derived vector for one publication."""
+
+    idempotency_key = _clean_publication_job_key(child_id, knowledge_base_id)
+    existing = await session.scalar(
+        select(IndexJob).where(IndexJob.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        if existing.status == IndexJobStatus.FAILED:
+            existing.status = IndexJobStatus.PENDING
+            existing.available_at = datetime.now(UTC)
+            existing.completed_at = None
+            existing.lease_owner = None
+            existing.lease_expires_at = None
+            existing.last_error = None
+            existing.attempt_count = 0
+        await session.flush()
+        return existing
+
+    job = IndexJob(
+        job_kind=IndexJobKind.CLEAN_PUBLICATION,
+        status=IndexJobStatus.PENDING,
+        idempotency_key=idempotency_key,
+        knowledge_base_id=knowledge_base_id,
+        child_id=child_id,
+    )
+    session.add(job)
+    await session.flush()
+    return job
+
+
 async def claim_next_index_job(
     session: AsyncSession,
     *,
@@ -161,7 +211,11 @@ async def claim_next_index_job(
             job.lease_owner = None
             job.lease_expires_at = None
             job.last_error = job.last_error or "maximum attempts exceeded after lease expiry"
-            if job.review_submission_id is not None and job.knowledge_base_id is not None:
+            if (
+                job.job_kind == IndexJobKind.INDEX_TARGET
+                and job.review_submission_id is not None
+                and job.knowledge_base_id is not None
+            ):
                 target = await session.scalar(
                     select(ReviewSubmissionTarget).where(
                         ReviewSubmissionTarget.review_submission_id == job.review_submission_id,
@@ -215,6 +269,15 @@ def _validate_target_fields(job: IndexJob) -> None:
         raise IndexTargetFieldsError(job.id)
 
 
+def _validate_clean_publication_fields(job: IndexJob) -> None:
+    if (
+        job.job_kind != IndexJobKind.CLEAN_PUBLICATION
+        or job.knowledge_base_id is None
+        or job.child_id is None
+    ):
+        raise CleanPublicationFieldsError(job.id)
+
+
 async def complete_index_job(
     session: AsyncSession,
     *,
@@ -223,6 +286,16 @@ async def complete_index_job(
 ) -> IndexJob:
     job = await _locked_job(session, job_id)
     _assert_lease(job, worker_id)
+    if job.job_kind == IndexJobKind.CLEAN_PUBLICATION:
+        _validate_clean_publication_fields(job)
+        now = datetime.now(UTC)
+        job.status = IndexJobStatus.SUCCEEDED
+        job.completed_at = now
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.last_error = None
+        await session.flush()
+        return job
     _validate_target_fields(job)
 
     submission = await session.get(ReviewSubmission, job.review_submission_id)
@@ -279,24 +352,32 @@ async def fail_index_job(
 ) -> IndexJob:
     job = await _locked_job(session, job_id)
     _assert_lease(job, worker_id)
-    _validate_target_fields(job)
+    if job.job_kind == IndexJobKind.INDEX_TARGET:
+        _validate_target_fields(job)
+    elif job.job_kind == IndexJobKind.CLEAN_PUBLICATION:
+        _validate_clean_publication_fields(job)
+    else:  # pragma: no cover - the enum constrains persisted values.
+        raise IndexJobStateError(job.id)
     now = datetime.now(UTC)
     job.last_error = error[:8_000]
     job.lease_owner = None
     job.lease_expires_at = None
 
-    from app.services.knowledge_content import mark_target_index_failed
+    if job.job_kind == IndexJobKind.INDEX_TARGET:
+        assert job.review_submission_id is not None
+        assert job.knowledge_base_id is not None
+        from app.services.knowledge_content import mark_target_index_failed
 
-    try:
-        await mark_target_index_failed(
-            session,
-            review_submission_id=job.review_submission_id,
-            knowledge_base_id=job.knowledge_base_id,
-        )
-    except Exception:
-        # A completion racing with failure should not make the durable job
-        # transaction disappear; the publication state remains authoritative.
-        pass
+        try:
+            await mark_target_index_failed(
+                session,
+                review_submission_id=job.review_submission_id,
+                knowledge_base_id=job.knowledge_base_id,
+            )
+        except Exception:
+            # A completion racing with failure should not make the durable job
+            # transaction disappear; the publication state remains authoritative.
+            pass
 
     if job.attempt_count >= job.max_attempts:
         job.status = IndexJobStatus.FAILED
@@ -329,6 +410,14 @@ async def run_next_index_job(
         return None
     backend = backend or NoopIndexBackend()
     try:
+        if job.job_kind == IndexJobKind.CLEAN_PUBLICATION:
+            _validate_clean_publication_fields(job)
+            await backend.clean_publication(session, job)
+            await complete_index_job(session, job_id=job.id, worker_id=worker_id)
+            return IndexWorkerResult(job_id=job.id, status=IndexJobStatus.SUCCEEDED)
+        if job.job_kind != IndexJobKind.INDEX_TARGET:
+            raise IndexJobStateError(job.id)
+
         from app.services.knowledge_content import (
             retry_failed_target_indexing,
             start_target_indexing,

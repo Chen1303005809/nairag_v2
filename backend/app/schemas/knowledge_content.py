@@ -275,6 +275,34 @@ class ReviewQueueItemResponse(BaseModel):
     reviewed_at: datetime | None = None
 
 
+class ManagedKnowledgeEntryResponse(BaseModel):
+    """A knowledge publication as managed by a system administrator."""
+
+    child_id: UUID
+    parent_id: UUID
+    parent_name: str
+    is_primary: bool
+    knowledge_base: AvailableKnowledgeBaseResponse
+    status: ChildPublicationStatus
+    child_revision: ReviewChildRevisionResponse
+    uploaded_by: ReviewSubmitterResponse
+    uploaded_at: datetime
+    embedded_at: datetime | None = None
+    archived_at: datetime | None = None
+
+
+class EditableContentEntryResponse(BaseModel):
+    """A currently published revision that can be submitted as a new revision."""
+
+    child_id: UUID
+    parent_id: UUID
+    parent_name: str
+    is_primary: bool
+    knowledge_bases: list[AvailableKnowledgeBaseResponse]
+    parent_revision: ReviewParentRevisionResponse | None = None
+    child_revision: ReviewChildRevisionResponse
+
+
 class PublicationResponse(BaseModel):
     child_id: UUID
     knowledge_base_id: UUID

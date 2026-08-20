@@ -15,6 +15,9 @@ from app.models.knowledge_content import (
     ChildPublicationStatus,
     ChildRevision,
     ChildRevisionQuestionVariant,
+    IndexJob,
+    IndexJobKind,
+    IndexJobStatus,
     Parent,
     ParentLexicalRule,
     ParentRevision,
@@ -138,6 +141,31 @@ class ReviewQueueDetails:
     child_question_variants: list[ChildRevisionQuestionVariant]
     review_decision: ReviewDecision | None = None
     reviewer: UserAccount | None = None
+
+
+@dataclass(frozen=True)
+class ManagedKnowledgeDetails:
+    publication: ChildKnowledgeBasePublication
+    child: Child
+    knowledge_base: KnowledgeBase
+    parent_name: str
+    parent_revision: ParentRevision | None
+    child_revision: ChildRevision
+    child_question_variants: list[ChildRevisionQuestionVariant]
+    submitter: UserAccount
+    submitted_at: datetime
+    embedded_at: datetime | None
+
+
+@dataclass(frozen=True)
+class EditableContentDetails:
+    child: Child
+    parent_name: str
+    parent_revision: ParentRevision | None
+    parent_lexical_rules: list[ParentLexicalRule]
+    child_revision: ChildRevision
+    child_question_variants: list[ChildRevisionQuestionVariant]
+    knowledge_bases: list[KnowledgeBase]
 
 
 async def _get_parent(
@@ -889,6 +917,209 @@ async def list_submissions_by_author(
         )
         for submission, parent_revision, child_revision, submitter in rows
     ]
+
+
+async def _current_published_parent_revisions(
+    session: AsyncSession,
+    parent_ids: set[UUID],
+) -> dict[UUID, ParentRevision]:
+    """Resolve the globally active parent revision for each requested parent."""
+
+    revisions: dict[UUID, ParentRevision] = {}
+    for parent_id in parent_ids:
+        submission = await _latest_published_parent_submission(session, parent_id)
+        if submission is None or submission.parent_revision_id is None:
+            continue
+        revision = await session.get(ParentRevision, submission.parent_revision_id)
+        if revision is not None:
+            revisions[parent_id] = revision
+    return revisions
+
+
+async def list_managed_knowledge_entries(
+    session: AsyncSession,
+    *,
+    include_archived: bool = True,
+) -> list[ManagedKnowledgeDetails]:
+    """List every current knowledge publication with its source and index evidence."""
+
+    statuses = [ChildPublicationStatus.PUBLISHED]
+    if include_archived:
+        statuses.append(ChildPublicationStatus.ARCHIVED)
+    rows = (
+        await session.execute(
+            select(
+                ChildKnowledgeBasePublication,
+                Child,
+                ChildRevision,
+                KnowledgeBase,
+            )
+            .join(Child, Child.id == ChildKnowledgeBasePublication.child_id)
+            .join(
+                ChildRevision,
+                ChildRevision.id == ChildKnowledgeBasePublication.active_revision_id,
+            )
+            .join(
+                KnowledgeBase,
+                KnowledgeBase.id == ChildKnowledgeBasePublication.knowledge_base_id,
+            )
+            .where(ChildKnowledgeBasePublication.status.in_(statuses))
+            .order_by(
+                KnowledgeBase.name,
+                KnowledgeBase.logical_key,
+                Child.parent_id,
+                Child.is_primary.desc(),
+                ChildRevision.question,
+            )
+        )
+    ).all()
+    if not rows:
+        return []
+
+    child_revision_ids = {child_revision.id for _publication, _child, child_revision, _kb in rows}
+    parent_ids = {child.parent_id for _publication, child, _child_revision, _kb in rows}
+
+    submission_rows = (
+        await session.execute(
+            select(ReviewSubmission, UserAccount)
+            .join(UserAccount, UserAccount.id == ReviewSubmission.submitted_by_user_id)
+            .where(ReviewSubmission.child_revision_id.in_(child_revision_ids))
+            .order_by(ReviewSubmission.submitted_at.desc(), ReviewSubmission.id.desc())
+        )
+    ).all()
+    source_by_revision: dict[UUID, tuple[ReviewSubmission, UserAccount]] = {}
+    for submission, submitter in submission_rows:
+        source_by_revision.setdefault(submission.child_revision_id, (submission, submitter))
+
+    variants_by_revision: dict[UUID, list[ChildRevisionQuestionVariant]] = {}
+    variant_rows = await session.scalars(
+        select(ChildRevisionQuestionVariant)
+        .where(ChildRevisionQuestionVariant.child_revision_id.in_(child_revision_ids))
+        .order_by(
+            ChildRevisionQuestionVariant.child_revision_id,
+            ChildRevisionQuestionVariant.sort_order,
+        )
+    )
+    for variant in variant_rows:
+        variants_by_revision.setdefault(variant.child_revision_id, []).append(variant)
+
+    embedded_at_by_revision_and_knowledge_base: dict[tuple[UUID, UUID], datetime] = {}
+    index_rows = (
+        await session.execute(
+            select(
+                IndexJob.child_revision_id,
+                IndexJob.knowledge_base_id,
+                func.max(IndexJob.completed_at),
+            )
+            .where(
+                IndexJob.job_kind == IndexJobKind.INDEX_TARGET,
+                IndexJob.status == IndexJobStatus.SUCCEEDED,
+                IndexJob.child_revision_id.in_(child_revision_ids),
+                IndexJob.completed_at.is_not(None),
+            )
+            .group_by(IndexJob.child_revision_id, IndexJob.knowledge_base_id)
+        )
+    ).all()
+    for child_revision_id, knowledge_base_id, embedded_at in index_rows:
+        if (
+            child_revision_id is not None
+            and knowledge_base_id is not None
+            and embedded_at is not None
+        ):
+            embedded_at_by_revision_and_knowledge_base[(child_revision_id, knowledge_base_id)] = (
+                embedded_at
+            )
+
+    parent_revisions = await _current_published_parent_revisions(session, parent_ids)
+    managed_entries: list[ManagedKnowledgeDetails] = []
+    for publication, child, child_revision, knowledge_base in rows:
+        source = source_by_revision.get(child_revision.id)
+        if source is None:
+            # Published revisions are always created through a submission.  Skipping
+            # corrupt legacy rows is safer than inventing an uploader or timestamp.
+            continue
+        submission, submitter = source
+        parent_revision = parent_revisions.get(child.parent_id)
+        managed_entries.append(
+            ManagedKnowledgeDetails(
+                publication=publication,
+                child=child,
+                knowledge_base=knowledge_base,
+                parent_name=parent_revision.name if parent_revision is not None else "未命名父类",
+                parent_revision=parent_revision,
+                child_revision=child_revision,
+                child_question_variants=variants_by_revision.get(child_revision.id, []),
+                submitter=submitter,
+                submitted_at=submission.submitted_at,
+                embedded_at=embedded_at_by_revision_and_knowledge_base.get(
+                    (child_revision.id, knowledge_base.id)
+                ),
+            )
+        )
+    return managed_entries
+
+
+async def list_editable_content_entries(
+    session: AsyncSession,
+) -> list[EditableContentDetails]:
+    """Group published content into the exact revisions that users can revise."""
+
+    managed_entries = [
+        entry
+        for entry in await list_managed_knowledge_entries(session, include_archived=False)
+        if entry.knowledge_base.is_active
+    ]
+    grouped_entries: dict[tuple[UUID, UUID], list[ManagedKnowledgeDetails]] = {}
+    for entry in managed_entries:
+        grouped_entries.setdefault(
+            (entry.child.id, entry.child_revision.id),
+            [],
+        ).append(entry)
+
+    primary_parent_revision_ids = {
+        entry.parent_revision.id
+        for entries in grouped_entries.values()
+        for entry in entries
+        if entry.child.is_primary and entry.parent_revision is not None
+    }
+    rules_by_revision: dict[UUID, list[ParentLexicalRule]] = {}
+    if primary_parent_revision_ids:
+        rule_rows = await session.scalars(
+            select(ParentLexicalRule)
+            .where(ParentLexicalRule.parent_revision_id.in_(primary_parent_revision_ids))
+            .order_by(ParentLexicalRule.parent_revision_id, ParentLexicalRule.sort_order)
+        )
+        for rule in rule_rows:
+            rules_by_revision.setdefault(rule.parent_revision_id, []).append(rule)
+
+    editable_entries: list[EditableContentDetails] = []
+    for entries in grouped_entries.values():
+        first = entries[0]
+        parent_revision = first.parent_revision if first.child.is_primary else None
+        editable_entries.append(
+            EditableContentDetails(
+                child=first.child,
+                parent_name=first.parent_name,
+                parent_revision=parent_revision,
+                parent_lexical_rules=(
+                    rules_by_revision.get(parent_revision.id, [])
+                    if parent_revision is not None
+                    else []
+                ),
+                child_revision=first.child_revision,
+                child_question_variants=first.child_question_variants,
+                knowledge_bases=[entry.knowledge_base for entry in entries],
+            )
+        )
+    return sorted(
+        editable_entries,
+        key=lambda entry: (
+            entry.parent_name.casefold(),
+            not entry.child.is_primary,
+            entry.child_revision.question.casefold(),
+            str(entry.child.id),
+        ),
+    )
 
 
 async def _reviewer_has_knowledge_base_access(

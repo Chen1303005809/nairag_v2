@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
-import type { KnowledgeBase, ReviewSubmission } from "../api/types";
+import type { EditableContentEntry, KnowledgeBase, ReviewSubmission } from "../api/types";
 import { ContentSubmissionPage } from "./ContentSubmissionPage";
 
 vi.mock("../api/client", () => ({
@@ -10,6 +10,8 @@ vi.mock("../api/client", () => ({
     listKnowledgeBases: vi.fn(),
     listAvailableParents: vi.fn(),
     listMyContentSubmissions: vi.fn(),
+    listEditableContentEntries: vi.fn(),
+    createChildRevision: vi.fn(),
     resubmitRejectedChild: vi.fn()
   }
 }));
@@ -73,12 +75,28 @@ const rejectedSubmission: ReviewSubmission = {
   }
 };
 
+const editableEntry: EditableContentEntry = {
+  child_id: "child-1",
+  parent_id: "parent-1",
+  parent_name: "账号登录",
+  is_primary: false,
+  knowledge_bases: [knowledgeBase],
+  parent_revision: null,
+  child_revision: rejectedSubmission.child_revision!
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listKnowledgeBases.mockResolvedValue([knowledgeBase]);
   mockedApi.listAvailableParents.mockResolvedValue([]);
   mockedApi.listMyContentSubmissions.mockResolvedValue([rejectedSubmission]);
+  mockedApi.listEditableContentEntries.mockResolvedValue([]);
+  mockedApi.createChildRevision.mockResolvedValue(rejectedSubmission);
   mockedApi.resubmitRejectedChild.mockResolvedValue(rejectedSubmission);
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 describe("ContentSubmissionPage rejected submissions", () => {
@@ -107,5 +125,30 @@ describe("ContentSubmissionPage rejected submissions", () => {
       )
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("submits a revision for a published ordinary child entry", async () => {
+    mockedApi.listEditableContentEntries.mockResolvedValue([editableEntry]);
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "修改已发布内容" }));
+    fireEvent.click(await screen.findByRole("button", { name: "修改并提交审核" }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "回复内容" }), {
+      target: { value: "请先确认身份信息，再联系管理员重置密码。" }
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "提交新修订审核" }));
+
+    await waitFor(() =>
+      expect(mockedApi.createChildRevision).toHaveBeenCalledWith(
+        "child-1",
+        expect.objectContaining({
+          question: "如何找回密码？",
+          response_content: "请先确认身份信息，再联系管理员重置密码。"
+        }),
+        ["knowledge-base-1"]
+      )
+    );
   });
 });
