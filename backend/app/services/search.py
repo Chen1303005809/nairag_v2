@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -75,6 +76,7 @@ class SearchDetails:
 
 
 NO_MATCH_GUIDANCE = "未找到足够相关的知识，请转研发查询。"
+NO_FILTER_MATCH_GUIDANCE = "未找到符合字段条件的知识。"
 SEARCH_THRESHOLD = 0.22
 MAX_FALLBACK_PARENTS = 3
 HELPFUL_SCORE_CAP = 0.12
@@ -82,6 +84,28 @@ HELPFUL_SCORE_CAP = 0.12
 
 def _normalize_text(value: str | None) -> str:
     return " ".join((value or "").casefold().split())
+
+
+def _matches_field_filters(
+    candidate: SearchCandidate,
+    *,
+    parent_type: str | None,
+    question_type: str | None,
+    business_object: str | None,
+    purpose: str | None,
+    customer_type: str | None,
+) -> bool:
+    filters = (
+        (candidate.parent_revision.name, parent_type),
+        (candidate.child_revision.question_type, question_type),
+        (candidate.child_revision.business_object, business_object),
+        (candidate.child_revision.purpose, purpose),
+        (candidate.child_revision.customer_type, customer_type),
+    )
+    return all(
+        expected is None or _normalize_text(actual) == _normalize_text(expected)
+        for actual, expected in filters
+    )
 
 
 def _tokens(value: str) -> set[str]:
@@ -350,8 +374,14 @@ async def search_published_content(
     query: str | None,
     ocr_text: str | None,
     knowledge_base_id: UUID | None,
+    retrieval_mode: Literal["vector", "field_filter"],
     limit: int,
     index_backend: SearchIndexBackend | None = None,
+    parent_type: str | None = None,
+    question_type: str | None = None,
+    business_object: str | None = None,
+    purpose: str | None = None,
+    customer_type: str | None = None,
 ) -> SearchDetails:
     if knowledge_base_id is not None:
         knowledge_base = await session.get(KnowledgeBase, knowledge_base_id)
@@ -365,63 +395,84 @@ async def search_published_content(
         else SearchQueryMode.TEXT
     )
     candidates = await _load_candidates(session, knowledge_base_id=knowledge_base_id)
-    scored = None
-    if index_backend is not None:
-        scored = await _score_candidates_from_index(
-            candidates,
-            query=query,
-            ocr_text=ocr_text,
-            knowledge_base_id=knowledge_base_id,
-            limit=limit,
-            index_backend=index_backend,
-        )
-    if scored is None:
-        scored = [_score_candidate(item, query=query, ocr_text=ocr_text) for item in candidates]
-    selected = [item for item in scored if item.score >= SEARCH_THRESHOLD]
-
-    fallback_queries = [value for value in (query, ocr_text) if value]
-    fallback_candidates: list[ScoredCandidate] = []
-    fallback_parent_ids: set[UUID] = set()
-    for item in scored:
-        if not item.candidate.child.is_primary:
-            continue
-        matches = [
-            _parent_keyword_match(value, item.candidate)
-            for value in fallback_queries
-        ]
-        matches = [match for match in matches if match is not None]
-        if not matches or item.candidate.parent_revision.parent_id in fallback_parent_ids:
-            continue
-        if item not in selected:
-            quality, reason = max(matches, key=lambda match: match[0])
-            fallback_candidates.append(
-                ScoredCandidate(
-                    item.candidate,
-                    min(
-                        0.18
-                        + quality * 0.01
-                        + _helpful_bonus(item.candidate.publication.helpful_count),
-                        0.25,
-                    ),
-                    "parent_keyword_fallback",
-                )
+    if retrieval_mode == "field_filter":
+        selected = [
+            ScoredCandidate(candidate, 1.0, "field_filter")
+            for candidate in candidates
+            if _matches_field_filters(
+                candidate,
+                parent_type=parent_type,
+                question_type=question_type,
+                business_object=business_object,
+                purpose=purpose,
+                customer_type=customer_type,
             )
-            fallback_parent_ids.add(item.candidate.parent_revision.parent_id)
-        if len(fallback_parent_ids) >= MAX_FALLBACK_PARENTS:
-            break
-
-    selected.extend(fallback_candidates)
-    selected.sort(
-        key=lambda item: (
-            item.candidate.parent_revision.parent_id,
-            -item.score,
-            item.candidate.knowledge_base.name,
+        ]
+        # Field filtering is a browse operation: return every matching published
+        # entry, not just the top-N items selected by relevance scoring.
+        selected.sort(
+            key=lambda item: (
+                item.candidate.parent_revision.name,
+                item.candidate.parent_revision.canonical_keyword,
+                item.candidate.child_revision.question,
+                item.candidate.knowledge_base.name,
+            )
         )
-    )
-    # Keep semantic results ahead of fallback results while retaining all
-    # knowledge-base variants of the selected parent groups.
-    selected.sort(key=lambda item: item.score, reverse=True)
-    selected = selected[:limit]
+    else:
+        scored: list[ScoredCandidate] | None = None
+        if index_backend is not None:
+            scored = await _score_candidates_from_index(
+                candidates,
+                query=query,
+                ocr_text=ocr_text,
+                knowledge_base_id=knowledge_base_id,
+                limit=limit,
+                index_backend=index_backend,
+            )
+        if scored is None:
+            scored = [_score_candidate(item, query=query, ocr_text=ocr_text) for item in candidates]
+        selected = [item for item in scored if item.score >= SEARCH_THRESHOLD]
+
+        fallback_queries = [value for value in (query, ocr_text) if value]
+        fallback_candidates: list[ScoredCandidate] = []
+        fallback_parent_ids: set[UUID] = set()
+        for item in scored:
+            if not item.candidate.child.is_primary:
+                continue
+            matches = [_parent_keyword_match(value, item.candidate) for value in fallback_queries]
+            matches = [match for match in matches if match is not None]
+            if not matches or item.candidate.parent_revision.parent_id in fallback_parent_ids:
+                continue
+            if item not in selected:
+                quality, _reason = max(matches, key=lambda match: match[0])
+                fallback_candidates.append(
+                    ScoredCandidate(
+                        item.candidate,
+                        min(
+                            0.18
+                            + quality * 0.01
+                            + _helpful_bonus(item.candidate.publication.helpful_count),
+                            0.25,
+                        ),
+                        "parent_keyword_fallback",
+                    )
+                )
+                fallback_parent_ids.add(item.candidate.parent_revision.parent_id)
+            if len(fallback_parent_ids) >= MAX_FALLBACK_PARENTS:
+                break
+
+        selected.extend(fallback_candidates)
+        selected.sort(
+            key=lambda item: (
+                item.candidate.parent_revision.parent_id,
+                -item.score,
+                item.candidate.knowledge_base.name,
+            )
+        )
+        # Keep semantic results ahead of fallback results while retaining all
+        # knowledge-base variants of the selected parent groups.
+        selected.sort(key=lambda item: item.score, reverse=True)
+        selected = selected[:limit]
 
     event = SearchEvent(
         user_id=user_id,
@@ -464,7 +515,11 @@ async def search_published_content(
     return SearchDetails(
         event=event,
         groups=groups,
-        no_match_guidance=NO_MATCH_GUIDANCE if not selected else None,
+        no_match_guidance=(
+            (NO_FILTER_MATCH_GUIDANCE if retrieval_mode == "field_filter" else NO_MATCH_GUIDANCE)
+            if not selected
+            else None
+        ),
     )
 
 

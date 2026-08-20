@@ -10,6 +10,8 @@ import type {
   ReviewDecisionKind,
   ReviewQueueItem,
   ReviewSubmission,
+  SearchFilters,
+  SearchRetrievalMode,
   SearchResponse,
   HelpfulFeedbackResponse,
   TemporaryPasswordResponse,
@@ -207,10 +209,21 @@ export const api = {
       { decision, comment: comment || null }
     ),
 
-  search: (query: string, knowledgeBaseId?: string): Promise<SearchResponse> =>
+  search: (
+    retrievalMode: SearchRetrievalMode,
+    query: string | undefined,
+    knowledgeBaseId?: string,
+    filters: SearchFilters = {}
+  ): Promise<SearchResponse> =>
     sessionMutation<SearchResponse>("POST", "/search", {
-      query,
+      retrieval_mode: retrievalMode,
+      query: query || null,
       knowledge_base_id: knowledgeBaseId || null,
+      parent_type: filters.parent_type || null,
+      question_type: filters.question_type || null,
+      business_object: filters.business_object || null,
+      purpose: filters.purpose || null,
+      customer_type: filters.customer_type || null,
       limit: 10
     }),
 

@@ -515,6 +515,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     )
                     assert submitted.status_code == 201
                     parent_submission_id = submitted.json()["id"]
+                    primary_child_id = submitted.json()["child_id"]
 
                     queue = await reviewer.get("/api/v1/knowledge-content/review-queue")
                     assert queue.status_code == 200
@@ -568,6 +569,15 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                             "child": {
                                 "question": "如何找回密码？",
                                 "response_content": "请联系管理员。",
+                                "question_variants": ["密码找回流程怎么走？"],
+                                "follow_up_guidance": "确认身份后再进行密码重置。",
+                                "question_type": "功能故障类",
+                                "business_object": "账户建立&账户迁移",
+                                "purpose": "企业微信咨询",
+                                "customer_type": "个人客户",
+                                "feature_explanation": "用于处理账号密码找回问题。",
+                                "example": "用户忘记登录密码。",
+                                "internal_notes": "仅供支持人员参考。",
                             },
                             "knowledge_base_ids": knowledge_base_ids,
                         },
@@ -715,6 +725,60 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert publication.status_code == 200
                     assert publication.json()["status"] == "published"
                     assert publication.json()["pending_submission_id"] is None
+
+                    filtered_search = await author.post(
+                        "/api/v1/search",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "retrieval_mode": "field_filter",
+                            "question_type": "功能故障类",
+                            "business_object": "账户建立&账户迁移",
+                            "limit": 10,
+                        },
+                    )
+                    assert filtered_search.status_code == 200
+                    filtered_payload = filtered_search.json()
+                    assert filtered_payload["no_match"] is False
+                    filtered_item = filtered_payload["groups"][0]["children"][0]
+                    assert filtered_item["match_reason"] == "field_filter"
+                    assert filtered_item["question_variants"] == ["密码找回流程怎么走？"]
+                    assert filtered_item["follow_up_guidance"] == "确认身份后再进行密码重置。"
+                    assert filtered_item["question_type"] == "功能故障类"
+                    assert filtered_item["business_object"] == "账户建立&账户迁移"
+                    assert filtered_item["purpose"] == "企业微信咨询"
+                    assert filtered_item["customer_type"] == "个人客户"
+                    assert filtered_item["feature_explanation"] == "用于处理账号密码找回问题。"
+                    assert filtered_item["example"] == "用户忘记登录密码。"
+                    assert filtered_item["internal_notes"] == "仅供支持人员参考。"
+
+                    all_entries_search = await author.post(
+                        "/api/v1/search",
+                        headers=csrf_headers(author, settings),
+                        json={"retrieval_mode": "field_filter", "limit": 1},
+                    )
+                    assert all_entries_search.status_code == 200
+                    all_entries_payload = all_entries_search.json()
+                    all_entries = [
+                        item
+                        for group in all_entries_payload["groups"]
+                        for item in group["children"]
+                    ]
+                    assert len(all_entries) > 1
+                    assert {primary_child_id, child_id}.issubset(
+                        {item["child_id"] for item in all_entries}
+                    )
+                    assert {item["match_reason"] for item in all_entries} == {"field_filter"}
+
+                    invalid_mixed_search = await author.post(
+                        "/api/v1/search",
+                        headers=csrf_headers(author, settings),
+                        json={
+                            "retrieval_mode": "vector",
+                            "query": "如何找回密码？",
+                            "question_type": "功能故障类",
+                        },
+                    )
+                    assert invalid_mixed_search.status_code == 422
 
                     search = await author.post(
                         "/api/v1/search",

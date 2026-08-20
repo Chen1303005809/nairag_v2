@@ -190,9 +190,20 @@ export interface SearchResult {
   customer_type: string | null;
   feature_explanation: string | null;
   example: string | null;
+  internal_notes: string | null;
   helpful_count: number;
   match_reason: string;
 }
+
+export interface SearchFilters {
+  parent_type?: string;
+  question_type?: string;
+  business_object?: string;
+  purpose?: string;
+  customer_type?: string;
+}
+
+export type SearchRetrievalMode = "vector" | "field_filter";
 
 export interface SearchGroup {
   parent_id: string;

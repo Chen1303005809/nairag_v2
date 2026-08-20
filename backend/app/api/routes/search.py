@@ -63,6 +63,7 @@ def as_search_response(details) -> SearchResponse:
                         customer_type=candidate.child_revision.customer_type,
                         feature_explanation=candidate.child_revision.feature_explanation,
                         example=candidate.child_revision.example,
+                        internal_notes=candidate.child_revision.internal_notes,
                         helpful_count=candidate.publication.helpful_count,
                         match_reason=result.match_reason,
                     )
@@ -89,6 +90,12 @@ async def search_content(
             query=body.query,
             ocr_text=body.ocr_text,
             knowledge_base_id=body.knowledge_base_id,
+            retrieval_mode=body.retrieval_mode,
+            parent_type=body.parent_type,
+            question_type=body.question_type,
+            business_object=body.business_object,
+            purpose=body.purpose,
+            customer_type=body.customer_type,
             limit=body.limit,
             index_backend=request.app.state.search_index_backend,
         )
