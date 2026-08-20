@@ -90,6 +90,31 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
 }
 
+.content-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+.content-form-grid .ant-form-item {
+  min-width: 0;
+}
+
+.content-form-grid .ant-select,
+.content-form-grid .ant-input {
+  width: 100%;
+}
+
+.knowledge-base-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.knowledge-base-options .ant-checkbox-wrapper + .ant-checkbox-wrapper {
+  margin-inline-start: 0;
+}
+
 @media (max-width: 560px) {
   .application-header {
     padding-inline: 16px;
@@ -102,5 +127,9 @@ body {
   .page-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .content-form-grid {
+    grid-template-columns: 1fr;
   }
 }

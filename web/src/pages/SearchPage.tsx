@@ -276,7 +276,7 @@ export function SearchPage(): JSX.Element {
                         </Tag>
                       </Space>
                       <Descriptions bordered size="small" column={1}>
-                        <Descriptions.Item label="具体问题所属小类">
+                        <Descriptions.Item label="问题小类">
                           <Typography.Paragraph
                             style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
                           >

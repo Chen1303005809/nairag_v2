@@ -84,7 +84,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
         decision,
         comment
       );
-      message.success(decision === "approved" ? "已通过审核" : "已驳回投稿");
+      message.success(decision === "approved" ? "已通过审核" : "已驳回上传");
       setDecisionItem(undefined);
       setComment("");
       await refresh();
@@ -99,7 +99,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     <Space direction="vertical" size={0}>
       <Typography.Text strong>{item.parent_revision?.name ?? item.child_revision.question}</Typography.Text>
       <Typography.Text type="secondary">
-        {item.submission_kind === "parent_with_primary" ? "父类 + 主子条目" : "普通子条目"}
+        {item.submission_kind === "parent_with_primary" ? "问题大类" : "问题小类"}
       </Typography.Text>
     </Space>
   );
@@ -116,7 +116,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       <Descriptions.Item label="实际审核时间">{formatDateTime(item.reviewed_at)}</Descriptions.Item>
       {item.review_comment ? <Descriptions.Item label="审核备注">{item.review_comment}</Descriptions.Item> : null}
       {item.parent_revision ? (
-        <Descriptions.Item label="父类关键词">
+        <Descriptions.Item label="问题大类关键词">
           {item.parent_revision.canonical_keyword}
         </Descriptions.Item>
       ) : null}
@@ -173,7 +173,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
 
   const queueColumns: TableProps<ReviewQueueItem>["columns"] = [
     {
-      title: "投稿内容",
+      title: "上传内容",
       key: "content",
       render: (_value: unknown, item: ReviewQueueItem) => contentCell(item)
     },
@@ -229,7 +229,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
 
   const historyColumns: TableProps<ReviewQueueItem>["columns"] = [
     {
-      title: "投稿内容",
+      title: "上传内容",
       key: "content",
       render: (_value: unknown, item: ReviewQueueItem) => contentCell(item)
     },
@@ -289,7 +289,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
         <div>
           <Typography.Title level={3}>审核工作台</Typography.Title>
           <Typography.Paragraph type="secondary">
-            待审核仅展示你有权限处理的目标库；“我的审核历史”保留你已作出的审核决定。父类聚合会在全部目标通过且索引完成后整体发布。
+            待审核仅展示你有权限处理的目标库；“我的审核历史”保留你已作出的审核决定。问题大类与问题小类会在全部目标通过且索引完成后整体发布。
           </Typography.Paragraph>
         </div>
         <Space>
@@ -332,7 +332,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
                     scroll={{ x: 1280 }}
                     expandable={{ expandedRowRender: expandedRow }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}
-                    locale={{ emptyText: "当前没有待审核投稿" }}
+                    locale={{ emptyText: "当前没有待审核的上传内容" }}
                   />
                 </Card>
               )

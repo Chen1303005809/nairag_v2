@@ -38,7 +38,7 @@ const historyItem: ReviewQueueItem = {
   child_revision_id: "revision-1",
   knowledge_base_id: knowledgeBase.id,
   knowledge_base: knowledgeBase,
-  submitter: { id: "author-1", username: "author", display_name: "投稿人" },
+  submitter: { id: "author-1", username: "author", display_name: "上传人" },
   reviewer: { id: "reviewer-1", username: "reviewer", display_name: "审核人" },
   review_decision: "approved",
   review_comment: "内容完整",
@@ -75,7 +75,7 @@ describe("ReviewWorkbenchPage history", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "我的审核历史" }));
 
-    expect(await screen.findByText("投稿人（author）")).toBeInTheDocument();
+    expect(await screen.findByText("上传人（author）")).toBeInTheDocument();
     expect(screen.getByText("审核人（reviewer）")).toBeInTheDocument();
     expect(screen.getByText("内容完整")).toBeInTheDocument();
     await waitFor(() => expect(mockedApi.listMyReviewHistory).toHaveBeenCalled());

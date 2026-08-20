@@ -150,7 +150,7 @@ function App(): JSX.Element {
                 },
                 {
                   key: "content-submission",
-                  label: "知识投稿",
+                  label: "知识上传",
                   children: (
                     <Suspense fallback={<Spin />}>
                       <ContentSubmissionPage />
@@ -192,7 +192,7 @@ function App(): JSX.Element {
               items={[
                 {
                   key: "content-submission",
-                  label: "知识投稿",
+                  label: "知识上传",
                   children: (
                     <Suspense fallback={<Spin />}>
                       <ContentSubmissionPage />
@@ -234,7 +234,7 @@ function App(): JSX.Element {
                 },
                 {
                   key: "content-submission",
-                  label: "知识投稿",
+                  label: "知识上传",
                   children: (
                     <Suspense fallback={<Spin />}>
                       <ContentSubmissionPage />

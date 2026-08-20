@@ -40,6 +40,9 @@ import {
   questionTypeOptions
 } from "../constants/knowledgeOptions";
 
+const PARENT_CATEGORY_LABEL = "问题大类";
+const CHILD_CATEGORY_LABEL = "问题小类";
+
 interface ChildContentFormValues {
   question: string;
   response_content: string;
@@ -192,8 +195,8 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
     <>
       <Form.Item
         name={[root, "question"]}
-        label="具体问题所属小类"
-        rules={[{ required: true, message: "请输入具体问题所属小类" }]}
+        label={CHILD_CATEGORY_LABEL}
+        rules={[{ required: true, message: `请输入${CHILD_CATEGORY_LABEL}` }]}
       >
         <Input.TextArea rows={2} placeholder="用户会提出的具体问题" />
       </Form.Item>
@@ -210,42 +213,44 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
         addLabel="添加同义问句"
         placeholder="无需重复填写主问题"
       />
+      <div className="content-form-grid">
+        <Form.Item
+          name={[root, "question_type"]}
+          label="问题类型"
+          rules={[{ required: true, message: "请选择问题类型" }]}
+        >
+          <Select placeholder="--请选择--" options={questionTypeOptions} />
+        </Form.Item>
+        <Form.Item
+          name={[root, "business_object"]}
+          label="具体功能与模块"
+          rules={[{ required: true, message: "请选择具体功能与模块" }]}
+        >
+          <Select placeholder="--请选择--" options={businessObjectOptions} />
+        </Form.Item>
+        <Form.Item
+          name={[root, "purpose"]}
+          label="应用场景"
+          rules={[{ required: true, message: "请选择应用场景" }]}
+        >
+          <Select placeholder="--请选择--" options={purposeOptions} />
+        </Form.Item>
+        <Form.Item
+          name={[root, "customer_type"]}
+          label="客户类型"
+          rules={[{ required: true, message: "请选择客户类型" }]}
+        >
+          <Select placeholder="--请选择--" options={customerTypeOptions} />
+        </Form.Item>
+      </div>
       <Collapse
         ghost
         items={[
           {
-            key: "more-fields",
-            label: "业务字段（必填）",
+            key: "supplementary-fields",
+            label: "可补充说明",
             children: (
               <>
-                <Form.Item
-                  name={[root, "question_type"]}
-                  label="问题类型"
-                  rules={[{ required: true, message: "请选择问题类型" }]}
-                >
-                  <Select placeholder="--请选择--" options={questionTypeOptions} />
-                </Form.Item>
-                <Form.Item
-                  name={[root, "business_object"]}
-                  label="具体功能与模块"
-                  rules={[{ required: true, message: "请选择具体功能与模块" }]}
-                >
-                  <Select placeholder="--请选择--" options={businessObjectOptions} />
-                </Form.Item>
-                <Form.Item
-                  name={[root, "purpose"]}
-                  label="应用场景"
-                  rules={[{ required: true, message: "请选择应用场景" }]}
-                >
-                  <Select placeholder="--请选择--" options={purposeOptions} />
-                </Form.Item>
-                <Form.Item
-                  name={[root, "customer_type"]}
-                  label="客户类型"
-                  rules={[{ required: true, message: "请选择客户类型" }]}
-                >
-                  <Select placeholder="--请选择--" options={customerTypeOptions} />
-                </Form.Item>
                 <Form.Item name={[root, "feature_explanation"]} label="功能说明">
                   <Input.TextArea rows={3} />
                 </Form.Item>
@@ -267,6 +272,35 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
   );
 }
 
+function ParentContentFields(): JSX.Element {
+  return (
+    <>
+      <div className="content-form-grid">
+        <Form.Item
+          name={["parent", "name"]}
+          label={PARENT_CATEGORY_LABEL}
+          rules={[{ required: true, message: `请选择${PARENT_CATEGORY_LABEL}` }]}
+        >
+          <Select placeholder={`请选择${PARENT_CATEGORY_LABEL}`} options={parentTypeOptions} />
+        </Form.Item>
+        <Form.Item
+          name={["parent", "canonical_keyword"]}
+          label="问题大类关键词"
+          rules={[{ required: true, message: "请输入问题大类关键词" }]}
+        >
+          <Input placeholder="例如：登录" />
+        </Form.Item>
+      </div>
+      <StructuredTextList
+        name={["parent", "aliases"]}
+        label="别名"
+        addLabel="添加别名"
+        placeholder="例如：登陆"
+      />
+    </>
+  );
+}
+
 function submissionStatus(status: ReviewSubmissionStatus): JSX.Element {
   const statusMap: Record<ReviewSubmissionStatus, [string, string]> = {
     pending_review: ["gold", "待审核"],
@@ -277,6 +311,16 @@ function submissionStatus(status: ReviewSubmissionStatus): JSX.Element {
   };
   const [color, label] = statusMap[status];
   return <Tag color={color}>{label}</Tag>;
+}
+
+function submissionKindLabel(submissionKind: ReviewSubmission["submission_kind"]): string {
+  return submissionKind === "parent_with_primary"
+    ? `${PARENT_CATEGORY_LABEL} + ${CHILD_CATEGORY_LABEL}`
+    : CHILD_CATEGORY_LABEL;
+}
+
+function contentEntryKindLabel(isPrimary: boolean): string {
+  return isPrimary ? `${CHILD_CATEGORY_LABEL}（与${PARENT_CATEGORY_LABEL}一同提交）` : CHILD_CATEGORY_LABEL;
 }
 
 export function ContentSubmissionPage(): JSX.Element {
@@ -316,7 +360,7 @@ export function ContentSubmissionPage(): JSX.Element {
       setSubmissions(nextSubmissions);
       setEditableEntries(nextEditableEntries);
     } catch (reason) {
-      message.error(reason instanceof Error ? reason.message : "无法加载投稿信息");
+      message.error(reason instanceof Error ? reason.message : "无法加载上传信息");
     } finally {
       setLoading(false);
     }
@@ -340,7 +384,7 @@ export function ContentSubmissionPage(): JSX.Element {
         values.knowledge_base_ids
       );
       parentForm.resetFields();
-      message.success("父类与主子条目已作为一个候选提交审核");
+      message.success(`${PARENT_CATEGORY_LABEL}与${CHILD_CATEGORY_LABEL}已作为一个候选提交审核`);
       await refresh();
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "提交失败，请稍后重试");
@@ -351,14 +395,14 @@ export function ContentSubmissionPage(): JSX.Element {
 
   const openResubmission = (submission: ReviewSubmission): void => {
     if (!submission.child_revision) {
-      message.error("投稿内容尚未加载，无法编辑");
+      message.error("上传内容尚未加载，无法编辑");
       return;
     }
     if (
       submission.submission_kind === "parent_with_primary" &&
       !submission.parent_revision
     ) {
-      message.error("父类内容尚未加载，无法编辑");
+      message.error(`${PARENT_CATEGORY_LABEL}内容尚未加载，无法编辑`);
       return;
     }
 
@@ -366,7 +410,7 @@ export function ContentSubmissionPage(): JSX.Element {
       .filter((target) => target.status === "rejected")
       .map((target) => target.id);
     if (rejectedTargetIds.length === 0) {
-      message.info("当前投稿没有可重新提交的被驳回目标");
+      message.info("当前上传没有可重新提交的被驳回目标");
       return;
     }
 
@@ -400,7 +444,7 @@ export function ContentSubmissionPage(): JSX.Element {
         .map((target) => target.id);
       if (editingSubmission.submission_kind === "parent_with_primary") {
         if (!values.parent || !values.primary_child) {
-          throw new Error("父类和主子条目内容不能为空");
+          throw new Error(`${PARENT_CATEGORY_LABEL}和${CHILD_CATEGORY_LABEL}内容不能为空`);
         }
         await api.resubmitRejectedParent(
           editingSubmission.id,
@@ -409,7 +453,7 @@ export function ContentSubmissionPage(): JSX.Element {
         );
       } else {
         if (!values.child) {
-          throw new Error("子条目内容不能为空");
+          throw new Error(`${CHILD_CATEGORY_LABEL}内容不能为空`);
         }
         await api.resubmitRejectedChild(
           editingSubmission.id,
@@ -437,7 +481,7 @@ export function ContentSubmissionPage(): JSX.Element {
         values.knowledge_base_ids
       );
       childForm.resetFields();
-      message.success("普通子条目已提交审核");
+      message.success(`${CHILD_CATEGORY_LABEL}已提交审核`);
       await refresh();
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "提交失败，请稍后重试");
@@ -449,7 +493,7 @@ export function ContentSubmissionPage(): JSX.Element {
   const openPublishedRevision = (entry: EditableContentEntry): void => {
     if (entry.is_primary) {
       if (!entry.parent_revision) {
-        message.error("父类内容尚未加载，无法发起修订");
+        message.error(`${PARENT_CATEGORY_LABEL}内容尚未加载，无法发起修订`);
         return;
       }
       publishedRevisionForm.setFieldsValue({
@@ -481,7 +525,7 @@ export function ContentSubmissionPage(): JSX.Element {
     try {
       if (editingPublishedEntry.is_primary) {
         if (!values.parent || !values.primary_child) {
-          throw new Error("父类和主子条目内容不能为空");
+          throw new Error(`${PARENT_CATEGORY_LABEL}和${CHILD_CATEGORY_LABEL}内容不能为空`);
         }
         await api.createParentRevision(
           editingPublishedEntry.parent_id,
@@ -490,7 +534,7 @@ export function ContentSubmissionPage(): JSX.Element {
         );
       } else {
         if (!values.child) {
-          throw new Error("子条目内容不能为空");
+          throw new Error(`${CHILD_CATEGORY_LABEL}内容不能为空`);
         }
         const knowledgeBaseIds = values.knowledge_base_ids ?? [];
         if (knowledgeBaseIds.length === 0) {
@@ -542,14 +586,14 @@ export function ContentSubmissionPage(): JSX.Element {
 
   const submissionColumns: TableProps<ReviewSubmission>["columns"] = [
     {
-      title: "投稿内容",
+      title: "上传内容",
       dataIndex: "title",
       key: "title",
       render: (title: string, submission: ReviewSubmission) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{title}</Typography.Text>
           <Typography.Text type="secondary">
-            {submission.submission_kind === "parent_with_primary" ? "父类 + 主子条目" : "普通子条目"}
+            {submissionKindLabel(submission.submission_kind)}
           </Typography.Text>
         </Space>
       )
@@ -643,19 +687,19 @@ export function ContentSubmissionPage(): JSX.Element {
 
   const editableEntryColumns: TableProps<EditableContentEntry>["columns"] = [
     {
-      title: "父类",
+      title: PARENT_CATEGORY_LABEL,
       key: "parent",
       render: (_value: unknown, entry: EditableContentEntry) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{entry.parent_name}</Typography.Text>
           <Typography.Text type="secondary">
-            {entry.is_primary ? "父类 + 主子条目" : "普通子条目"}
+            {contentEntryKindLabel(entry.is_primary)}
           </Typography.Text>
         </Space>
       )
     },
     {
-      title: "当前子条目",
+      title: `当前${CHILD_CATEGORY_LABEL}`,
       dataIndex: ["child_revision", "question"],
       key: "question"
     },
@@ -697,7 +741,7 @@ export function ContentSubmissionPage(): JSX.Element {
     <section>
       <div className="page-heading">
         <div>
-          <Typography.Title level={3}>知识投稿</Typography.Title>
+          <Typography.Title level={3}>知识上传</Typography.Title>
           <Typography.Paragraph type="secondary">
             提交后生成不可变候选修订。候选在审核和后续索引成功前不会对检索用户生效。
           </Typography.Paragraph>
@@ -710,7 +754,7 @@ export function ContentSubmissionPage(): JSX.Element {
         items={[
           {
             key: "parent",
-            label: "新建父类与主子条目",
+            label: `新建${PARENT_CATEGORY_LABEL}`,
             children: (
               <Card>
                 {knowledgeBases.length === 0 ? (
@@ -718,7 +762,7 @@ export function ContentSubmissionPage(): JSX.Element {
                     type="warning"
                     showIcon
                     message="没有可用知识库"
-                    description="请等待系统管理员创建并启用至少一个知识库后再投稿。"
+                    description="请等待系统管理员创建并启用至少一个知识库后再上传。"
                   />
                 ) : (
                   <Form<ParentSubmissionFormValues>
@@ -727,38 +771,19 @@ export function ContentSubmissionPage(): JSX.Element {
                     onFinish={(values) => void submitParent(values)}
                     requiredMark
                   >
-                    <Typography.Title level={5}>父类字段</Typography.Title>
-                    <Form.Item
-                      name={["parent", "name"]}
-                      label="类型"
-                      rules={[{ required: true, message: "请选择类型" }]}
-                    >
-                      <Select placeholder="请选择类型" options={parentTypeOptions} />
-                    </Form.Item>
-                    <Form.Item
-                      name={["parent", "canonical_keyword"]}
-                      label="问题主关键词"
-                      rules={[{ required: true, message: "请输入问题主关键词" }]}
-                    >
-                      <Input placeholder="例如：登录" />
-                    </Form.Item>
-                    <StructuredTextList
-                      name={["parent", "aliases"]}
-                      label="别名"
-                      addLabel="添加别名"
-                      placeholder="例如：登陆"
-                    />
-                    <Typography.Title level={5}>主子条目字段</Typography.Title>
+                    <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
+                    <ParentContentFields />
+                    <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
                     <ChildContentFields root="primary_child" />
                     <Form.Item
                       name="knowledge_base_ids"
                       label="目标知识库"
                       rules={[{ required: true, message: "请选择至少一个知识库" }]}
                     >
-                      <Checkbox.Group options={parentKnowledgeBaseOptions} />
+                      <Checkbox.Group className="knowledge-base-options" options={parentKnowledgeBaseOptions} />
                     </Form.Item>
                     <Button type="primary" htmlType="submit" loading={submittingParent}>
-                      提交父类候选
+                      提交候选
                     </Button>
                   </Form>
                 )}
@@ -767,15 +792,15 @@ export function ContentSubmissionPage(): JSX.Element {
           },
           {
             key: "child",
-            label: "新建普通子条目",
+            label: `新建${CHILD_CATEGORY_LABEL}`,
             children: (
               <Card>
                 {availableParents.length === 0 ? (
                   <Alert
                     type="info"
                     showIcon
-                    message="暂时没有可选择的父类"
-                    description="普通子条目只能投放到已完成可用审核的父类；请等待父类与主子条目发布。"
+                    message={`暂时没有可选择的${PARENT_CATEGORY_LABEL}`}
+                    description={`${CHILD_CATEGORY_LABEL}只能投放到已完成可用审核的${PARENT_CATEGORY_LABEL}；请等待${PARENT_CATEGORY_LABEL}与${CHILD_CATEGORY_LABEL}发布。`}
                   />
                 ) : (
                   <Form<ChildSubmissionFormValues>
@@ -784,9 +809,13 @@ export function ContentSubmissionPage(): JSX.Element {
                     onFinish={(values) => void submitChild(values)}
                     requiredMark
                   >
-                    <Form.Item name="parent_id" label="父类" rules={[{ required: true, message: "请选择父类" }]}>
+                    <Form.Item
+                      name="parent_id"
+                      label={PARENT_CATEGORY_LABEL}
+                      rules={[{ required: true, message: `请选择${PARENT_CATEGORY_LABEL}` }]}
+                    >
                       <Select
-                        placeholder="选择已经可用的父类"
+                        placeholder={`选择已发布的${PARENT_CATEGORY_LABEL}`}
                         options={availableParents.map((parent) => ({
                           value: parent.id,
                           label: `${parent.name}（${parent.canonical_keyword}）`
@@ -800,12 +829,13 @@ export function ContentSubmissionPage(): JSX.Element {
                       rules={[{ required: true, message: "请选择至少一个知识库" }]}
                     >
                       <Checkbox.Group
+                        className="knowledge-base-options"
                         disabled={!selectedParent}
                         options={childKnowledgeBaseOptions}
                       />
                     </Form.Item>
                     <Button type="primary" htmlType="submit" loading={submittingChild}>
-                      提交普通子条目
+                      提交候选
                     </Button>
                   </Form>
                 )}
@@ -821,7 +851,7 @@ export function ContentSubmissionPage(): JSX.Element {
                   type="info"
                   showIcon
                   message="修改会创建新的候选修订"
-                  description="普通子条目按下方列出的知识库重新审核；主子条目会连同父类一起在全部已发布知识库重新审核和嵌入。"
+                  description={`单独创建的${CHILD_CATEGORY_LABEL}按下方列出的知识库重新审核；与${PARENT_CATEGORY_LABEL}一同创建的${CHILD_CATEGORY_LABEL}会连同${PARENT_CATEGORY_LABEL}在全部已发布知识库重新审核和嵌入。`}
                   style={{ marginBottom: 16 }}
                 />
                 <Table<EditableContentEntry>
@@ -838,7 +868,7 @@ export function ContentSubmissionPage(): JSX.Element {
           },
           {
             key: "mine",
-            label: "我的投稿",
+            label: "我的上传",
             children: (
               <Table<ReviewSubmission>
                 rowKey="id"
@@ -855,7 +885,7 @@ export function ContentSubmissionPage(): JSX.Element {
       />
       <Modal
         open={editingSubmission !== null}
-        title="编辑驳回投稿并重新提交"
+        title="编辑驳回内容并重新上传"
         onCancel={closeResubmission}
         footer={null}
         destroyOnClose
@@ -888,28 +918,9 @@ export function ContentSubmissionPage(): JSX.Element {
             >
               {editingSubmission.submission_kind === "parent_with_primary" && (
                 <>
-                  <Typography.Title level={5}>父类字段</Typography.Title>
-                  <Form.Item
-                    name={["parent", "name"]}
-                    label="类型"
-                    rules={[{ required: true, message: "请选择类型" }]}
-                  >
-                    <Select placeholder="请选择类型" options={parentTypeOptions} />
-                  </Form.Item>
-                  <Form.Item
-                    name={["parent", "canonical_keyword"]}
-                    label="问题主关键词"
-                    rules={[{ required: true, message: "请输入问题主关键词" }]}
-                  >
-                    <Input />
-                  </Form.Item>
-                  <StructuredTextList
-                    name={["parent", "aliases"]}
-                    label="别名"
-                    addLabel="添加别名"
-                    placeholder="例如：登陆"
-                  />
-                  <Typography.Title level={5}>主子条目字段</Typography.Title>
+                  <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
+                  <ParentContentFields />
+                  <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
                   <ChildContentFields root="primary_child" />
                 </>
               )}
@@ -957,8 +968,8 @@ export function ContentSubmissionPage(): JSX.Element {
               message="线上版本会继续服务，直到新修订审核并重新嵌入成功"
               description={
                 editingPublishedEntry.is_primary
-                  ? "主子条目必须与父类一起修订，并在全部已发布目标知识库完成审核后统一生效。"
-                  : "普通子条目会仅在选中的目标知识库创建新候选并重新嵌入。"
+                  ? `与${PARENT_CATEGORY_LABEL}一同创建的${CHILD_CATEGORY_LABEL}必须和${PARENT_CATEGORY_LABEL}一起修订，并在全部已发布目标知识库完成审核后统一生效。`
+                  : `${CHILD_CATEGORY_LABEL}会仅在选中的目标知识库创建新候选并重新嵌入。`
               }
             />
             <Form<PublishedRevisionFormValues>
@@ -970,28 +981,9 @@ export function ContentSubmissionPage(): JSX.Element {
             >
               {editingPublishedEntry.is_primary ? (
                 <>
-                  <Typography.Title level={5}>父类字段</Typography.Title>
-                  <Form.Item
-                    name={["parent", "name"]}
-                    label="类型"
-                    rules={[{ required: true, message: "请选择类型" }]}
-                  >
-                    <Select placeholder="请选择类型" options={parentTypeOptions} />
-                  </Form.Item>
-                  <Form.Item
-                    name={["parent", "canonical_keyword"]}
-                    label="问题主关键词"
-                    rules={[{ required: true, message: "请输入问题主关键词" }]}
-                  >
-                    <Input />
-                  </Form.Item>
-                  <StructuredTextList
-                    name={["parent", "aliases"]}
-                    label="别名"
-                    addLabel="添加别名"
-                    placeholder="例如：登陆"
-                  />
-                  <Typography.Title level={5}>主子条目字段</Typography.Title>
+                  <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
+                  <ParentContentFields />
+                  <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
                   <ChildContentFields root="primary_child" />
                   <Form.Item label="重新审核知识库">
                     <Space size={[4, 4]} wrap>
@@ -1004,7 +996,7 @@ export function ContentSubmissionPage(): JSX.Element {
               ) : (
                 <>
                   <Typography.Text type="secondary">
-                    父类：{editingPublishedEntry.parent_name}
+                    {PARENT_CATEGORY_LABEL}：{editingPublishedEntry.parent_name}
                   </Typography.Text>
                   <ChildContentFields root="child" />
                   <Form.Item
@@ -1013,6 +1005,7 @@ export function ContentSubmissionPage(): JSX.Element {
                     rules={[{ required: true, message: "请选择至少一个知识库" }]}
                   >
                     <Checkbox.Group
+                      className="knowledge-base-options"
                       options={editingPublishedEntry.knowledge_bases.map((knowledgeBase) => ({
                         label: knowledgeBase.name,
                         value: knowledgeBase.id

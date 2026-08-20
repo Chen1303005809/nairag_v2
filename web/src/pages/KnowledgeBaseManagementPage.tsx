@@ -285,7 +285,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{entry.child_revision.question}</Typography.Text>
           <Typography.Text type="secondary">
-            {entry.parent_name} · {entry.is_primary ? "主子条目" : "普通子条目"} · v
+            {entry.parent_name} · {entry.is_primary ? "问题小类（与问题大类一同提交）" : "问题小类"} · v
             {entry.child_revision.revision_number}
           </Typography.Text>
         </Space>

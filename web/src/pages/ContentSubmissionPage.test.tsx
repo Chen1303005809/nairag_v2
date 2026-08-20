@@ -54,7 +54,7 @@ const rejectedSubmission: ReviewSubmission = {
   submitter: {
     id: "user-1",
     username: "author",
-    display_name: "投稿人"
+    display_name: "上传人"
   },
   submitted_at: "2026-01-01T00:00:00Z",
   parent_revision: null,
@@ -65,10 +65,10 @@ const rejectedSubmission: ReviewSubmission = {
     response_content: "请联系管理员。",
     question_variants: [],
     follow_up_guidance: null,
-    question_type: null,
-    business_object: null,
-    purpose: null,
-    customer_type: null,
+    question_type: "功能故障类",
+    business_object: "基础知识与算法",
+    purpose: "内部培训",
+    customer_type: "个人客户",
     feature_explanation: null,
     example: null,
     internal_notes: null
@@ -99,11 +99,28 @@ afterEach(() => {
   cleanup();
 });
 
-describe("ContentSubmissionPage rejected submissions", () => {
+describe("ContentSubmissionPage", () => {
+  it("uses category labels and compact option layout", async () => {
+    render(<ContentSubmissionPage />);
+
+    expect(await screen.findByRole("heading", { name: "问题大类" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "问题小类" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "新建问题大类及问题小类" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "问题类型" })).toBeInTheDocument();
+    const supplementaryFields = screen.getByRole("button", { name: /可补充说明/ });
+    expect(supplementaryFields).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /业务字段/ })).not.toBeInTheDocument();
+    expect(document.querySelector(".content-form-grid")).toBeInTheDocument();
+    expect(document.querySelector(".knowledge-base-options")).toBeInTheDocument();
+
+    fireEvent.click(supplementaryFields);
+    expect(await screen.findByRole("textbox", { name: "功能说明" })).toBeInTheDocument();
+  });
+
   it("opens rejected content in place and resubmits the edited revision", async () => {
     render(<ContentSubmissionPage />);
 
-    fireEvent.click(screen.getByRole("tab", { name: "我的投稿" }));
+    fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
     const editButton = await screen.findByRole("button", { name: "编辑重提" });
     fireEvent.click(editButton);
 
