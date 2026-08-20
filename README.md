@@ -69,7 +69,8 @@ docker compose up --build
 生产环境运行（Linux x86_64、NVIDIA 驱动与 NVIDIA Container Toolkit）：
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up --build -d
+EMBEDDING_SERVICE_URL=http://embedding.example.internal:9001/v1 \
+  docker compose -f docker-compose.yaml -f docker-compose.prod.yaml up --build -d
 ```
 
-前者会启动 PostgreSQL、Milvus standalone（etcd、MinIO、Milvus）、CPU OCR、API、前端和独立索引 worker；后者只将同一 `ocr` 服务替换为固定的 PaddlePaddle CUDA 13.0 镜像，并申请 NVIDIA GPU。首次预热时间取决于模型下载。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，Milvus 使用 `volumes/milvus/` 下独立的 etcd、MinIO 和数据目录，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`；OCR 模型使用独立 Docker 命名卷 `ocr_model_cache`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，写入开发用的确定性索引产物，API 读取同一份产物执行混合检索，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
+前者会启动 PostgreSQL、CPU OCR、API、前端和独立索引 worker，并使用轻量的本地 artifact 索引；后者额外启动 Milvus standalone（etcd、MinIO、Milvus），将 API 与 worker 切换为 Milvus 后端，并把同一 `ocr` 服务替换为固定的 PaddlePaddle CUDA 13.0 镜像、申请 NVIDIA GPU。生产启动前必须设置 `EMBEDDING_SERVICE_URL`，使其指向提供 `Qwen/Qwen3-Embedding-0.6B` 的 OpenAI-compatible embedding HTTP 服务。首次预热时间取决于模型下载。前端由 Nginx 托管 Vite 构建产物，并将 `/api/` 同源反向代理到 API；启动后访问 `http://127.0.0.1:8080/`，API 文档仍位于 `http://127.0.0.1:8000/docs`。容器数据统一保存在项目下的 `volumes/` 目录（该目录已加入 `.gitignore`）：PostgreSQL 使用 `volumes/postgres_data`，生产 Milvus 使用 `volumes/milvus/` 下独立的 etcd、MinIO 和数据目录，API 与 worker 共享只读/读写隔离的 `volumes/index_artifacts`；OCR 模型使用独立 Docker 命名卷 `ocr_model_cache`。worker 从 PostgreSQL 的持久化 `index_job` 队列领取任务，通过 Milvus 或本地 artifact 写入索引，并在索引成功后推进发布；启动前请按 [secrets/README.md](secrets/README.md) 创建本地 Secret 文件，这些文件不会纳入版本控制。
