@@ -1,3 +1,6 @@
+x-backend-env-file: &backend-env-file
+  - ./.env
+
 services:
   postgres:
     image: postgres:16.8-alpine
@@ -41,30 +44,17 @@ services:
       context: ./backend
     command: >-
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # Import the shared root configuration. Runtime topology and Docker Secret
+    # paths below intentionally override their local-development equivalents.
+    env_file: *backend-env-file
     environment:
-      APP_ENVIRONMENT: development
       DATABASE_URL: postgresql+asyncpg://nairag@postgres:5432/nairag
       DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_FILE: /run/secrets/jwt_signing_key
       INITIAL_ADMIN_PASSWORD_FILE: /run/secrets/initial_admin_password
-      INITIAL_ADMIN_USERNAME: admin
-      COOKIE_SECURE: "false"
       INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
-      INDEX_BACKEND_MODE: local_artifact
-      OCR_SERVICE_URL: ${OCR_SERVICE_URL:-http://ocr:9003}
-      OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-60}
-      OCR_MAX_IMAGE_BYTES: ${OCR_MAX_IMAGE_BYTES:-10485760}
-      OCR_TICKET_TTL_SECONDS: ${OCR_TICKET_TTL_SECONDS:-600}
-      OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE: ${OCR_KEYWORD_FALLBACK_MIN_CONFIDENCE:-0.9}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_KEY: ${OPENAI_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
-      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      LLM_MAX_CONVERSATION_MESSAGES: ${LLM_MAX_CONVERSATION_MESSAGES:-200}
-      LLM_MAX_CONVERSATION_CHARS: ${LLM_MAX_CONVERSATION_CHARS:-30000}
-      ATTACHMENT_STORAGE_BACKEND: local
+      OCR_SERVICE_URL: http://ocr:9003
       ATTACHMENT_STORAGE_DIR: /var/lib/nairag/attachments
-      ATTACHMENT_MAX_FILE_BYTES: ${ATTACHMENT_MAX_FILE_BYTES:-20971520}
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,6 +80,9 @@ services:
     build:
       context: ./web
       args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+        VITE_CSRF_COOKIE_NAME: ${CSRF_COOKIE_NAME:-nairag_csrf}
+        VITE_PRE_AUTH_CSRF_COOKIE_NAME: ${PRE_AUTH_CSRF_COOKIE_NAME:-nairag_pre_auth_csrf}
         VITE_LLM_MAX_CONVERSATION_MESSAGES: ${LLM_MAX_CONVERSATION_MESSAGES:-200}
         VITE_LLM_MAX_CONVERSATION_CHARS: ${LLM_MAX_CONVERSATION_CHARS:-30000}
     depends_on:
@@ -107,22 +100,12 @@ services:
     build:
       context: ./backend
     command: python worker.py
+    env_file: *backend-env-file
     environment:
-      APP_ENVIRONMENT: development
       DATABASE_URL: postgresql+asyncpg://nairag@postgres:5432/nairag
       DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_FILE: /run/secrets/jwt_signing_key
       INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
-      INDEX_BACKEND_MODE: local_artifact
-      WORKER_POLL_INTERVAL_SECONDS: "2"
-      WORKER_LEASE_SECONDS: "300"
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
-      OPENAI_KEY: ${OPENAI_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
-      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      LLM_MAX_CONVERSATION_MESSAGES: ${LLM_MAX_CONVERSATION_MESSAGES:-200}
-      LLM_MAX_CONVERSATION_CHARS: ${LLM_MAX_CONVERSATION_CHARS:-30000}
-      COOKIE_SECURE: "false"
     depends_on:
       postgres:
         condition: service_healthy

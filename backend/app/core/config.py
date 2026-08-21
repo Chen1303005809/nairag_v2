@@ -7,11 +7,20 @@ from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+# In the source checkout the shared configuration lives one level above
+# ``backend``. The production image contains only the backend under /app, so
+# use that directory as its configuration root and rely on Compose env_file.
+PROJECT_ROOT = (
+    BACKEND_ROOT.parent if (BACKEND_ROOT.parent / ".git").exists() else BACKEND_ROOT
+)
+SHARED_ENV_FILE = PROJECT_ROOT / ".env"
+
 
 class Settings(BaseSettings):
     """Process configuration; sensitive values are read lazily from Docker Secrets."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=SHARED_ENV_FILE, extra="ignore")
 
     app_name: str = "Nairag Knowledge Base"
     app_environment: str = "development"
@@ -79,6 +88,28 @@ class Settings(BaseSettings):
     argon2_parallelism: int = 1
     password_min_length: int = 12
     password_max_length: int = 256
+
+    @field_validator(
+        "database_password_file",
+        "jwt_secret_file",
+        "initial_admin_password_file",
+        "index_artifact_dir",
+        "embedding_service_api_key_file",
+        "reranker_service_api_key_file",
+        "ocr_service_api_key_file",
+        "attachment_storage_dir",
+        "attachment_minio_access_key_file",
+        "attachment_minio_secret_key_file",
+        "milvus_token_file",
+        mode="before",
+    )
+    @classmethod
+    def resolve_project_relative_paths(cls, value: object) -> object:
+        """Make relative paths in the shared root .env independent of the launch cwd."""
+        if value is None or not isinstance(value, str | Path):
+            return value
+        path = Path(value)
+        return path if path.is_absolute() else PROJECT_ROOT / path
 
     @field_validator("ocr_service_url", mode="before")
     @classmethod
