@@ -1,12 +1,18 @@
 import type {
   AvailableParent,
   ChildContentInput,
+  ConversationSearchResponse,
   EditableContentEntry,
   EvidenceAttachment,
+  IngestionBatch,
+  IngestionBatchDetail,
   KnowledgeBase,
+  KnowledgeDraft,
+  KnowledgeDraftInput,
   LoginResponse,
   ManagedKnowledgeBase,
   ManagedKnowledgeEntry,
+  NormalizedMessageInput,
   OcrRecognition,
   ParentContentInput,
   ReviewerAssignment,
@@ -262,10 +268,53 @@ export const api = {
       limit: 10
     }),
 
+  conversationSearch: (
+    messages: NormalizedMessageInput[],
+    knowledgeBaseId?: string
+  ): Promise<ConversationSearchResponse> =>
+    sessionMutation<ConversationSearchResponse>("POST", "/search/conversation-assist", {
+      messages,
+      knowledge_base_id: knowledgeBaseId || null,
+      limit: 10
+    }),
+
+  createIngestionBatch: (messages: NormalizedMessageInput[]): Promise<IngestionBatch> =>
+    sessionMutation<IngestionBatch>("POST", "/intelligent-ingestion/batches", { messages }),
+
+  listIngestionBatches: (): Promise<IngestionBatch[]> =>
+    request<IngestionBatch[]>("/intelligent-ingestion/batches"),
+
+  getIngestionBatch: (batchId: string): Promise<IngestionBatchDetail> =>
+    request<IngestionBatchDetail>(`/intelligent-ingestion/batches/${batchId}`),
+
+  listKnowledgeDrafts: (): Promise<KnowledgeDraft[]> =>
+    request<KnowledgeDraft[]>("/knowledge-content/drafts"),
+
+  createKnowledgeDraft: (input: KnowledgeDraftInput): Promise<KnowledgeDraft> =>
+    sessionMutation<KnowledgeDraft>("POST", "/knowledge-content/drafts", input),
+
+  updateKnowledgeDraft: (
+    draftId: string,
+    input: KnowledgeDraftInput
+  ): Promise<KnowledgeDraft> =>
+    sessionMutation<KnowledgeDraft>("PATCH", `/knowledge-content/drafts/${draftId}`, input),
+
+  deleteKnowledgeDraft: (draftId: string): Promise<void> =>
+    sessionMutation<void>("DELETE", `/knowledge-content/drafts/${draftId}`),
+
+  submitKnowledgeDraft: (draftId: string): Promise<ReviewSubmission> =>
+    sessionMutation<ReviewSubmission>("POST", `/knowledge-content/drafts/${draftId}/submit`),
+
   recognizeSearchImage: (image: File): Promise<OcrRecognition> => {
     const form = new FormData();
     form.append("image", image);
     return sessionFormMutation<OcrRecognition>("POST", "/search/ocr", form);
+  },
+
+  recognizeConversationImage: (image: File): Promise<OcrRecognition> => {
+    const form = new FormData();
+    form.append("image", image);
+    return sessionFormMutation<OcrRecognition>("POST", "/search/ocr?purpose=conversation", form);
   },
 
   submitHelpfulFeedback: (

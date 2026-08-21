@@ -19,6 +19,8 @@ from app.services.index_backend import (
     MilvusIndexBackend,
 )
 from app.services.index_jobs import IndexBackend, IndexWorkerResult, run_index_worker_once
+from app.services.intelligent_ingestion import run_ingestion_worker_once
+from app.services.llm import LlmProvider, create_llm_provider
 
 logger = logging.getLogger("nairag.index-worker")
 
@@ -77,6 +79,7 @@ async def run_worker(
     settings: Settings | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     backend: IndexBackend | None = None,
+    llm_provider: LlmProvider | None = None,
     stop_event: asyncio.Event | None = None,
     on_result: Callable[[IndexWorkerResult], Awaitable[None] | None] | None = None,
 ) -> None:
@@ -93,15 +96,17 @@ async def run_worker(
         active_settings.database_url_with_password
     )
     active_backend = backend or create_index_backend(active_settings)
+    active_llm_provider = llm_provider or create_llm_provider(active_settings)
     active_stop_event = stop_event or asyncio.Event()
     if stop_event is None:
         _install_signal_handlers(active_stop_event)
 
     worker_id = resolve_worker_id(active_settings)
     logger.info(
-        "index worker started worker_id=%s artifact_dir=%s",
+        "worker started worker_id=%s artifact_dir=%s llm_configured=%s",
         worker_id,
         active_settings.index_artifact_dir,
+        active_llm_provider is not None,
     )
     try:
         while not active_stop_event.is_set():
@@ -129,6 +134,33 @@ async def run_worker(
                     callback_result = on_result(result)
                     if callback_result is not None:
                         await callback_result
+            ingestion_result = None
+            try:
+                # This also purges expired raw conversations when the LLM is
+                # temporarily not configured; no batch is claimed in that case.
+                ingestion_result = await run_ingestion_worker_once(
+                    active_factory,
+                    provider=active_llm_provider,
+                    worker_id=worker_id,
+                    lease_seconds=active_settings.worker_lease_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # An unexpected persistence/provider error can contain model
+                # output. Do not emit exception details that might include a
+                # pasted conversation or derived personal data.
+                logger.error("ingestion worker iteration failed")
+                ingestion_result = None
+            if ingestion_result is not None:
+                logger.info(
+                    "ingestion batch finished batch_id=%s status=%s generated=%s error=%s",
+                    ingestion_result.batch_id,
+                    ingestion_result.status.value,
+                    ingestion_result.generated_count,
+                    ingestion_result.error,
+                )
+            if result is not None or ingestion_result is not None:
                 continue
 
             await wait_for_stop(active_stop_event, active_settings.worker_poll_interval_seconds)
@@ -166,6 +198,29 @@ async def _run_once(settings: Settings) -> None:
                 result.status.value,
                 result.error,
             )
+            # Keep --once limited to one claimed job while still applying the
+            # raw-chat retention cleanup that does not claim a batch.
+            await run_ingestion_worker_once(
+                factory,
+                provider=None,
+                worker_id=resolve_worker_id(settings),
+                lease_seconds=settings.worker_lease_seconds,
+            )
+        else:
+            ingestion_result = await run_ingestion_worker_once(
+                factory,
+                provider=create_llm_provider(settings),
+                worker_id=resolve_worker_id(settings),
+                lease_seconds=settings.worker_lease_seconds,
+            )
+            if ingestion_result is not None:
+                logger.info(
+                    "ingestion batch finished batch_id=%s status=%s generated=%s error=%s",
+                    ingestion_result.batch_id,
+                    ingestion_result.status.value,
+                    ingestion_result.generated_count,
+                    ingestion_result.error,
+                )
     finally:
         bind = factory.kw.get("bind")
         if isinstance(bind, AsyncEngine):

@@ -7,6 +7,7 @@ import {
   Form,
   Input,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -17,16 +18,28 @@ import {
   message
 } from "antd";
 import type { TableProps } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../api/client";
+import {
+  assertBothPartiesPresent,
+  assertConversationWithinLimits,
+  ConversationParseError,
+  prepareWecomConversation
+} from "../conversation";
+import { ConversationEditor } from "../components/ConversationEditor";
+import type { ConversationEditorHandle } from "../components/ConversationEditor";
 import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   AvailableParent,
   ChildContentInput,
   EditableContentEntry,
   EvidenceAttachment,
+  IngestionBatch,
+  IngestionBatchDetail,
   KnowledgeBase,
+  KnowledgeDraft,
+  KnowledgeDraftInput,
   ParentContentInput,
   ReviewChildRevision,
   ReviewParentRevision,
@@ -73,7 +86,7 @@ interface ParentSubmissionFormValues {
 }
 
 interface ChildSubmissionFormValues {
-  parent_id: string;
+  parent_id?: string;
   child: ChildContentFormValues;
   knowledge_base_ids: string[];
 }
@@ -150,6 +163,92 @@ function toChildFormValues(revision: ReviewChildRevision): ChildContentFormValue
     attachments: [...revision.attachments],
     web_links: revision.web_links.map((webLink) => ({ ...webLink }))
   };
+}
+
+function draftToChildFormValues(draft: KnowledgeDraft): ChildSubmissionFormValues {
+  return {
+    parent_id: draft.parent_id ?? undefined,
+    child: {
+      question: draft.question ?? "",
+      response_content: draft.response_content ?? "",
+      question_variants: [...draft.question_variants],
+      follow_up_guidance: draft.follow_up_guidance ?? "",
+      question_type: draft.question_type ?? "",
+      business_object: draft.business_object ?? "",
+      purpose: draft.purpose ?? "",
+      customer_type: draft.customer_type ?? "",
+      feature_explanation: draft.feature_explanation ?? "",
+      example: draft.example ?? "",
+      internal_notes: draft.internal_notes ?? "",
+      attachments: [...draft.attachments],
+      web_links: draft.web_links.map((webLink) => ({ ...webLink }))
+    },
+    knowledge_base_ids: [...draft.knowledge_base_ids]
+  };
+}
+
+function childFormValuesToDraftInput(values: {
+  parent_id?: string;
+  child?: Partial<ChildContentFormValues>;
+  knowledge_base_ids?: string[];
+}): KnowledgeDraftInput {
+  const child = values.child ?? {};
+  return {
+    parent_id: values.parent_id ?? null,
+    question: child.question?.trim() || null,
+    response_content: child.response_content?.trim() || null,
+    question_variants: normalizeList(child.question_variants),
+    follow_up_guidance: nullable(child.follow_up_guidance),
+    question_type: nullable(child.question_type),
+    business_object: nullable(child.business_object),
+    purpose: nullable(child.purpose),
+    customer_type: nullable(child.customer_type),
+    feature_explanation: nullable(child.feature_explanation),
+    example: nullable(child.example),
+    internal_notes: nullable(child.internal_notes),
+    attachments: (child.attachments ?? []).map((attachment) => attachment.id),
+    web_links: (child.web_links ?? [])
+      .map((webLink) => ({ title: webLink.title.trim(), url: webLink.url.trim() }))
+      .filter((webLink) => webLink.title && webLink.url),
+    knowledge_base_ids: values.knowledge_base_ids ?? []
+  };
+}
+
+function draftHasBusinessContent(input: KnowledgeDraftInput): boolean {
+  return Boolean(
+    input.question ||
+      input.response_content ||
+      (input.question_variants && input.question_variants.length > 0) ||
+      input.follow_up_guidance ||
+      input.question_type ||
+      input.business_object ||
+      input.purpose ||
+      input.customer_type ||
+      input.feature_explanation ||
+      input.example ||
+      input.internal_notes ||
+      (input.attachments && input.attachments.length > 0) ||
+      (input.web_links && input.web_links.length > 0)
+  );
+}
+
+function draftSourceTag(source: KnowledgeDraft["source"]): JSX.Element {
+  return source === "intelligent_generated" ? (
+    <Tag color="purple">智能生成</Tag>
+  ) : (
+    <Tag color="cyan">手动保存</Tag>
+  );
+}
+
+function ingestionStatusTag(status: IngestionBatch["status"]): JSX.Element {
+  const label: Record<IngestionBatch["status"], [string, string]> = {
+    processing: ["processing", "处理中"],
+    completed: ["success", "已完成"],
+    completed_with_warnings: ["warning", "已完成，有警告"],
+    failed: ["error", "失败"]
+  };
+  const [color, text] = label[status];
+  return <Tag color={color}>{text}</Tag>;
 }
 
 function toParentFormValues(revision: ReviewParentRevision): ParentSubmissionFormValues["parent"] {
@@ -470,6 +569,14 @@ export function ContentSubmissionPage(): JSX.Element {
   const [resubmitting, setResubmitting] = useState(false);
   const [editingPublishedEntry, setEditingPublishedEntry] = useState<EditableContentEntry | null>(null);
   const [savingPublishedRevision, setSavingPublishedRevision] = useState(false);
+  const [activeSubmissionTab, setActiveSubmissionTab] = useState("parent");
+  const [drafts, setDrafts] = useState<KnowledgeDraft[]>([]);
+  const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const ingestionEditorRef = useRef<ConversationEditorHandle>(null);
+  const [ingestionLoading, setIngestionLoading] = useState(false);
+  const [ingestionBatches, setIngestionBatches] = useState<IngestionBatch[]>([]);
+  const [ingestionBatch, setIngestionBatch] = useState<IngestionBatchDetail | null>(null);
   const selectedParentId = Form.useWatch("parent_id", childForm);
 
   const selectedParent = useMemo(
@@ -480,16 +587,27 @@ export function ContentSubmissionPage(): JSX.Element {
   const refresh = async (): Promise<void> => {
     setLoading(true);
     try {
-      const [nextKnowledgeBases, nextParents, nextSubmissions, nextEditableEntries] = await Promise.all([
+      const [
+        nextKnowledgeBases,
+        nextParents,
+        nextSubmissions,
+        nextEditableEntries,
+        nextDrafts,
+        nextIngestionBatches
+      ] = await Promise.all([
         api.listKnowledgeBases(),
         api.listAvailableParents(),
         api.listMyContentSubmissions(),
-        api.listEditableContentEntries()
+        api.listEditableContentEntries(),
+        api.listKnowledgeDrafts(),
+        api.listIngestionBatches()
       ]);
       setKnowledgeBases(nextKnowledgeBases);
       setAvailableParents(nextParents);
       setSubmissions(nextSubmissions);
       setEditableEntries(nextEditableEntries);
+      setDrafts(nextDrafts);
+      setIngestionBatches(nextIngestionBatches);
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "无法加载上传信息");
     } finally {
@@ -502,8 +620,17 @@ export function ContentSubmissionPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    childForm.setFieldValue("knowledge_base_ids", []);
-  }, [childForm, selectedParentId]);
+    const allowedKnowledgeBaseIds = new Set(
+      selectedParent?.available_knowledge_bases.map((knowledgeBase) => knowledgeBase.id) ?? []
+    );
+    const selectedKnowledgeBaseIds = childForm.getFieldValue("knowledge_base_ids") ?? [];
+    const validKnowledgeBaseIds = selectedKnowledgeBaseIds.filter((knowledgeBaseId: string) =>
+      allowedKnowledgeBaseIds.has(knowledgeBaseId)
+    );
+    if (validKnowledgeBaseIds.length !== selectedKnowledgeBaseIds.length) {
+      childForm.setFieldValue("knowledge_base_ids", validKnowledgeBaseIds);
+    }
+  }, [childForm, selectedParent]);
 
   const submitParent = async (values: ParentSubmissionFormValues): Promise<void> => {
     setSubmittingParent(true);
@@ -606,18 +733,156 @@ export function ContentSubmissionPage(): JSX.Element {
   const submitChild = async (values: ChildSubmissionFormValues): Promise<void> => {
     setSubmittingChild(true);
     try {
-      await api.createChildSubmission(
-        values.parent_id,
-        toChildContent(values.child),
-        values.knowledge_base_ids
-      );
+      if (editingDraftId) {
+        await api.updateKnowledgeDraft(
+          editingDraftId,
+          childFormValuesToDraftInput(values)
+        );
+        await api.submitKnowledgeDraft(editingDraftId);
+        setEditingDraftId(null);
+      } else {
+        await api.createChildSubmission(
+          values.parent_id!,
+          toChildContent(values.child),
+          values.knowledge_base_ids
+        );
+      }
       childForm.resetFields();
-      message.success(`${CHILD_CATEGORY_LABEL}已提交审核`);
+      message.success(
+        editingDraftId ? "草稿已提交审核，草稿已删除" : `${CHILD_CATEGORY_LABEL}已提交审核`
+      );
       await refresh();
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "提交失败，请稍后重试");
     } finally {
       setSubmittingChild(false);
+    }
+  };
+
+  const saveChildDraft = async (): Promise<void> => {
+    const values = childForm.getFieldsValue();
+    const draftInput = childFormValuesToDraftInput(values);
+    if (!draftHasBusinessContent(draftInput)) {
+      message.warning("草稿至少需要一个非空业务字段");
+      return;
+    }
+    setSavingDraft(true);
+    try {
+      if (editingDraftId) {
+        await api.updateKnowledgeDraft(editingDraftId, draftInput);
+        message.success("草稿已更新");
+      } else {
+        const draft = await api.createKnowledgeDraft(draftInput);
+        setEditingDraftId(draft.id);
+        message.success("草稿已暂存");
+      }
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "草稿暂存失败");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const openDraft = (draft: KnowledgeDraft): void => {
+    childForm.setFieldsValue(draftToChildFormValues(draft));
+    setEditingDraftId(draft.id);
+    setActiveSubmissionTab("child");
+  };
+
+  const removeDraft = async (draft: KnowledgeDraft): Promise<void> => {
+    try {
+      await api.deleteKnowledgeDraft(draft.id);
+      if (editingDraftId === draft.id) {
+        setEditingDraftId(null);
+        childForm.resetFields();
+      }
+      message.success("草稿已删除");
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "草稿删除失败");
+    }
+  };
+
+  const submitDraftDirectly = async (draft: KnowledgeDraft): Promise<void> => {
+    if (!draft.parent_id || draft.knowledge_base_ids.length === 0) {
+      message.warning("请先编辑草稿并选择父类与目标知识库");
+      openDraft(draft);
+      return;
+    }
+    try {
+      await api.submitKnowledgeDraft(draft.id);
+      message.success("草稿已提交审核");
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "草稿提交失败");
+    }
+  };
+
+  const sleep = (milliseconds: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  const generateDrafts = async (): Promise<void> => {
+    let batchId: string;
+    setIngestionLoading(true);
+    try {
+      const editorValue = ingestionEditorRef.current?.getValue() ?? { text: "", images: [] };
+      const preparedConversation = await prepareWecomConversation(
+        editorValue.text,
+        editorValue.images,
+        api.recognizeConversationImage
+      );
+      assertBothPartiesPresent(preparedConversation.messages);
+      assertConversationWithinLimits(preparedConversation.messages);
+      if (preparedConversation.imageCount > 0) {
+        ingestionEditorRef.current?.replaceWithText(preparedConversation.text);
+        message.success(`已识别 ${preparedConversation.imageCount} 张聊天图片`);
+      }
+      setIngestionBatch(null);
+      const batch = await api.createIngestionBatch(preparedConversation.messages);
+      batchId = batch.id;
+      setIngestionBatch({ ...batch, drafts: [] });
+      setIngestionBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)]);
+    } catch (reason) {
+      setIngestionLoading(false);
+      if (reason instanceof ConversationParseError) {
+        message.warning(reason.message);
+      } else {
+        message.error(reason instanceof Error ? reason.message : "智能生成发起失败");
+      }
+      return;
+    }
+
+    try {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await sleep(1500);
+        const detail = await api.getIngestionBatch(batchId);
+        setIngestionBatch(detail);
+        if (detail.status !== "processing") {
+          if (detail.status === "failed") {
+            message.error(detail.last_error ?? "智能生成失败");
+          } else if (detail.generated_count === 0) {
+            message.info("本段会话没有生成草稿");
+          } else {
+            message.success(`已生成 ${detail.generated_count} 条草稿`);
+          }
+          await refresh();
+          return;
+        }
+      }
+      message.info("仍在处理中，稍后可在“我的草稿”查看结果");
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "查询智能生成状态失败");
+    } finally {
+      setIngestionLoading(false);
+    }
+  };
+
+  const loadIngestionBatch = async (batchId: string): Promise<void> => {
+    try {
+      setIngestionBatch(await api.getIngestionBatch(batchId));
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "无法加载智能生成批次");
     }
   };
 
@@ -860,6 +1125,120 @@ export function ContentSubmissionPage(): JSX.Element {
     }
   ];
 
+  const draftColumns: TableProps<KnowledgeDraft>["columns"] = [
+    {
+      title: "来源",
+      dataIndex: "source",
+      key: "source",
+      width: 110,
+      render: (source: KnowledgeDraft["source"]) => draftSourceTag(source)
+    },
+    {
+      title: CHILD_CATEGORY_LABEL,
+      dataIndex: "question",
+      key: "question",
+      render: (question: string | null, draft: KnowledgeDraft) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{question || "未填写问题"}</Typography.Text>
+          {draft.response_content ? (
+            <Typography.Text type="secondary" ellipsis={{ tooltip: draft.response_content }}>
+              {draft.response_content}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      )
+    },
+    {
+      title: PARENT_CATEGORY_LABEL,
+      dataIndex: "parent_id",
+      key: "parent_id",
+      render: (parentId: string | null) => {
+        const parent = availableParents.find((item) => item.id === parentId);
+        return parent ? `${parent.canonical_keyword}（${parent.name}）` : "未选择";
+      }
+    },
+    {
+      title: "目标知识库",
+      dataIndex: "knowledge_base_ids",
+      key: "knowledge_base_ids",
+      render: (knowledgeBaseIds: string[]) => (
+        <Space size={[4, 4]} wrap>
+          {knowledgeBaseIds.length === 0 ? (
+            <Typography.Text type="secondary">未选择</Typography.Text>
+          ) : (
+            knowledgeBaseIds.map((knowledgeBaseId) => {
+              const knowledgeBase = knowledgeBases.find((item) => item.id === knowledgeBaseId);
+              return <Tag key={knowledgeBaseId}>{knowledgeBase?.name ?? "已不可用的知识库"}</Tag>;
+            })
+          )}
+        </Space>
+      )
+    },
+    {
+      title: "更新时间",
+      dataIndex: "updated_at",
+      key: "updated_at",
+      width: 180,
+      render: (value: string) => formatDateTime(value)
+    },
+    {
+      title: "操作",
+      key: "actions",
+      width: 220,
+      render: (_value: unknown, draft: KnowledgeDraft) => (
+        <Space>
+          <Button type="link" onClick={() => openDraft(draft)}>
+            编辑
+          </Button>
+          <Button type="link" onClick={() => void submitDraftDirectly(draft)}>
+            提交审核
+          </Button>
+          <Popconfirm
+            title="删除此草稿？"
+            description="删除后无法恢复。"
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => void removeDraft(draft)}
+          >
+            <Button type="link" danger>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      )
+    }
+  ];
+
+  const ingestionBatchColumns: TableProps<IngestionBatch>["columns"] = [
+    {
+      title: "状态",
+      dataIndex: "status",
+      key: "status",
+      render: (status: IngestionBatch["status"]) => ingestionStatusTag(status)
+    },
+    {
+      title: "生成 / 未生成",
+      key: "counts",
+      render: (_value: unknown, batch: IngestionBatch) =>
+        `${batch.generated_count} / ${batch.rejected_count}`
+    },
+    {
+      title: "发起时间",
+      dataIndex: "created_at",
+      key: "created_at",
+      render: (value: string) => formatDateTime(value)
+    },
+    {
+      title: "操作",
+      key: "actions",
+      render: (_value: unknown, batch: IngestionBatch) => (
+        <Button type="link" onClick={() => void loadIngestionBatch(batch.id)}>
+          查看详情
+        </Button>
+      )
+    }
+  ];
+
   const parentKnowledgeBaseOptions = knowledgeBases.map((knowledgeBase) => ({
     label: knowledgeBase.name,
     value: knowledgeBase.id
@@ -882,6 +1261,8 @@ export function ContentSubmissionPage(): JSX.Element {
         </Button>
       </div>
       <Tabs
+        activeKey={activeSubmissionTab}
+        onChange={setActiveSubmissionTab}
         items={[
           {
             key: "parent",
@@ -922,6 +1303,96 @@ export function ContentSubmissionPage(): JSX.Element {
             )
           },
           {
+            key: "fast-upload",
+            label: "快速上传",
+            children: (
+              <Card>
+                <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="从会话生成普通子条目草稿"
+                    description="可直接粘贴企业微信转发卡片。系统仅提炼可复用知识，生成的内容会保存在仅自己可见的草稿中；卡片中的图片会先 OCR 并替换“[图片]”，不会自动选择问题大类或知识库。"
+                  />
+                  <ConversationEditor
+                    ref={ingestionEditorRef}
+                    ariaLabel="快速上传聊天内容"
+                    placeholder={
+                      "Edward 8-17 11:29\n为何会跳出资金账户不足呢\n\n宋承臻(融航-咨询专员02) 8-17 11:30\n这个我们反馈核实下"
+                    }
+                  />
+                  <Space wrap>
+                    <Button
+                      type="primary"
+                      loading={ingestionLoading}
+                      onClick={() => void generateDrafts()}
+                    >
+                      智能生成草稿
+                    </Button>
+                    <Typography.Text type="secondary">
+                      说话人名称中包含“融航”视为我方；必须能识别客户与我方双方发言。
+                    </Typography.Text>
+                  </Space>
+                  {ingestionBatch ? (
+                    <Card
+                      size="small"
+                      title={
+                        <Space>
+                          <span>当前批次</span>
+                          {ingestionStatusTag(ingestionBatch.status)}
+                        </Space>
+                      }
+                    >
+                      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Typography.Text>
+                          已生成 {ingestionBatch.generated_count} 条草稿；未生成 {ingestionBatch.rejected_count} 条。
+                        </Typography.Text>
+                        {ingestionBatch.last_error ? (
+                          <Alert type="error" showIcon message={ingestionBatch.last_error} />
+                        ) : null}
+                        {ingestionBatch.rejection_reasons.length > 0 ? (
+                          <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                            <Typography.Text type="secondary">未生成原因</Typography.Text>
+                            {ingestionBatch.rejection_reasons.map((reason, index) => (
+                              <Typography.Text key={`${reason.topic}-${index}`} type="secondary">
+                                {reason.topic}：{reason.reason}
+                              </Typography.Text>
+                            ))}
+                          </Space>
+                        ) : null}
+                        {ingestionBatch.drafts.length > 0 ? (
+                          <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                            <Typography.Text type="secondary">本批生成的草稿</Typography.Text>
+                            {ingestionBatch.drafts.map((draft) => (
+                              <Space key={draft.id} wrap>
+                                {draftSourceTag(draft.source)}
+                                <Typography.Text>{draft.question ?? "未命名草稿"}</Typography.Text>
+                                <Button type="link" onClick={() => openDraft(draft)}>
+                                  编辑草稿
+                                </Button>
+                              </Space>
+                            ))}
+                          </Space>
+                        ) : null}
+                      </Space>
+                    </Card>
+                  ) : null}
+                  <div>
+                    <Typography.Title level={5}>最近智能生成批次</Typography.Title>
+                    <Table<IngestionBatch>
+                      rowKey="id"
+                      size="small"
+                      columns={ingestionBatchColumns}
+                      dataSource={ingestionBatches}
+                      pagination={{ pageSize: 5, hideOnSinglePage: true }}
+                      locale={{ emptyText: "尚未发起智能生成" }}
+                    />
+                  </div>
+                </Space>
+              </Card>
+            )
+          },
+          {
             key: "child",
             label: `新建${CHILD_CATEGORY_LABEL}`,
             children: (
@@ -931,45 +1402,68 @@ export function ContentSubmissionPage(): JSX.Element {
                     type="info"
                     showIcon
                     message={`暂时没有可选择的${PARENT_CATEGORY_LABEL}`}
-                    description={`${CHILD_CATEGORY_LABEL}只能投放到已完成可用审核的${PARENT_CATEGORY_LABEL}；请等待${PARENT_CATEGORY_LABEL}与${CHILD_CATEGORY_LABEL}发布。`}
+                    description={`仍可先暂存草稿；正式提交前需等待${PARENT_CATEGORY_LABEL}与${CHILD_CATEGORY_LABEL}发布。`}
+                    style={{ marginBottom: 16 }}
                   />
-                ) : (
-                  <Form<ChildSubmissionFormValues>
-                    form={childForm}
-                    layout="vertical"
-                    onFinish={(values) => void submitChild(values)}
-                    requiredMark
+                ) : null}
+                <Form<ChildSubmissionFormValues>
+                  form={childForm}
+                  layout="vertical"
+                  onFinish={(values) => void submitChild(values)}
+                  requiredMark
+                >
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="暂存草稿允许字段不完整"
+                    description={`可先填写${CHILD_CATEGORY_LABEL}内容，稍后再选择${PARENT_CATEGORY_LABEL}和目标知识库；提交审核时才执行完整校验。`}
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Form.Item
+                    name="parent_id"
+                    label={PARENT_CATEGORY_LABEL}
+                    rules={[{ required: true, message: `请选择${PARENT_CATEGORY_LABEL}` }]}
                   >
-                    <Form.Item
-                      name="parent_id"
-                      label={PARENT_CATEGORY_LABEL}
-                      rules={[{ required: true, message: `请选择${PARENT_CATEGORY_LABEL}` }]}
-                    >
-                      <Select
-                        placeholder={`选择已发布的${PARENT_CATEGORY_LABEL}`}
-                        options={availableParents.map((parent) => ({
-                          value: parent.id,
-                          label: `${parent.canonical_keyword}(${parent.name})`
-                        }))}
-                      />
-                    </Form.Item>
-                    <ChildContentFields root="child" />
-                    <Form.Item
-                      name="knowledge_base_ids"
-                      label="目标知识库"
-                      rules={[{ required: true, message: "请选择至少一个知识库" }]}
-                    >
-                      <Checkbox.Group
-                        className="knowledge-base-options"
-                        disabled={!selectedParent}
-                        options={childKnowledgeBaseOptions}
-                      />
-                    </Form.Item>
+                    <Select
+                      allowClear
+                      placeholder={`选择已发布的${PARENT_CATEGORY_LABEL}`}
+                      options={availableParents.map((parent) => ({
+                        value: parent.id,
+                        label: `${parent.canonical_keyword}(${parent.name})`
+                      }))}
+                    />
+                  </Form.Item>
+                  <ChildContentFields root="child" />
+                  <Form.Item
+                    name="knowledge_base_ids"
+                    label="目标知识库"
+                    rules={[{ required: true, message: "请选择至少一个知识库" }]}
+                  >
+                    <Checkbox.Group
+                      className="knowledge-base-options"
+                      disabled={!selectedParent}
+                      options={childKnowledgeBaseOptions}
+                    />
+                  </Form.Item>
+                  <Space wrap>
                     <Button type="primary" htmlType="submit" loading={submittingChild}>
-                      提交候选
+                      {editingDraftId ? "提交草稿审核" : "提交候选"}
                     </Button>
-                  </Form>
-                )}
+                    <Button loading={savingDraft} onClick={() => void saveChildDraft()}>
+                      {editingDraftId ? "更新草稿" : "暂存草稿"}
+                    </Button>
+                    {editingDraftId ? (
+                      <Button
+                        onClick={() => {
+                          childForm.resetFields();
+                          setEditingDraftId(null);
+                        }}
+                      >
+                        取消编辑草稿
+                      </Button>
+                    ) : null}
+                  </Space>
+                </Form>
               </Card>
             )
           },
@@ -993,6 +1487,30 @@ export function ContentSubmissionPage(): JSX.Element {
                   scroll={{ x: 900 }}
                   pagination={{ pageSize: 10, hideOnSinglePage: true }}
                   locale={{ emptyText: "当前没有可修改的已发布知识" }}
+                />
+              </Card>
+            )
+          },
+          {
+            key: "drafts",
+            label: `我的草稿${drafts.length > 0 ? ` (${drafts.length})` : ""}`,
+            children: (
+              <Card>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="草稿仅自己可见"
+                  description="智能生成和手动暂存的草稿均可继续编辑。提交审核成功后，该草稿会立即删除。"
+                  style={{ marginBottom: 16 }}
+                />
+                <Table<KnowledgeDraft>
+                  rowKey="id"
+                  loading={loading}
+                  columns={draftColumns}
+                  dataSource={drafts}
+                  scroll={{ x: 1050 }}
+                  pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                  locale={{ emptyText: "尚未暂存草稿" }}
                 />
               </Card>
             )

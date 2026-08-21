@@ -168,6 +168,41 @@ async def test_uploading_an_image_issues_a_user_bound_ocr_token_and_records_safe
 
 
 @pytest.mark.asyncio
+async def test_conversation_ocr_does_not_retain_recognized_chat_text_in_audit_logs(
+    tmp_path: Path,
+) -> None:
+    app, engine = await build_api_test_app(tmp_path)
+    settings: Settings = app.state.settings
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="https://testserver") as client:
+                await fully_authenticate_test_admin(client, settings)
+                recognized = await client.post(
+                    "/api/v1/search/ocr?purpose=conversation",
+                    headers=csrf_headers(client, settings),
+                    files={"image": ("forwarded-card.png", PNG_BYTES, "image/png")},
+                )
+                assert recognized.status_code == 200
+                assert recognized.json()["text"] == "账号 登录失败"
+
+            session_factory = app.state.session_factory  # type: ignore[attr-defined]
+            async with session_factory() as session:
+                audit_event = await session.scalar(
+                    select(AuditEvent).where(AuditEvent.event_type == "conversation.ocr_recognized")
+                )
+                assert audit_event is not None
+                assert audit_event.payload == {
+                    "model_version": OCR_MODEL_NAME,
+                    "image_sha256": hashlib.sha256(PNG_BYTES).hexdigest(),
+                }
+                assert "ocr_text" not in audit_event.payload
+                assert "keywords" not in audit_event.payload
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_http_ocr_provider_uses_the_fixed_local_service_contract() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url == httpx.URL("http://ocr.local/ocr")

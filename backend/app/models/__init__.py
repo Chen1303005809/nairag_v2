@@ -1,4 +1,10 @@
 from app.models.audit_event import AuditEvent
+from app.models.intelligent_ingestion import (
+    IntelligentIngestionBatch,
+    IntelligentIngestionBatchStatus,
+    KnowledgeDraft,
+    KnowledgeDraftSource,
+)
 from app.models.knowledge_base import KnowledgeBase, ReviewerKnowledgeBase
 from app.models.knowledge_content import (
     Child,
@@ -38,10 +44,14 @@ __all__ = [
     "ChildRevisionQuestionVariant",
     "EvidenceAttachment",
     "HelpfulFeedbackEvent",
+    "IntelligentIngestionBatch",
+    "IntelligentIngestionBatchStatus",
     "IndexJob",
     "IndexJobKind",
     "IndexJobStatus",
     "KnowledgeBase",
+    "KnowledgeDraft",
+    "KnowledgeDraftSource",
     "Parent",
     "ParentLexicalRule",
     "ParentLexicalRuleType",

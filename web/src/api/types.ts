@@ -279,6 +279,104 @@ export interface SearchResponse {
   groups: SearchGroup[];
 }
 
+export interface NormalizedMessageInput {
+  speaker: string;
+  role: "customer" | "ours";
+  body: string;
+  sent_at?: string | null;
+}
+
+export interface ConversationSearchResult extends SearchResult {
+  search_event_id: string;
+  matched_queries: string[];
+}
+
+export interface ConversationSearchGroup {
+  parent_id: string;
+  parent_name: string;
+  canonical_keyword: string;
+  children: ConversationSearchResult[];
+}
+
+export interface ConversationSearchResponse {
+  queries: string[];
+  total_candidates: number;
+  no_query_guidance: string | null;
+  no_match: boolean;
+  no_match_guidance: string | null;
+  groups: ConversationSearchGroup[];
+}
+
+export type KnowledgeDraftSource = "manual_saved" | "intelligent_generated";
+
+export interface KnowledgeDraft {
+  id: string;
+  source: KnowledgeDraftSource;
+  parent_id: string | null;
+  ingestion_batch_id: string | null;
+  question: string | null;
+  response_content: string | null;
+  question_variants: string[];
+  follow_up_guidance: string | null;
+  question_type: string | null;
+  business_object: string | null;
+  purpose: string | null;
+  customer_type: string | null;
+  feature_explanation: string | null;
+  example: string | null;
+  internal_notes: string | null;
+  attachments: EvidenceAttachment[];
+  web_links: WebLinkInput[];
+  knowledge_base_ids: string[];
+  source_hash: string | null;
+  extracted_at: string | null;
+  model_version: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeDraftInput {
+  parent_id?: string | null;
+  question?: string | null;
+  response_content?: string | null;
+  question_variants?: string[];
+  follow_up_guidance?: string | null;
+  question_type?: string | null;
+  business_object?: string | null;
+  purpose?: string | null;
+  customer_type?: string | null;
+  feature_explanation?: string | null;
+  example?: string | null;
+  internal_notes?: string | null;
+  attachments?: string[];
+  web_links?: WebLinkInput[];
+  knowledge_base_ids?: string[];
+}
+
+export type IngestionBatchStatus =
+  | "processing"
+  | "completed"
+  | "completed_with_warnings"
+  | "failed";
+
+export interface IngestionBatch {
+  id: string;
+  status: IngestionBatchStatus;
+  message_count: number;
+  source_hash: string;
+  generated_count: number;
+  rejected_count: number;
+  rejection_reasons: Array<{ topic: string; reason: string }>;
+  model_version: string | null;
+  last_error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface IngestionBatchDetail extends IngestionBatch {
+  drafts: KnowledgeDraft[];
+}
+
 export interface HelpfulFeedbackResponse {
   accepted: boolean;
   already_recorded: boolean;

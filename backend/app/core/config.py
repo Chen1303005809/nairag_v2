@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = 2.0
     worker_lease_seconds: int = 300
 
+    # OpenAI-protocol-compatible LLM used by fast upload and fast retrieval.
+    # DeepSeek testing: OPENAI_BASE_URL=https://api.deepseek.com and
+    # OPENAI_MODEL=deepseek-chat.
+    openai_base_url: str | None = None
+    openai_key: SecretStr | None = None
+    openai_model: str = "deepseek-chat"
+    llm_timeout_seconds: float = 60.0
+    llm_max_conversation_messages: int = 200
+    llm_max_conversation_chars: int = 30_000
+
     argon2_memory_cost_kib: int = 19_456
     argon2_time_cost: int = 2
     argon2_parallelism: int = 1
@@ -73,6 +83,22 @@ class Settings(BaseSettings):
     @field_validator("ocr_service_url", mode="before")
     @classmethod
     def normalize_optional_ocr_service_url(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("openai_base_url", mode="before")
+    @classmethod
+    def normalize_optional_openai_base_url(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("openai_key", mode="before")
+    @classmethod
+    def normalize_optional_openai_key(cls, value: object) -> object:
+        # Compose interpolation and a copied .env.example both express an
+        # intentionally unconfigured optional key as an empty string.
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -107,6 +133,18 @@ class Settings(BaseSettings):
             raise ValueError("WORKER_ID must not be empty when provided")
         if self.worker_id is not None and len(self.worker_id.strip()) > 120:
             raise ValueError("WORKER_ID must be at most 120 characters")
+        if self.openai_base_url is not None and not self.openai_base_url.rstrip("/"):
+            raise ValueError("OPENAI_BASE_URL must not be blank when provided")
+        if self.openai_key is not None and not self.openai_key.get_secret_value().strip():
+            raise ValueError("OPENAI_KEY must not be blank when provided")
+        if not self.openai_model.strip():
+            raise ValueError("OPENAI_MODEL must not be empty")
+        if self.llm_timeout_seconds <= 0:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be positive")
+        if not 1 <= self.llm_max_conversation_messages <= 1000:
+            raise ValueError("LLM_MAX_CONVERSATION_MESSAGES must be between 1 and 1000")
+        if not 1000 <= self.llm_max_conversation_chars <= 200_000:
+            raise ValueError("LLM_MAX_CONVERSATION_CHARS must be between 1000 and 200000")
         if self.index_backend_mode not in {"local_artifact", "milvus"}:
             raise ValueError("INDEX_BACKEND_MODE must be local_artifact or milvus")
         if self.embedding_dimension != 1024:

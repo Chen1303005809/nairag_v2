@@ -115,6 +115,79 @@ body {
   margin-inline-start: 0;
 }
 
+.conversation-rich-editor {
+  min-height: 168px;
+  overflow: auto;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #fff;
+  color: rgb(0 0 0 / 88%);
+  cursor: text;
+  line-height: 1.6;
+  outline: none;
+  padding: 8px 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.conversation-rich-editor:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgb(5 145 255 / 10%);
+}
+
+.conversation-rich-editor:empty::before {
+  color: rgb(0 0 0 / 25%);
+  content: attr(data-placeholder);
+  pointer-events: none;
+  white-space: pre-wrap;
+}
+
+.conversation-image-token {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(100%, 360px);
+  margin: 0 2px;
+  padding: 2px 5px;
+  border: 1px solid #91caff;
+  border-radius: 4px;
+  background: #e6f4ff;
+  color: #0958d9;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.conversation-image-token.is-selected {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgb(5 145 255 / 18%);
+}
+
+.conversation-image-token-preview {
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  border-radius: 2px;
+  object-fit: cover;
+}
+
+.conversation-image-token-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-image-token-remove {
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 16px;
+}
+
 @media (max-width: 560px) {
   .application-header {
     padding-inline: 16px;

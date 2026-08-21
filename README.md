@@ -13,6 +13,7 @@
 5. 异步索引与检索基础：持久化索引任务、独立 worker、租约/重试、可替换的 Qwen/Milvus 适配层、离线 artifact 混合召回、发布事实回查、父类关键词保底和有用反馈。
 6. 查询图片 OCR：前端上传 PNG/JPEG/WebP 后由本地 `PP-OCRv6_medium` 服务识别；API 只暂存请求内图片，审计与检索事件只记录清洗文本、关键词、置信度、模型版本和图片哈希。配置方式见 [backend/.env.example](backend/.env.example)。
 7. 知识子条目佐证材料：可上传 PNG/JPEG/WebP、PDF、DOCX、XLSX、PPTX 或 UTF-8 TXT 附件，并添加相关网页链接；两类材料均绑定不可变子条目修订、经过审核流程并在检索结果展示。开发/测试使用本地私有存储，生产环境使用与 Milvus 共用服务上的独立 MinIO Bucket 和独立账号。
+8. 快速上传与快速检索：可直接粘贴企业微信转发卡片，将客户与我方会话分别用于异步生成私有普通子条目草稿，或同步提取待查询问题并合并展示已有检索结果。卡片内图片会在提交前经本地 OCR 服务识别并替换 `[图片]` 占位符；若卡片复制未携带原图，可在轻量富文本框中为每个占位符单独粘贴或选择图片。能力使用可配置的 OpenAI 协议兼容 LLM，原始会话仅在快速上传任务处理期间短期保存，任务完成后立即删除。
 
 后续实施请从 [实施交接](docs/实施交接.md) 继续，并以 [已确认实施基线](docs/已确认实施基线.md) 为准。
 
@@ -54,6 +55,8 @@ API 文档位于 `http://127.0.0.1:8000/docs`。登录前需先请求 `GET /api/
    ```
 
 Vite 会把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登录。Compose 容器运行时则由 `web` 服务中的 Nginx 托管构建产物，并将 `/api/` 反向代理到 `api` 服务。
+
+快速上传与快速检索需要配置 `OPENAI_BASE_URL`、`OPENAI_KEY` 和可选的 `OPENAI_MODEL`。直接运行后端时，将它们写入未跟踪的 `backend/.env`；使用 Docker Compose 时，将它们写入项目根目录未跟踪的 `.env`（Compose 会同时传给 API 与 worker）。如部署修改了后端的 `LLM_MAX_CONVERSATION_MESSAGES` 或 `LLM_MAX_CONVERSATION_CHARS`，直接运行前端时请从 [web/.env.example](web/.env.example) 配置对应的 `VITE_` 变量；使用 Compose 时，根目录 `.env` 中的同名 `LLM_` 值会作为 Web 构建参数自动同步，使浏览器能在发送请求前拒绝超限会话。
 
 Compose 已内置本地 `PP-OCRv6_medium` 服务，API 默认通过内部地址 `http://ocr:9003` 调用它；OCR 容器不暴露宿主机端口。开发环境使用 CPU 容器，生产环境通过 `docker-compose.prod.yaml` 切换为 NVIDIA CUDA 容器，二者保持同一 HTTP 协议、模型版本与缓存位置。首次启动会下载固定的检测与识别模型到 Docker 命名卷 `ocr_model_cache`，后续启动复用该缓存。查询原图只在 API 和 OCR 服务的请求内存中处理，不会写入该卷或数据库。离线交付前应在受控网络中先启动一次 `ocr` 服务并备份/随交付物携带该模型缓存；模型权重不提交到仓库。
 

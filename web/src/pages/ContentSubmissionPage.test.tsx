@@ -2,7 +2,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
-import type { AvailableParent, EditableContentEntry, KnowledgeBase, ReviewSubmission } from "../api/types";
+import type {
+  AvailableParent,
+  EditableContentEntry,
+  IngestionBatch,
+  KnowledgeBase,
+  KnowledgeDraft,
+  OcrRecognition,
+  ReviewSubmission
+} from "../api/types";
 import { ContentSubmissionPage } from "./ContentSubmissionPage";
 
 vi.mock("../api/client", () => ({
@@ -11,6 +19,16 @@ vi.mock("../api/client", () => ({
     listAvailableParents: vi.fn(),
     listMyContentSubmissions: vi.fn(),
     listEditableContentEntries: vi.fn(),
+    listKnowledgeDrafts: vi.fn(),
+    listIngestionBatches: vi.fn(),
+    createKnowledgeDraft: vi.fn(),
+    updateKnowledgeDraft: vi.fn(),
+    deleteKnowledgeDraft: vi.fn(),
+    submitKnowledgeDraft: vi.fn(),
+    createIngestionBatch: vi.fn(),
+    getIngestionBatch: vi.fn(),
+    recognizeSearchImage: vi.fn(),
+    recognizeConversationImage: vi.fn(),
     createChildRevision: vi.fn(),
     resubmitRejectedChild: vi.fn()
   }
@@ -101,12 +119,70 @@ const availableParent: AvailableParent = {
   ]
 };
 
+const draft: KnowledgeDraft = {
+  id: "draft-1",
+  source: "manual_saved",
+  parent_id: null,
+  ingestion_batch_id: null,
+  question: "待补充的问题",
+  response_content: null,
+  question_variants: [],
+  follow_up_guidance: null,
+  question_type: null,
+  business_object: null,
+  purpose: null,
+  customer_type: null,
+  feature_explanation: null,
+  example: null,
+  internal_notes: null,
+  attachments: [],
+  web_links: [],
+  knowledge_base_ids: [],
+  source_hash: null,
+  extracted_at: null,
+  model_version: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+
+const ingestionBatch: IngestionBatch = {
+  id: "batch-1",
+  status: "completed",
+  message_count: 2,
+  source_hash: "a".repeat(64),
+  generated_count: 1,
+  rejected_count: 0,
+  rejection_reasons: [],
+  model_version: "fake-llm",
+  last_error: null,
+  created_at: "2026-01-01T00:00:00Z",
+  completed_at: "2026-01-01T00:00:10Z"
+};
+
+const ocrRecognition: OcrRecognition = {
+  text: "资金账户可用余额低于最小预留",
+  keywords: ["资金账户", "最小预留"],
+  confidence: 0.97,
+  model_version: "PP-OCRv6_medium",
+  recognition_token: "ocr-ticket"
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listKnowledgeBases.mockResolvedValue([knowledgeBase]);
   mockedApi.listAvailableParents.mockResolvedValue([]);
   mockedApi.listMyContentSubmissions.mockResolvedValue([rejectedSubmission]);
   mockedApi.listEditableContentEntries.mockResolvedValue([]);
+  mockedApi.listKnowledgeDrafts.mockResolvedValue([]);
+  mockedApi.listIngestionBatches.mockResolvedValue([]);
+  mockedApi.createKnowledgeDraft.mockResolvedValue(draft);
+  mockedApi.updateKnowledgeDraft.mockResolvedValue(draft);
+  mockedApi.deleteKnowledgeDraft.mockResolvedValue(undefined);
+  mockedApi.submitKnowledgeDraft.mockResolvedValue(rejectedSubmission);
+  mockedApi.createIngestionBatch.mockResolvedValue(ingestionBatch);
+  mockedApi.getIngestionBatch.mockResolvedValue({ ...ingestionBatch, drafts: [draft] });
+  mockedApi.recognizeSearchImage.mockResolvedValue(ocrRecognition);
+  mockedApi.recognizeConversationImage.mockResolvedValue(ocrRecognition);
   mockedApi.createChildRevision.mockResolvedValue(rejectedSubmission);
   mockedApi.resubmitRejectedChild.mockResolvedValue(rejectedSubmission);
 });
@@ -192,6 +268,80 @@ describe("ContentSubmissionPage", () => {
         }),
         ["knowledge-base-1"]
       )
+    );
+  });
+
+  it("allows a partial ordinary-child draft before a parent is available", async () => {
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "新建问题小类" }));
+    const question = await screen.findByRole("textbox", { name: "问题小类" });
+    fireEvent.change(question, { target: { value: "待选择父类的草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: "暂存草稿" }));
+
+    await waitFor(() =>
+      expect(mockedApi.createKnowledgeDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parent_id: null,
+          question: "待选择父类的草稿",
+          knowledge_base_ids: []
+        })
+      )
+    );
+  });
+
+  it("shows private drafts and recent intelligent-generation batches", async () => {
+    mockedApi.listKnowledgeDrafts.mockResolvedValue([draft]);
+    mockedApi.listIngestionBatches.mockResolvedValue([ingestionBatch]);
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "我的草稿 (1)" }));
+    expect(await screen.findByText("待补充的问题")).toBeInTheDocument();
+    expect(screen.getByText("手动保存")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "快速上传" }));
+    expect(await screen.findByText("最近智能生成批次")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    await waitFor(() => expect(mockedApi.getIngestionBatch).toHaveBeenCalledWith("batch-1"));
+  });
+
+  it("OCRs an image manually attached to a forwarded chat card before creating a fast-upload batch", async () => {
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "快速上传" }));
+    const image = new File(["image"], "forwarded-card.png", { type: "image/png" });
+    fireEvent.paste(screen.getByRole("textbox", { name: "快速上传聊天内容" }), {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain"
+            ? "Edward 8-17 11:28\n[图片]\n\n宋承臻(融航-咨询专员02) 8-17 11:30\n我们反馈核实下"
+            : "",
+        items: [],
+        files: []
+      }
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "图片占位符（点击后可粘贴或选择图片）" })
+    );
+    fireEvent.change(screen.getByLabelText("选择聊天图片"), { target: { files: [image] } });
+    fireEvent.click(screen.getByRole("button", { name: "智能生成草稿" }));
+
+    await waitFor(() => expect(mockedApi.recognizeConversationImage).toHaveBeenCalledWith(image));
+    await waitFor(() =>
+      expect(mockedApi.createIngestionBatch).toHaveBeenCalledWith([
+        {
+          speaker: "Edward",
+          role: "customer",
+          body: "资金账户可用余额低于最小预留",
+          sent_at: null
+        },
+        {
+          speaker: "宋承臻(融航-咨询专员02)",
+          role: "ours",
+          body: "我们反馈核实下",
+          sent_at: null
+        }
+      ])
     );
   });
 });

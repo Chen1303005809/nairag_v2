@@ -14,11 +14,19 @@ import {
   Upload,
   message
 } from "antd";
-import { DeleteOutlined, LikeOutlined, PictureOutlined, SearchOutlined } from "@ant-design/icons";
-import { useCallback, useEffect, useState } from "react";
+import {
+  DeleteOutlined,
+  LikeOutlined,
+  MessageOutlined,
+  PictureOutlined,
+  PlusOutlined,
+  SearchOutlined
+} from "@ant-design/icons";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type {
+  ConversationSearchResult,
   KnowledgeBase,
   OcrRecognition,
   SearchResponse,
@@ -32,24 +40,201 @@ import {
   purposeOptions,
   questionTypeOptions
 } from "../constants/knowledgeOptions";
+import {
+  assertConversationWithinLimits,
+  conversationImagesFromClipboard,
+  ConversationParseError,
+  prepareWecomConversation
+} from "../conversation";
+import { ConversationEditor } from "../components/ConversationEditor";
+import type { ConversationEditorHandle } from "../components/ConversationEditor";
+import { mergeSearchResponses } from "../searchMerge";
 
-function imageFromClipboard(clipboardData: DataTransfer | null): File | undefined {
-  const items = Array.from(clipboardData?.items ?? []);
-  for (const item of items) {
-    if (item.kind === "file" && (item.type.startsWith("image/") || !item.type)) {
-      const image = item.getAsFile();
-      if (image) {
-        return image;
-      }
-    }
-  }
-  const files = Array.from(clipboardData?.files ?? []);
-  return files.find((file) => file.type.startsWith("image/")) ?? files.find((file) => !file.type);
+interface RenderableResult extends SearchResult {
+  matched_queries?: string[];
 }
+
+function ResultItemView({
+  item,
+  feedbackGiven,
+  onFeedback
+}: {
+  item: RenderableResult;
+  feedbackGiven: boolean;
+  onFeedback: (item: RenderableResult) => void;
+}): JSX.Element {
+  return (
+    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+      <Space wrap>
+        <Tag color="blue">{item.knowledge_base_name}</Tag>
+        <Tag
+          color={
+            item.match_reason === "parent_keyword_fallback" ||
+            item.match_reason === "ocr_keyword_fallback"
+              ? "gold"
+              : item.match_reason === "field_filter"
+                ? "cyan"
+                : "green"
+          }
+        >
+          {item.match_reason === "parent_keyword_fallback"
+            ? "关键词保底"
+            : item.match_reason === "ocr_keyword_fallback"
+              ? "OCR 关键词保底"
+              : item.match_reason === "field_filter"
+                ? "字段筛选"
+                : "相关命中"}
+        </Tag>
+        {item.matched_queries?.map((query) => (
+          <Tag key={query} color="purple">
+            命中查询：{query}
+          </Tag>
+        ))}
+      </Space>
+      <Descriptions bordered size="small" column={1}>
+        <Descriptions.Item label="问题小类">
+          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+            {item.question}
+          </Typography.Paragraph>
+        </Descriptions.Item>
+        <Descriptions.Item label="回复内容">
+          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+            {item.response_content}
+          </Typography.Paragraph>
+        </Descriptions.Item>
+        {item.question_variants.length > 0 ? (
+          <Descriptions.Item label="同义问句">
+            <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+              {item.question_variants.join("\n")}
+            </Typography.Paragraph>
+          </Descriptions.Item>
+        ) : null}
+        {item.follow_up_guidance ? (
+          <Descriptions.Item label="后续指引">
+            <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+              {item.follow_up_guidance}
+            </Typography.Paragraph>
+          </Descriptions.Item>
+        ) : null}
+        {item.question_type ? (
+          <Descriptions.Item label="问题类型">{item.question_type}</Descriptions.Item>
+        ) : null}
+        {item.business_object ? (
+          <Descriptions.Item label="具体功能与模块">{item.business_object}</Descriptions.Item>
+        ) : null}
+        {item.purpose ? <Descriptions.Item label="应用场景">{item.purpose}</Descriptions.Item> : null}
+        {item.customer_type ? (
+          <Descriptions.Item label="客户类型">{item.customer_type}</Descriptions.Item>
+        ) : null}
+        {item.feature_explanation ? (
+          <Descriptions.Item label="功能说明">
+            <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+              {item.feature_explanation}
+            </Typography.Paragraph>
+          </Descriptions.Item>
+        ) : null}
+        {item.example ? (
+          <Descriptions.Item label="示例">
+            <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+              {item.example}
+            </Typography.Paragraph>
+          </Descriptions.Item>
+        ) : null}
+        {item.attachments.length > 0 ? (
+          <Descriptions.Item label="附件">
+            <Space size={[8, 8]} wrap>
+              {item.attachments.map((attachment) => {
+                const downloadUrl = api.knowledgeAttachmentDownloadUrl(attachment.id);
+                return attachment.content_type.startsWith("image/") ? (
+                  <Image
+                    key={attachment.id}
+                    alt={attachment.name}
+                    src={downloadUrl}
+                    width={120}
+                  />
+                ) : (
+                  <a key={attachment.id} href={downloadUrl} rel="noreferrer" target="_blank">
+                    {attachment.name}
+                  </a>
+                );
+              })}
+            </Space>
+          </Descriptions.Item>
+        ) : null}
+        {item.web_links.length > 0 ? (
+          <Descriptions.Item label="相关网页链接">
+            <Space direction="vertical" size={4}>
+              {item.web_links.map((webLink) => (
+                <a key={webLink.url} href={webLink.url} rel="noreferrer" target="_blank">
+                  {webLink.title}
+                </a>
+              ))}
+            </Space>
+          </Descriptions.Item>
+        ) : null}
+      </Descriptions>
+      <Button
+        type={feedbackGiven ? "primary" : "default"}
+        size="small"
+        icon={<LikeOutlined />}
+        disabled={feedbackGiven}
+        onClick={() => onFeedback(item)}
+      >
+        {feedbackGiven ? "已反馈" : `有用（${item.helpful_count}）`}
+      </Button>
+    </Space>
+  );
+}
+
+function ResultsGroupsView({
+  groups,
+  feedbackIds,
+  onFeedback
+}: {
+  groups: Array<{
+    parent_id: string;
+    parent_name: string;
+    canonical_keyword: string;
+    children: RenderableResult[];
+  }>;
+  feedbackIds: Set<string>;
+  onFeedback: (item: RenderableResult) => void;
+}): JSX.Element {
+  return (
+    <>
+      {groups.map((group) => (
+        <Card
+          key={group.parent_id}
+          title={
+            <Space>
+              <Typography.Text strong>{group.parent_name}</Typography.Text>
+              <Tag>{group.canonical_keyword}</Tag>
+            </Space>
+          }
+          style={{ marginBottom: 12 }}
+        >
+          {group.children.map((item, index) => (
+            <div key={item.result_item_id}>
+              {index > 0 ? <Divider /> : null}
+              <ResultItemView
+                item={item}
+                feedbackGiven={feedbackIds.has(item.result_item_id)}
+                onFeedback={onFeedback}
+              />
+            </div>
+          ))}
+        </Card>
+      ))}
+    </>
+  );
+}
+
+type SearchTabKey = SearchRetrievalMode | "conversation";
 
 export function SearchPage(): JSX.Element {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseId, setKnowledgeBaseId] = useState<string>();
+  const [activeTab, setActiveTab] = useState<SearchTabKey>("vector");
   const [retrievalMode, setRetrievalMode] = useState<SearchRetrievalMode>("vector");
   const [query, setQuery] = useState("");
   const [ocrRecognition, setOcrRecognition] = useState<OcrRecognition>();
@@ -63,6 +248,14 @@ export function SearchPage(): JSX.Element {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [feedbackIds, setFeedbackIds] = useState<Set<string>>(new Set());
 
+  const conversationEditorRef = useRef<ConversationEditorHandle>(null);
+  const [conversationLoading, setConversationLoading] = useState(false);
+  const [retrievingQueries, setRetrievingQueries] = useState(false);
+  const [conversationResult, setConversationResult] = useState<
+    ReturnType<typeof mergeSearchResponses> | import("../api/types").ConversationSearchResponse
+  >();
+  const [editableQueries, setEditableQueries] = useState<string[]>([]);
+
   useEffect(() => {
     void api
       .listKnowledgeBases()
@@ -71,6 +264,67 @@ export function SearchPage(): JSX.Element {
         message.error(reason instanceof Error ? reason.message : "无法加载知识库");
       });
   }, []);
+
+  const submitFeedback = async (
+    searchEventId: string,
+    item: RenderableResult
+  ): Promise<void> => {
+    if (feedbackIds.has(item.result_item_id)) {
+      return;
+    }
+    try {
+      const feedback = await api.submitHelpfulFeedback(searchEventId, item.result_item_id);
+      setFeedbackIds((current) => new Set(current).add(item.result_item_id));
+      setResult((current) =>
+        current
+          ? {
+              ...current,
+              groups: current.groups.map((group) => ({
+                ...group,
+                children: group.children.map((child) =>
+                  child.result_item_id === item.result_item_id
+                    ? { ...child, helpful_count: feedback.helpful_count }
+                    : child
+                )
+              }))
+            }
+          : current
+      );
+      setConversationResult((current) =>
+        current
+          ? {
+              ...current,
+              groups: current.groups.map((group) => ({
+                ...group,
+                children: group.children.map((child) =>
+                  child.result_item_id === item.result_item_id
+                    ? { ...child, helpful_count: feedback.helpful_count }
+                    : child
+                )
+              }))
+            }
+          : current
+      );
+      message.success("已记录有用反馈");
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "反馈提交失败");
+    }
+  };
+
+  const markHelpful = async (item: RenderableResult): Promise<void> => {
+    if (!result) {
+      return;
+    }
+    await submitFeedback(result.search_event_id, item);
+  };
+
+  const markConversationHelpful = async (item: RenderableResult): Promise<void> => {
+    const conversationItem = item as ConversationSearchResult;
+    if (!conversationItem.search_event_id) {
+      return;
+    }
+    await submitFeedback(conversationItem.search_event_id, item);
+  };
 
   const runSearch = async (): Promise<void> => {
     const normalizedQuery = query.trim();
@@ -105,6 +359,60 @@ export function SearchPage(): JSX.Element {
     }
   };
 
+  const runConversationSearch = async (): Promise<void> => {
+    setConversationLoading(true);
+    setConversationResult(undefined);
+    setEditableQueries([]);
+    setFeedbackIds(new Set());
+    try {
+      const editorValue = conversationEditorRef.current?.getValue() ?? { text: "", images: [] };
+      const preparedConversation = await prepareWecomConversation(
+        editorValue.text,
+        editorValue.images,
+        api.recognizeConversationImage
+      );
+      assertConversationWithinLimits(preparedConversation.messages);
+      if (preparedConversation.imageCount > 0) {
+        conversationEditorRef.current?.replaceWithText(preparedConversation.text);
+        message.success(`已识别 ${preparedConversation.imageCount} 张聊天图片`);
+      }
+      const response = await api.conversationSearch(preparedConversation.messages, knowledgeBaseId);
+      setConversationResult(response);
+      setEditableQueries([...response.queries]);
+      if (response.queries.length === 0) {
+        message.info("未发现待查询问题");
+      }
+    } catch (reason) {
+      if (reason instanceof ConversationParseError) {
+        message.warning(reason.message);
+      } else {
+        message.error(reason instanceof Error ? reason.message : "快速检索失败");
+      }
+    } finally {
+      setConversationLoading(false);
+    }
+  };
+
+  const retrieveWithEditedQueries = async (): Promise<void> => {
+    const queries = editableQueries.map((value) => value.trim()).filter(Boolean);
+    if (queries.length === 0) {
+      message.warning("请至少保留一条查询");
+      return;
+    }
+    setRetrievingQueries(true);
+    setFeedbackIds(new Set());
+    try {
+      const responses = await Promise.all(
+        queries.map((searchQuery) => api.search("vector", searchQuery, knowledgeBaseId))
+      );
+      setConversationResult(mergeSearchResponses(queries, responses));
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "重新检索失败");
+    } finally {
+      setRetrievingQueries(false);
+    }
+  };
+
   const recognizeImage = useCallback(async (file: File): Promise<void> => {
     const supportedTypes = ["image/png", "image/jpeg", "image/webp"];
     if (file.type && !supportedTypes.includes(file.type)) {
@@ -131,11 +439,11 @@ export function SearchPage(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (retrievalMode !== "vector") {
+    if (activeTab !== "vector") {
       return;
     }
     const recognizePastedImage = (event: ClipboardEvent): void => {
-      const image = imageFromClipboard(event.clipboardData);
+      const image = conversationImagesFromClipboard(event.clipboardData)[0];
       if (!image) {
         return;
       }
@@ -148,47 +456,18 @@ export function SearchPage(): JSX.Element {
     };
     window.addEventListener("paste", recognizePastedImage);
     return () => window.removeEventListener("paste", recognizePastedImage);
-  }, [loading, ocrLoading, recognizeImage, retrievalMode]);
+  }, [activeTab, loading, ocrLoading, recognizeImage]);
 
-  const changeRetrievalMode = (value: string): void => {
-    setRetrievalMode(value as SearchRetrievalMode);
+  const changeTab = (value: string): void => {
+    setActiveTab(value as SearchTabKey);
+    if (value === "vector" || value === "field_filter") {
+      setRetrievalMode(value);
+    }
     if (value !== "vector") {
       setOcrRecognition(undefined);
     }
     setResult(undefined);
     setFeedbackIds(new Set());
-  };
-
-  const markHelpful = async (item: SearchResult): Promise<void> => {
-    if (!result || feedbackIds.has(item.result_item_id)) {
-      return;
-    }
-    try {
-      const feedback = await api.submitHelpfulFeedback(
-        result.search_event_id,
-        item.result_item_id
-      );
-      setFeedbackIds((current) => new Set(current).add(item.result_item_id));
-      setResult((current) => {
-        if (!current) {
-          return current;
-        }
-        return {
-          ...current,
-          groups: current.groups.map((group) => ({
-            ...group,
-            children: group.children.map((child) =>
-              child.result_item_id === item.result_item_id
-                ? { ...child, helpful_count: feedback.helpful_count }
-                : child
-            )
-          }))
-        };
-      });
-      message.success("已记录有用反馈");
-    } catch (reason) {
-      message.error(reason instanceof Error ? reason.message : "反馈提交失败");
-    }
   };
 
   return (
@@ -203,8 +482,8 @@ export function SearchPage(): JSX.Element {
       </div>
       <Card>
         <Tabs
-          activeKey={retrievalMode}
-          onChange={changeRetrievalMode}
+          activeKey={activeTab}
+          onChange={changeTab}
           items={[
             {
               key: "vector",
@@ -347,173 +626,145 @@ export function SearchPage(): JSX.Element {
                   </Button>
                 </Space>
               )
+            },
+            {
+              key: "conversation",
+              label: (
+                <span>
+                  <MessageOutlined /> 快速检索
+                </span>
+              ),
+              children: (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  <Typography.Text type="secondary">
+                    可直接粘贴企业微信转发卡片。系统会提取最多 5 条待查询问题并自动检索；
+                    说话人名称中包含“融航”视为我方，其余视为客户。卡片中的图片会先 OCR 并替换“[图片]”。
+                  </Typography.Text>
+                  <ConversationEditor
+                    ref={conversationEditorRef}
+                    ariaLabel="快速检索聊天内容"
+                    placeholder={
+                      "Edward 8-17 11:29\n为何会跳出资金账户不足呢\n\n宋承臻(融航-咨询专员02) 8-17 11:30\n这个我们反馈核实下"
+                    }
+                  />
+                  <Space wrap>
+                    <Button
+                      type="primary"
+                      icon={<SearchOutlined />}
+                      loading={conversationLoading}
+                      onClick={() => void runConversationSearch()}
+                    >
+                      提取查询并检索
+                    </Button>
+                    <Select
+                      allowClear
+                      value={knowledgeBaseId}
+                      onChange={setKnowledgeBaseId}
+                      placeholder="全部知识库"
+                      options={knowledgeBases.map((knowledgeBase) => ({
+                        value: knowledgeBase.id,
+                        label: knowledgeBase.name
+                      }))}
+                      style={{ minWidth: 180 }}
+                    />
+                  </Space>
+                  {conversationResult ? (
+                    <Card size="small" title="提取出的查询（可编辑后重新检索）">
+                      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        {conversationResult.total_candidates > conversationResult.queries.length ? (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message={`已执行前 ${conversationResult.queries.length} 条查询`}
+                            description={`另有 ${conversationResult.total_candidates - conversationResult.queries.length} 条候选未执行。`}
+                          />
+                        ) : null}
+                        {editableQueries.length === 0 ? (
+                          <Typography.Text type="secondary">未发现待查询问题</Typography.Text>
+                        ) : (
+                          editableQueries.map((searchQuery, index) => (
+                            <Space.Compact key={`${index}-${searchQuery}`} style={{ width: "100%" }}>
+                              <Input
+                                value={searchQuery}
+                                onChange={(event) => {
+                                  const next = [...editableQueries];
+                                  next[index] = event.target.value;
+                                  setEditableQueries(next);
+                                }}
+                                placeholder="查询语句"
+                              />
+                              <Button
+                                icon={<DeleteOutlined />}
+                                onClick={() =>
+                                  setEditableQueries((current) =>
+                                    current.filter((_item, itemIndex) => itemIndex !== index)
+                                  )
+                                }
+                              />
+                            </Space.Compact>
+                          ))
+                        )}
+                        <Space wrap>
+                          <Button
+                            icon={<PlusOutlined />}
+                            disabled={editableQueries.length >= 5}
+                            onClick={() => setEditableQueries((current) => [...current, ""])}
+                          >
+                            添加查询
+                          </Button>
+                          <Button
+                            type="primary"
+                            loading={retrievingQueries}
+                            disabled={editableQueries.length === 0}
+                            onClick={() => void retrieveWithEditedQueries()}
+                          >
+                            按当前查询重新检索
+                          </Button>
+                        </Space>
+                      </Space>
+                    </Card>
+                  ) : null}
+                </Space>
+              )
             }
           ]}
         />
       </Card>
-      {result ? (
+      {activeTab !== "conversation" && result ? (
         <div style={{ marginTop: 16 }}>
           {result.no_match ? (
             <Alert type="info" showIcon message="无匹配" description={result.no_match_guidance} />
           ) : (
-            result.groups.map((group) => (
-              <Card
-                key={group.parent_id}
-                title={
-                  <Space>
-                    <Typography.Text strong>{group.parent_name}</Typography.Text>
-                    <Tag>{group.canonical_keyword}</Tag>
-                  </Space>
-                }
-                style={{ marginBottom: 12 }}
-              >
-                {group.children.map((item, index) => (
-                  <div key={item.result_item_id}>
-                    {index > 0 ? <Divider /> : null}
-                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                      <Space wrap>
-                        <Tag color="blue">{item.knowledge_base_name}</Tag>
-                        <Tag
-                          color={
-                            item.match_reason === "parent_keyword_fallback" ||
-                            item.match_reason === "ocr_keyword_fallback"
-                              ? "gold"
-                              : item.match_reason === "field_filter"
-                                ? "cyan"
-                                : "green"
-                          }
-                        >
-                          {item.match_reason === "parent_keyword_fallback"
-                            ? "关键词保底"
-                            : item.match_reason === "ocr_keyword_fallback"
-                              ? "OCR 关键词保底"
-                            : item.match_reason === "field_filter"
-                              ? "字段筛选"
-                              : "相关命中"}
-                        </Tag>
-                      </Space>
-                      <Descriptions bordered size="small" column={1}>
-                        <Descriptions.Item label="问题小类">
-                          <Typography.Paragraph
-                            style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                          >
-                            {item.question}
-                          </Typography.Paragraph>
-                        </Descriptions.Item>
-                        <Descriptions.Item label="回复内容">
-                          <Typography.Paragraph
-                            style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                          >
-                            {item.response_content}
-                          </Typography.Paragraph>
-                        </Descriptions.Item>
-                        {item.question_variants.length > 0 ? (
-                          <Descriptions.Item label="同义问句">
-                            <Typography.Paragraph
-                              style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                            >
-                              {item.question_variants.join("\n")}
-                            </Typography.Paragraph>
-                          </Descriptions.Item>
-                        ) : null}
-                        {item.follow_up_guidance ? (
-                          <Descriptions.Item label="后续指引">
-                            <Typography.Paragraph
-                              style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                            >
-                              {item.follow_up_guidance}
-                            </Typography.Paragraph>
-                          </Descriptions.Item>
-                        ) : null}
-                        {item.question_type ? (
-                          <Descriptions.Item label="问题类型">{item.question_type}</Descriptions.Item>
-                        ) : null}
-                        {item.business_object ? (
-                          <Descriptions.Item label="具体功能与模块">
-                            {item.business_object}
-                          </Descriptions.Item>
-                        ) : null}
-                        {item.purpose ? (
-                          <Descriptions.Item label="应用场景">{item.purpose}</Descriptions.Item>
-                        ) : null}
-                        {item.customer_type ? (
-                          <Descriptions.Item label="客户类型">{item.customer_type}</Descriptions.Item>
-                        ) : null}
-                        {item.feature_explanation ? (
-                          <Descriptions.Item label="功能说明">
-                            <Typography.Paragraph
-                              style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                            >
-                              {item.feature_explanation}
-                            </Typography.Paragraph>
-                          </Descriptions.Item>
-                        ) : null}
-                        {item.example ? (
-                          <Descriptions.Item label="示例">
-                            <Typography.Paragraph
-                              style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                            >
-                              {item.example}
-                            </Typography.Paragraph>
-                          </Descriptions.Item>
-                        ) : null}
-                        {item.attachments.length > 0 ? (
-                          <Descriptions.Item label="附件">
-                            <Space size={[8, 8]} wrap>
-                              {item.attachments.map((attachment) => {
-                                const downloadUrl = api.knowledgeAttachmentDownloadUrl(attachment.id);
-                                return attachment.content_type.startsWith("image/") ? (
-                                  <Image
-                                    key={attachment.id}
-                                    alt={attachment.name}
-                                    src={downloadUrl}
-                                    width={120}
-                                  />
-                                ) : (
-                                  <a
-                                    key={attachment.id}
-                                    href={downloadUrl}
-                                    rel="noreferrer"
-                                    target="_blank"
-                                  >
-                                    {attachment.name}
-                                  </a>
-                                );
-                              })}
-                            </Space>
-                          </Descriptions.Item>
-                        ) : null}
-                        {item.web_links.length > 0 ? (
-                          <Descriptions.Item label="相关网页链接">
-                            <Space direction="vertical" size={4}>
-                              {item.web_links.map((webLink) => (
-                                <a
-                                  key={webLink.url}
-                                  href={webLink.url}
-                                  rel="noreferrer"
-                                  target="_blank"
-                                >
-                                  {webLink.title}
-                                </a>
-                              ))}
-                            </Space>
-                          </Descriptions.Item>
-                        ) : null}
-                      </Descriptions>
-                      <Button
-                        type={feedbackIds.has(item.result_item_id) ? "primary" : "default"}
-                        size="small"
-                        icon={<LikeOutlined />}
-                        disabled={feedbackIds.has(item.result_item_id)}
-                        onClick={() => void markHelpful(item)}
-                      >
-                        {feedbackIds.has(item.result_item_id) ? "已反馈" : `有用（${item.helpful_count}）`}
-                      </Button>
-                    </Space>
-                  </div>
-                ))}
-              </Card>
-            ))
+            <ResultsGroupsView
+              groups={result.groups}
+              feedbackIds={feedbackIds}
+              onFeedback={(item) => void markHelpful(item)}
+            />
+          )}
+        </div>
+      ) : null}
+      {activeTab === "conversation" && conversationResult ? (
+        <div style={{ marginTop: 16 }}>
+          {conversationResult.no_query_guidance ? (
+            <Alert
+              type="info"
+              showIcon
+              message={conversationResult.no_query_guidance}
+              description="系统不会强行检索；可以调整粘贴内容后重试。"
+            />
+          ) : conversationResult.no_match ? (
+            <Alert
+              type="info"
+              showIcon
+              message="无匹配"
+              description={conversationResult.no_match_guidance}
+            />
+          ) : (
+            <ResultsGroupsView
+              groups={conversationResult.groups}
+              feedbackIds={feedbackIds}
+              onFeedback={(item) => void markConversationHelpful(item)}
+            />
           )}
         </div>
       ) : null}

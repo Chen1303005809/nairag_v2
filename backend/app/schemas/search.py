@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.knowledge_content import SearchQueryMode
 from app.schemas.knowledge_content import EvidenceAttachmentResponse, WebLinkInput
+from app.services.conversation import NormalizedConversationMessage
 
 
 class SearchRequest(BaseModel):
@@ -121,3 +122,30 @@ class HelpfulFeedbackResponse(BaseModel):
     accepted: bool
     already_recorded: bool
     helpful_count: int
+
+
+class ConversationSearchRequest(BaseModel):
+    messages: list[NormalizedConversationMessage] = Field(min_length=1, max_length=1_000)
+    knowledge_base_id: UUID | None = None
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+class ConversationSearchResultResponse(SearchResultResponse):
+    search_event_id: UUID
+    matched_queries: list[str]
+
+
+class ConversationSearchParentGroupResponse(BaseModel):
+    parent_id: UUID
+    parent_name: str
+    canonical_keyword: str
+    children: list[ConversationSearchResultResponse]
+
+
+class ConversationSearchResponse(BaseModel):
+    queries: list[str]
+    total_candidates: int
+    no_query_guidance: str | None
+    no_match: bool
+    no_match_guidance: str | None
+    groups: list[ConversationSearchParentGroupResponse]

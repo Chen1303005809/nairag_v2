@@ -2,14 +2,21 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
-import type { KnowledgeBase, OcrRecognition, SearchResponse } from "../api/types";
+import type {
+  ConversationSearchResponse,
+  KnowledgeBase,
+  OcrRecognition,
+  SearchResponse
+} from "../api/types";
 import { SearchPage } from "./SearchPage";
 
 vi.mock("../api/client", () => ({
   api: {
     listKnowledgeBases: vi.fn(),
     recognizeSearchImage: vi.fn(),
+    recognizeConversationImage: vi.fn(),
     search: vi.fn(),
+    conversationSearch: vi.fn(),
     submitHelpfulFeedback: vi.fn()
   }
 }));
@@ -42,11 +49,22 @@ const noMatchResponse: SearchResponse = {
   groups: []
 };
 
+const conversationNoQueryResponse: ConversationSearchResponse = {
+  queries: [],
+  total_candidates: 0,
+  no_query_guidance: "未发现待查询问题",
+  no_match: false,
+  no_match_guidance: null,
+  groups: []
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listKnowledgeBases.mockResolvedValue([knowledgeBase]);
   mockedApi.recognizeSearchImage.mockResolvedValue(recognition);
+  mockedApi.recognizeConversationImage.mockResolvedValue(recognition);
   mockedApi.search.mockResolvedValue(noMatchResponse);
+  mockedApi.conversationSearch.mockResolvedValue(conversationNoQueryResponse);
 });
 
 afterEach(() => {
@@ -94,5 +112,88 @@ describe("SearchPage OCR", () => {
 
     await waitFor(() => expect(mockedApi.recognizeSearchImage).toHaveBeenCalledWith(image));
     expect(await screen.findByText("账号 登录失败")).toBeInTheDocument();
+  });
+
+  it("parses a pasted conversation and requests assisted search", async () => {
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("tab", { name: /快速检索/ }));
+    fireEvent.paste(screen.getByRole("textbox", { name: "快速检索聊天内容" }), {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain"
+            ? "张客户 09:30\n登录一直失败怎么办？\n\n融航-李支持 09:31\n我需要先查询一下。"
+            : "",
+        items: [],
+        files: []
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /提取查询并检索/ }));
+
+    await waitFor(() =>
+      expect(mockedApi.conversationSearch).toHaveBeenCalledWith(
+        [
+          {
+            speaker: "张客户",
+            role: "customer",
+            body: "登录一直失败怎么办？",
+            sent_at: null
+          },
+          {
+            speaker: "融航-李支持",
+            role: "ours",
+            body: "我需要先查询一下。",
+            sent_at: null
+          }
+        ],
+        undefined
+      )
+    );
+    expect((await screen.findAllByText("未发现待查询问题")).length).toBeGreaterThan(0);
+  });
+
+  it("OCRs an image manually attached to a forwarded chat card before assisted search", async () => {
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("tab", { name: /快速检索/ }));
+    const image = new File(["image"], "forwarded-card.png", { type: "image/png" });
+    fireEvent.paste(screen.getByRole("textbox", { name: "快速检索聊天内容" }), {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain"
+            ? "Edward 8-17 11:28\n[图片]\n\n宋承臻(融航-咨询专员02) 8-17 11:30\n我们反馈核实下"
+            : "",
+        items: [],
+        files: []
+      }
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "图片占位符（点击后可粘贴或选择图片）" })
+    );
+    fireEvent.change(screen.getByLabelText("选择聊天图片"), { target: { files: [image] } });
+    fireEvent.click(screen.getByRole("button", { name: /提取查询并检索/ }));
+
+    await waitFor(() => expect(mockedApi.recognizeConversationImage).toHaveBeenCalledWith(image));
+    await waitFor(() =>
+      expect(mockedApi.conversationSearch).toHaveBeenCalledWith(
+        [
+          {
+            speaker: "Edward",
+            role: "customer",
+            body: "账号 登录失败",
+            sent_at: null
+          },
+          {
+            speaker: "宋承臻(融航-咨询专员02)",
+            role: "ours",
+            body: "我们反馈核实下",
+            sent_at: null
+          }
+        ],
+        undefined
+      )
+    );
   });
 });
