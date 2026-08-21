@@ -644,7 +644,7 @@ export function SearchPage(): JSX.Element {
                     ref={conversationEditorRef}
                     ariaLabel="快速检索聊天内容"
                     placeholder={
-                      "Edward 8-17 11:29\n为何会跳出资金账户不足呢\n\n宋承臻(融航-咨询专员02) 8-17 11:30\n这个我们反馈核实下"
+                      "客户A 09:30\n登录一直失败怎么办？\n\n融航-支持专员 09:31\n我先查询一下。"
                     }
                   />
                   <Space wrap>
