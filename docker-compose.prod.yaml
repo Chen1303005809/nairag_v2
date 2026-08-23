@@ -142,8 +142,8 @@ services:
   api:
     environment:
       <<: [*milvus-client-environment, *attachment-client-environment]
-      APP_ENVIRONMENT: production
-      COOKIE_SECURE: "true"
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     depends_on:
       milvus:
         condition: service_healthy
@@ -156,8 +156,8 @@ services:
   worker:
     environment:
       <<: [*milvus-client-environment, *attachment-client-environment]
-      APP_ENVIRONMENT: production
-      COOKIE_SECURE: "true"
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     depends_on:
       milvus:
         condition: service_healthy

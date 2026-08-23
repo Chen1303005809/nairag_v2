@@ -61,7 +61,7 @@ services:
       ocr:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "18081:8000"
     volumes:
       - ./volumes/index_artifacts:/var/lib/nairag/index-artifacts:ro
       - ./volumes/attachments:/var/lib/nairag/attachments
@@ -89,7 +89,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "8080:80"
+      - "18080:80"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/healthz"]
       interval: 5s
