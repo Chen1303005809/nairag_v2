@@ -10,7 +10,7 @@ x-milvus-client-environment: &milvus-client-environment
 
 x-attachment-client-environment: &attachment-client-environment
   ATTACHMENT_STORAGE_BACKEND: minio
-  ATTACHMENT_MINIO_ENDPOINT: milvus-minio:9000
+  ATTACHMENT_MINIO_ENDPOINT: milvus-minio:19000
   ATTACHMENT_MINIO_ACCESS_KEY_FILE: /run/secrets/attachment_minio_access_key
   ATTACHMENT_MINIO_SECRET_KEY_FILE: /run/secrets/attachment_minio_secret_key
   ATTACHMENT_MINIO_BUCKET: ${ATTACHMENT_MINIO_BUCKET:-nairag-attachments}
@@ -43,11 +43,11 @@ services:
     environment:
       MINIO_ROOT_USER: ${MILVUS_MINIO_ACCESS_KEY_ID:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MILVUS_MINIO_SECRET_ACCESS_KEY:-minioadmin}
-    command: minio server /minio_data --console-address ":9001"
+    command: minio server /minio_data --address ":19000" --console-address ":9001"
     volumes:
       - ./volumes/milvus/minio:/minio_data
     ports:
-      - "9000:9000"
+      - "19000:19000"
       - "9001:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
@@ -62,7 +62,7 @@ services:
       - seccomp:unconfined
     environment:
       ETCD_ENDPOINTS: milvus-etcd:2379
-      MINIO_ADDRESS: milvus-minio:9000
+      MINIO_ADDRESS: milvus-minio:19000
       MINIO_ACCESS_KEY_ID: ${MILVUS_MINIO_ACCESS_KEY_ID:-minioadmin}
       MINIO_SECRET_ACCESS_KEY: ${MILVUS_MINIO_SECRET_ACCESS_KEY:-minioadmin}
       MINIO_REGION: us-east-1
@@ -94,7 +94,7 @@ services:
       - |
         attachment_access_key="$$(cat /run/secrets/attachment_minio_access_key)"
         attachment_secret_key="$$(cat /run/secrets/attachment_minio_secret_key)"
-        mc alias set storage http://milvus-minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc alias set storage http://milvus-minio:19000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
         mc mb --ignore-existing "storage/$${ATTACHMENT_MINIO_BUCKET}"
         policy_file=/tmp/nairag-attachments-policy.json
         cat > "$${policy_file}" <<EOF
