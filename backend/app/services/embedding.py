@@ -108,11 +108,6 @@ class QwenEmbeddingProvider:
         if not values:
             return []
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        request_payload = {
-            "model": self.model_name,
-            "input": values,
-            "encoding_format": "float",
-        }
         client = self._client
         owns_client = client is None
         if client is None:
@@ -121,39 +116,79 @@ class QwenEmbeddingProvider:
             try:
                 response = await client.post(
                     f"{self.base_url}/embeddings",
-                    json=request_payload,
+                    json={
+                        "model": self.model_name,
+                        "input": values,
+                        "encoding_format": "float",
+                    },
                     headers=headers,
                 )
                 response.raise_for_status()
                 payload = response.json()
             except (httpx.HTTPError, ValueError) as exc:
                 raise EmbeddingProviderError("embedding service request failed") from exc
+
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, list):
+                if len(data) != len(values):
+                    raise EmbeddingProviderError(
+                        "embedding service returned an unexpected item count"
+                    )
+                ordered = sorted(
+                    data,
+                    key=lambda item: item.get("index", 0) if isinstance(item, dict) else 0,
+                )
+                return [
+                    self._validate_vector(
+                        item.get("embedding") if isinstance(item, dict) else None
+                    )
+                    for item in ordered
+                ]
+
+            # Ollama's legacy /api/embeddings endpoint returns one vector in
+            # {"embedding": [...]} and accepts a single "prompt" at a time.
+            if isinstance(payload, dict) and isinstance(payload.get("embedding"), list):
+                if len(values) == 1:
+                    return [self._validate_vector(payload["embedding"])]
+
+                vectors: list[list[float]] = []
+                for value in values:
+                    try:
+                        response = await client.post(
+                            f"{self.base_url}/embeddings",
+                            json={"model": self.model_name, "prompt": value},
+                            headers=headers,
+                        )
+                        response.raise_for_status()
+                        item_payload = response.json()
+                    except (httpx.HTTPError, ValueError) as exc:
+                        raise EmbeddingProviderError(
+                            "embedding service request failed"
+                        ) from exc
+                    vector = (
+                        item_payload.get("embedding")
+                        if isinstance(item_payload, dict)
+                        else None
+                    )
+                    vectors.append(self._validate_vector(vector))
+                return vectors
+
+            raise EmbeddingProviderError("embedding service returned an unexpected item count")
         finally:
             if owns_client:
                 await client.aclose()
 
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list) or len(data) != len(values):
-            raise EmbeddingProviderError("embedding service returned an unexpected item count")
-        ordered = sorted(
-            data,
-            key=lambda item: item.get("index", 0) if isinstance(item, dict) else 0,
-        )
-        vectors: list[list[float]] = []
-        for item in ordered:
-            vector = item.get("embedding") if isinstance(item, dict) else None
-            if not isinstance(vector, list) or len(vector) != self.dimension:
-                raise EmbeddingProviderError(
-                    f"embedding dimension must be exactly {self.dimension}"
-                )
-            try:
-                normalized = [float(value) for value in vector]
-            except (TypeError, ValueError) as exc:
-                raise EmbeddingProviderError("embedding contains a non-numeric value") from exc
-            if not all(math.isfinite(value) for value in normalized):
-                raise EmbeddingProviderError("embedding contains a non-finite value")
-            vectors.append(normalized)
-        return vectors
+
+    def _validate_vector(self, vector: object) -> list[float]:
+        if not isinstance(vector, list) or len(vector) != self.dimension:
+            raise EmbeddingProviderError(f"embedding dimension must be exactly {self.dimension}")
+        try:
+            normalized = [float(value) for value in vector]
+        except (TypeError, ValueError) as exc:
+            raise EmbeddingProviderError("embedding contains a non-numeric value") from exc
+        if not all(math.isfinite(value) for value in normalized):
+            raise EmbeddingProviderError("embedding contains a non-finite value")
+        return normalized
 
 
 class QwenRerankerProvider:
