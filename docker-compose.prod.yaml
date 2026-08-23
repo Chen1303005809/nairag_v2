@@ -50,7 +50,11 @@ services:
       - "19000:19000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test:
+        [
+          "CMD-SHELL",
+          "mc alias set local http://127.0.0.1:19000 \"$${MINIO_ROOT_USER}\" \"$${MINIO_ROOT_PASSWORD}\" >/dev/null 2>&1 && mc ready local",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
