@@ -12,6 +12,7 @@ COPY pyproject.toml ./
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+COPY scripts ./scripts
 COPY worker.py ./worker.py
 RUN python -m pip install --default-timeout=180 --retries=5 .
 
