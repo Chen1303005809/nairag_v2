@@ -49,6 +49,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
   const [decision, setDecision] = useState<ReviewDecisionKind>("approved");
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
+  const [retryingKey, setRetryingKey] = useState<string>();
 
   const refresh = async (): Promise<void> => {
     setLoading(true);
@@ -92,6 +93,20 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       message.error(reason instanceof Error ? reason.message : "保存审核决定失败");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const retryIndexing = async (item: ReviewQueueItem): Promise<void> => {
+    const key = `${item.review_submission_id}:${item.knowledge_base.id}`;
+    setRetryingKey(key);
+    try {
+      await api.retryReviewTargetIndexing(item.review_submission_id, item.knowledge_base.id);
+      message.success("已重新加入索引队列");
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "重试索引失败");
+    } finally {
+      setRetryingKey(undefined);
     }
   };
 
@@ -307,6 +322,21 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       dataIndex: "review_comment",
       key: "review_comment",
       render: (value: string | null) => value || "—"
+    },
+    {
+      title: "操作",
+      key: "actions",
+      render: (_value: unknown, item: ReviewQueueItem) =>
+        item.target_status === "index_failed" ? (
+          <Button
+            type="primary"
+            ghost
+            loading={retryingKey === `${item.review_submission_id}:${item.knowledge_base.id}`}
+            onClick={() => void retryIndexing(item)}
+          >
+            重试索引
+          </Button>
+        ) : null
     }
   ];
 

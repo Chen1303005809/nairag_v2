@@ -248,6 +248,12 @@ export const api = {
       { decision, comment: comment || null }
     ),
 
+  retryReviewTargetIndexing: (submissionId: string, knowledgeBaseId: string): Promise<void> =>
+    sessionMutation<void>(
+      "POST",
+      `/knowledge-content/review-submissions/${submissionId}/targets/${knowledgeBaseId}/retry-indexing`
+    ),
+
   search: (
     retrievalMode: SearchRetrievalMode,
     query: string | undefined,

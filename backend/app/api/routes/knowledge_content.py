@@ -89,6 +89,7 @@ from app.services.knowledge_content import (
     list_submissions_by_author,
     resubmit_rejected_child,
     resubmit_rejected_parent_aggregate,
+    retry_failed_target_indexing,
     submit_child_revision,
     submit_new_child,
     submit_new_parent_aggregate,
@@ -997,6 +998,48 @@ async def decide_content_review_target(
         decided_by_user_id=decision.decided_by_user_id,
         decided_at=decision.decided_at,
     )
+
+
+@router.post(
+    "/review-submissions/{review_submission_id}/targets/{knowledge_base_id}/retry-indexing",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def retry_content_indexing(
+    review_submission_id: UUID,
+    knowledge_base_id: UUID,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Response:
+    _require_review_actor(user)
+    try:
+        await retry_failed_target_indexing(
+            session,
+            review_submission_id=review_submission_id,
+            knowledge_base_id=knowledge_base_id,
+            actor_user_id=user.user.id,
+            actor_role=user.user.role,
+        )
+    except (
+        ReviewAccessDeniedError,
+        ReviewTargetNotFoundError,
+        ReviewTargetStateError,
+    ) as exc:
+        raise as_content_http_error(exc) from exc
+
+    record_audit_event(
+        session,
+        event_type="content.index_retry_requested",
+        actor_user_id=user.user.id,
+        target_type="review_submission_target",
+        target_id=review_submission_id,
+        payload={
+            "review_submission_id": str(review_submission_id),
+            "knowledge_base_id": str(knowledge_base_id),
+        },
+    )
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

@@ -1868,7 +1868,16 @@ async def retry_failed_target_indexing(
     *,
     review_submission_id: UUID,
     knowledge_base_id: UUID,
+    actor_user_id: UUID | None = None,
+    actor_role: UserRole | None = None,
 ) -> ReviewSubmissionTarget:
+    if actor_user_id is not None and actor_role is not None:
+        await _assert_review_access(
+            session,
+            actor_user_id=actor_user_id,
+            actor_role=actor_role,
+            knowledge_base_id=knowledge_base_id,
+        )
     target, submission = await _get_locked_review_target(
         session,
         review_submission_id=review_submission_id,
@@ -1876,6 +1885,29 @@ async def retry_failed_target_indexing(
     )
     if target.status != ReviewTargetStatus.INDEX_FAILED:
         raise ReviewTargetStateError(target.status)
+
+    if actor_user_id is not None and actor_role is not None:
+        job = await session.scalar(
+            select(IndexJob)
+            .where(
+                IndexJob.job_kind == IndexJobKind.INDEX_TARGET,
+                IndexJob.review_submission_id == review_submission_id,
+                IndexJob.knowledge_base_id == knowledge_base_id,
+            )
+            .with_for_update()
+        )
+        if job is None or job.status not in {
+            IndexJobStatus.PENDING,
+            IndexJobStatus.FAILED,
+        }:
+            raise ReviewTargetStateError(target.status)
+        job.status = IndexJobStatus.PENDING
+        job.attempt_count = 0
+        job.available_at = datetime.now(UTC)
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.completed_at = None
+        job.last_error = None
     target.status = ReviewTargetStatus.APPROVED
     targets = await _locked_submission_targets(session, submission.id)
     _refresh_submission_status(submission, targets)
