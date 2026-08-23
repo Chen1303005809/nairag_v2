@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -15,8 +16,17 @@ class KnowledgeBaseKeyAlreadyExistsError(Exception):
     pass
 
 
+class KnowledgeBaseCollectionUnavailableError(RuntimeError):
+    pass
+
+
 class ReviewerNotEligibleError(Exception):
     pass
+
+
+class KnowledgeBaseCollectionManager(Protocol):
+    async def ensure_collection(self, *, collection_name: str) -> None:
+        ...
 
 
 @dataclass(frozen=True)
@@ -52,6 +62,7 @@ async def create_knowledge_base(
     description: str | None,
     is_active: bool,
     created_by_user_id: UUID,
+    collection_manager: KnowledgeBaseCollectionManager | None = None,
 ) -> KnowledgeBase:
     normalized_key = normalize_knowledge_base_key(logical_key)
     existing = await session.scalar(
@@ -72,6 +83,15 @@ async def create_knowledge_base(
     )
     session.add(knowledge_base)
     await session.flush()
+    if collection_manager is not None:
+        try:
+            await collection_manager.ensure_collection(
+                collection_name=knowledge_base.current_physical_collection_name,
+            )
+        except Exception as exc:
+            raise KnowledgeBaseCollectionUnavailableError(
+                knowledge_base.current_physical_collection_name
+            ) from exc
     return knowledge_base
 
 

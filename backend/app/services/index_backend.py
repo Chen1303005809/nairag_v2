@@ -37,6 +37,102 @@ SOURCE_ID_NAMESPACE: Final = UUID("2b41df37-dfbb-5e08-a4c6-b43fb0ff4f5a")
 TOKEN_PATTERN: Final = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff]")
 
 
+def _milvus_collection_schema() -> dict[str, object]:
+    """Return the fixed schema shared by creation and indexing.
+
+    ``sparse_vector`` is generated from ``field_text`` by Milvus's BM25
+    function. ``sparse_terms`` remains as diagnostic metadata for the local
+    artifact backend and for inspecting the source of a row.
+    """
+
+    return {
+        "autoId": False,
+        "enabledDynamicField": False,
+        "fields": [
+            {
+                "fieldName": "source_item_id",
+                "dataType": "VarChar",
+                "isPrimary": True,
+                "elementTypeParams": {"max_length": 64},
+            },
+            {
+                "fieldName": "child_id",
+                "dataType": "VarChar",
+                "elementTypeParams": {"max_length": 36},
+            },
+            {
+                "fieldName": "child_revision_id",
+                "dataType": "VarChar",
+                "elementTypeParams": {"max_length": 36},
+            },
+            {
+                "fieldName": "field_type",
+                "dataType": "VarChar",
+                "elementTypeParams": {"max_length": 64},
+            },
+            {
+                "fieldName": "field_text",
+                "dataType": "VarChar",
+                "elementTypeParams": {
+                    "max_length": 65_535,
+                    "enable_analyzer": True,
+                },
+            },
+            {
+                "fieldName": "dense_vector",
+                "dataType": "FloatVector",
+                "elementTypeParams": {"dim": VECTOR_DIMENSION},
+            },
+            {
+                "fieldName": "sparse_vector",
+                "dataType": "SparseFloatVector",
+            },
+            {
+                "fieldName": "sparse_terms",
+                "dataType": "JSON",
+            },
+            {
+                "fieldName": "content_hash",
+                "dataType": "VarChar",
+                "elementTypeParams": {"max_length": 64},
+            },
+            {
+                "fieldName": "embedding_model",
+                "dataType": "VarChar",
+                "elementTypeParams": {"max_length": 512},
+            },
+        ],
+        "functions": [
+            {
+                "name": "field_text_bm25",
+                "type": "BM25",
+                "inputFieldNames": ["field_text"],
+                "outputFieldNames": ["sparse_vector"],
+                "params": {},
+            }
+        ],
+    }
+
+
+def _milvus_index_params() -> list[dict[str, object]]:
+    return [
+        {
+            "fieldName": "dense_vector",
+            "indexName": "dense_vector_index",
+            "indexType": "AUTOINDEX",
+            "metricType": "COSINE",
+            "params": {},
+        },
+        {
+            "fieldName": "sparse_vector",
+            "indexName": "sparse_vector_index",
+            "indexType": "AUTOINDEX",
+            "metricType": "BM25",
+            "params": {},
+        },
+    ]
+
+
 def deterministic_hash_vector(value: str, *, dimension: int = VECTOR_DIMENSION) -> list[float]:
     """Backward-compatible export for the offline embedding contract."""
 
@@ -261,6 +357,9 @@ class LocalArtifactIndexBackend:
 
 
 class MilvusWriter(Protocol):
+    async def ensure_collection(self, *, collection_name: str) -> None:
+        ...
+
     async def upsert(
         self,
         *,
@@ -279,12 +378,10 @@ class MilvusWriter(Protocol):
 
 
 class MilvusHttpWriter:
-    """Write rows through Milvus REST v2's idempotent upsert endpoint.
+    """Manage and write one fixed schema through Milvus REST v2.
 
-    The target collection is created and indexed by deployment tooling with a
-    VARCHAR ``source_item_id`` primary key, a 1024-dimension ``dense_vector``,
-    the metadata fields in ``_milvus_rows`` below, and a BM25 function over
-    ``field_text``. Upsert makes retries safe without treating Milvus as the
+    Collection creation is idempotent and uses the same schema as the worker's
+    upsert rows. Upsert makes retries safe without treating Milvus as the
     publication source of truth.
     """
 
@@ -306,6 +403,87 @@ class MilvusHttpWriter:
         self.timeout_seconds = timeout_seconds
         self._client = client
 
+    async def _post_json(
+        self,
+        path: str,
+        *,
+        payload: dict[str, object],
+        operation: str,
+    ) -> dict[str, object]:
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        client = self._client
+        owns_client = client is None
+        if client is None:
+            client = httpx.AsyncClient(timeout=self.timeout_seconds)
+        try:
+            try:
+                response = await client.post(
+                    f"{self.base_url}{path}",
+                    json=payload,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                response_payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise RuntimeError(f"Milvus {operation} request failed") from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+        if not isinstance(response_payload, dict):
+            raise RuntimeError(f"Milvus {operation} returned an invalid response")
+        return response_payload
+
+    @staticmethod
+    def _raise_if_error(payload: dict[str, object], operation: str) -> None:
+        if payload.get("code") not in (None, 0, "0"):
+            raise RuntimeError(
+                f"Milvus {operation} failed: {payload.get('message', 'unknown error')}"
+            )
+
+    @staticmethod
+    def _has_collection(payload: dict[str, object]) -> bool:
+        data = payload.get("data")
+        return isinstance(data, dict) and data.get("has") is True
+
+    async def _collection_exists(self, *, collection_name: str) -> bool:
+        payload = await self._post_json(
+            "/v2/vectordb/collections/has",
+            payload={"collectionName": collection_name},
+            operation="collection check",
+        )
+        self._raise_if_error(payload, "collection check")
+        return self._has_collection(payload)
+
+    async def ensure_collection(self, *, collection_name: str) -> None:
+        """Create the target collection synchronously when it is absent."""
+
+        if not collection_name:
+            raise ValueError("collection_name must not be empty")
+        if await self._collection_exists(collection_name=collection_name):
+            return
+
+        try:
+            payload = await self._post_json(
+                "/v2/vectordb/collections/create",
+                payload={
+                    "collectionName": collection_name,
+                    "schema": _milvus_collection_schema(),
+                    "indexParams": _milvus_index_params(),
+                },
+                operation="collection creation",
+            )
+            self._raise_if_error(payload, "collection creation")
+        except RuntimeError as creation_error:
+            # A concurrent request may have created the same collection between
+            # the existence check and create call. Confirm that case before
+            # surfacing a real Milvus failure to the API caller.
+            try:
+                if await self._collection_exists(collection_name=collection_name):
+                    return
+            except RuntimeError:
+                pass
+            raise creation_error
+
     async def upsert(
         self,
         *,
@@ -316,27 +494,12 @@ class MilvusHttpWriter:
             raise ValueError("collection_name must not be empty")
         if not rows:
             return
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-        client = self._client
-        owns_client = client is None
-        if client is None:
-            client = httpx.AsyncClient(timeout=self.timeout_seconds)
-        try:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/v2/vectordb/entities/upsert",
-                    json={"collectionName": collection_name, "data": list(rows)},
-                    headers=headers,
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                raise RuntimeError("Milvus upsert request failed") from exc
-        finally:
-            if owns_client:
-                await client.aclose()
-        if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
-            raise RuntimeError(f"Milvus upsert failed: {payload.get('message', 'unknown error')}")
+        payload = await self._post_json(
+            "/v2/vectordb/entities/upsert",
+            payload={"collectionName": collection_name, "data": list(rows)},
+            operation="upsert",
+        )
+        self._raise_if_error(payload, "upsert")
 
     async def delete(
         self,
@@ -348,27 +511,12 @@ class MilvusHttpWriter:
             raise ValueError("collection_name must not be empty")
         if not filter_expression:
             raise ValueError("filter_expression must not be empty")
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-        client = self._client
-        owns_client = client is None
-        if client is None:
-            client = httpx.AsyncClient(timeout=self.timeout_seconds)
-        try:
-            try:
-                response = await client.post(
-                    f"{self.base_url}/v2/vectordb/entities/delete",
-                    json={"collectionName": collection_name, "filter": filter_expression},
-                    headers=headers,
-                )
-                response.raise_for_status()
-                payload = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                raise RuntimeError("Milvus delete request failed") from exc
-        finally:
-            if owns_client:
-                await client.aclose()
-        if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
-            raise RuntimeError(f"Milvus delete failed: {payload.get('message', 'unknown error')}")
+        payload = await self._post_json(
+            "/v2/vectordb/entities/delete",
+            payload={"collectionName": collection_name, "filter": filter_expression},
+            operation="delete",
+        )
+        self._raise_if_error(payload, "delete")
 
 
 class MilvusIndexBackend:
@@ -402,6 +550,9 @@ class MilvusIndexBackend:
         )
         if not fragments:
             raise ValueError("child revision has no indexable content")
+        await self.writer.ensure_collection(
+            collection_name=knowledge_base.current_physical_collection_name,
+        )
         rows = [
             {
                 "source_item_id": fragment.source_item_id,

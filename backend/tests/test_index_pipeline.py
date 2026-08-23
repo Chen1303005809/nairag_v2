@@ -494,6 +494,9 @@ async def test_milvus_backend_upserts_current_collection_with_stable_rows(tmp_pa
     captured: dict[str, object] = {}
 
     class CapturingWriter:
+        async def ensure_collection(self, *, collection_name: str) -> None:
+            captured["ensured_collection_name"] = collection_name
+
         async def upsert(self, *, collection_name: str, rows: list[dict[str, object]]) -> None:
             captured["collection_name"] = collection_name
             captured["rows"] = rows
@@ -508,6 +511,10 @@ async def test_milvus_backend_upserts_current_collection_with_stable_rows(tmp_pa
             await backend.index_target(session, jobs[0])
             assert (
                 captured["collection_name"]
+                == knowledge_bases[0].current_physical_collection_name
+            )
+            assert (
+                captured["ensured_collection_name"]
                 == knowledge_bases[0].current_physical_collection_name
             )
             rows = captured["rows"]
@@ -541,6 +548,57 @@ async def test_milvus_http_writer_sends_idempotent_upsert_payload() -> None:
             collection_name="nairag_support_g1",
             rows=[{"source_item_id": "source-1"}],
         )
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_milvus_http_writer_ensures_fixed_collection_schema() -> None:
+    collection_exists = False
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal collection_exists
+        body = json.loads(request.content)
+        requests.append((request.url.path, body))
+        if request.url.path == "/v2/vectordb/collections/has":
+            return httpx.Response(200, json={"code": 0, "data": {"has": collection_exists}})
+        if request.url.path == "/v2/vectordb/collections/create":
+            collection_exists = True
+            schema = body["schema"]
+            fields = {field["fieldName"]: field for field in schema["fields"]}
+            assert schema["enabledDynamicField"] is False
+            assert fields["source_item_id"]["dataType"] == "VarChar"
+            assert fields["source_item_id"]["isPrimary"] is True
+            assert fields["dense_vector"]["elementTypeParams"]["dim"] == VECTOR_DIMENSION
+            assert fields["field_text"]["elementTypeParams"]["enable_analyzer"] is True
+            assert fields["sparse_vector"]["dataType"] == "SparseFloatVector"
+            assert fields["sparse_terms"]["dataType"] == "JSON"
+            assert schema["functions"] == [
+                {
+                    "name": "field_text_bm25",
+                    "type": "BM25",
+                    "inputFieldNames": ["field_text"],
+                    "outputFieldNames": ["sparse_vector"],
+                    "params": {},
+                }
+            ]
+            index_params = {item["fieldName"]: item for item in body["indexParams"]}
+            assert index_params["dense_vector"]["metricType"] == "COSINE"
+            assert index_params["sparse_vector"]["metricType"] == "BM25"
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        raise AssertionError(f"unexpected Milvus endpoint: {request.url.path}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        writer = MilvusHttpWriter("https://milvus.test", client=client)
+        await writer.ensure_collection(collection_name="nairag_support_g1")
+        await writer.ensure_collection(collection_name="nairag_support_g1")
+        assert [path for path, _body in requests] == [
+            "/v2/vectordb/collections/has",
+            "/v2/vectordb/collections/create",
+            "/v2/vectordb/collections/has",
+        ]
     finally:
         await client.aclose()
 

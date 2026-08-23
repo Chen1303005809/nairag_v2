@@ -12,6 +12,7 @@ import app.models  # noqa: F401  # Register model metadata.
 from app.core.config import Settings
 from app.db.base import Base
 from app.main import create_app
+from app.models.knowledge_base import KnowledgeBase
 from app.models.knowledge_content import (
     ChildKnowledgeBasePublication,
     ChildPublicationStatus,
@@ -999,6 +1000,76 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         and entry["knowledge_base"]["id"] == knowledge_base_ids[0]
                         and entry["status"] == "archived"
                         for entry in managed_after_delete.json()
+                    )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_base_creation_ensures_milvus_collection_before_commit(
+    tmp_path: Path,
+) -> None:
+    app, engine = await build_test_app(tmp_path)
+    settings: Settings = app.state.settings
+    ensured_collections: list[str] = []
+
+    class CapturingCollectionManager:
+        should_fail = False
+
+        async def ensure_collection(self, *, collection_name: str) -> None:
+            ensured_collections.append(collection_name)
+            if self.should_fail:
+                raise RuntimeError("Milvus unavailable")
+
+    collection_manager = CapturingCollectionManager()
+    app.state.milvus_collection_manager = collection_manager
+    try:
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="https://testserver") as client:
+                assert (
+                    await login(
+                        client,
+                        settings,
+                        username="bootstrap-admin",
+                        password="InitialPassword-123!",
+                    )
+                ).status_code == 200
+                assert (
+                    await client.post(
+                        "/api/v1/auth/change-password",
+                        headers=csrf_headers(client, settings),
+                        json={
+                            "current_password": "InitialPassword-123!",
+                            "new_password": "ChangedPassword-123!",
+                        },
+                    )
+                ).status_code == 200
+
+                created = await client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(client, settings),
+                    json={"logical_key": "support-team", "name": "客户支持"},
+                )
+                assert created.status_code == 201
+                assert ensured_collections == ["nairag_support_d_team_g1"]
+
+                collection_manager.should_fail = True
+                failed = await client.post(
+                    "/api/v1/knowledge-bases",
+                    headers=csrf_headers(client, settings),
+                    json={"logical_key": "sales-team", "name": "销售支持"},
+                )
+                assert failed.status_code == 503
+
+                async with app.state.session_factory() as session:  # type: ignore[attr-defined]
+                    assert (
+                        await session.scalar(
+                            select(KnowledgeBase).where(
+                                KnowledgeBase.logical_key == "sales-team"
+                            )
+                        )
+                        is None
                     )
     finally:
         await engine.dispose()

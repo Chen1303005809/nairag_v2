@@ -324,19 +324,23 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       render: (value: string | null) => value || "—"
     },
     {
-      title: "操作",
-      key: "actions",
-      render: (_value: unknown, item: ReviewQueueItem) =>
-        item.target_status === "index_failed" ? (
-          <Button
-            type="primary"
-            ghost
-            loading={retryingKey === `${item.review_submission_id}:${item.knowledge_base.id}`}
-            onClick={() => void retryIndexing(item)}
-          >
-            重试索引
-          </Button>
-        ) : null
+      title: "当前状态/操作",
+      key: "status_actions",
+      render: (_value: unknown, item: ReviewQueueItem) => (
+        <Space>
+          {targetStatus(item.target_status)}
+          {item.target_status === "index_failed" ? (
+            <Button
+              type="primary"
+              ghost
+              loading={retryingKey === `${item.review_submission_id}:${item.knowledge_base.id}`}
+              onClick={() => void retryIndexing(item)}
+            >
+              重试索引
+            </Button>
+          ) : null}
+        </Space>
+      )
     }
   ];
 
@@ -346,7 +350,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
         <div>
           <Typography.Title level={3}>审核工作台</Typography.Title>
           <Typography.Paragraph type="secondary">
-            待审核仅展示你有权限处理的目标库；“我的审核历史”保留你已作出的审核决定。问题大类与问题小类会在全部目标通过且索引完成后整体发布。
+            待审核仅展示你有权限处理的目标库；“我的审核历史”保留你已作出的审核决定，并在同一行显示当前索引状态与失败重试入口。问题大类与问题小类会在全部目标通过且索引完成后整体发布。
           </Typography.Paragraph>
         </div>
         <Space>

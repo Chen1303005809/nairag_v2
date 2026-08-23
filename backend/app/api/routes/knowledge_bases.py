@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -25,6 +25,7 @@ from app.schemas.knowledge_bases import (
     UpdateKnowledgeBaseRequest,
 )
 from app.services.knowledge_bases import (
+    KnowledgeBaseCollectionUnavailableError,
     KnowledgeBaseKeyAlreadyExistsError,
     ReviewerAssignmentWithUser,
     ReviewerNotEligibleError,
@@ -127,6 +128,7 @@ async def create_managed_knowledge_base(
     actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
     _csrf: Annotated[None, Depends(require_csrf)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    request: Request,
 ) -> ManagedKnowledgeBaseResponse:
     try:
         knowledge_base = await create_knowledge_base(
@@ -136,11 +138,18 @@ async def create_managed_knowledge_base(
             description=body.description,
             is_active=body.is_active,
             created_by_user_id=actor.user.id,
+            collection_manager=getattr(request.app.state, "milvus_collection_manager", None),
         )
     except KnowledgeBaseKeyAlreadyExistsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="知识库逻辑标识已存在",
+        ) from exc
+    except KnowledgeBaseCollectionUnavailableError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Milvus 集合创建失败，知识库未创建，请稍后重试",
         ) from exc
 
     record_audit_event(

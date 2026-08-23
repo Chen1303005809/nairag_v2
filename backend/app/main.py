@@ -10,6 +10,7 @@ from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.db.session import create_session_factory
 from app.services.attachment_storage import create_attachment_storage
+from app.services.index_backend import MilvusHttpWriter
 from app.services.llm import create_llm_provider
 from app.services.ocr import create_ocr_provider
 from app.services.retrieval import create_search_index_backend
@@ -36,6 +37,16 @@ def create_app(
     app.state.settings = active_settings
     app.state.session_factory = active_session_factory
     app.state.search_index_backend = create_search_index_backend(active_settings)
+    app.state.milvus_collection_manager = (
+        MilvusHttpWriter(
+            active_settings.milvus_url,
+            token=active_settings.milvus_token,
+            timeout_seconds=active_settings.embedding_timeout_seconds,
+        )
+        if active_settings.index_backend_mode == "milvus"
+        and active_settings.milvus_url is not None
+        else None
+    )
     app.state.ocr_provider = create_ocr_provider(active_settings)
     app.state.llm_provider = create_llm_provider(active_settings)
     app.state.attachment_storage = create_attachment_storage(active_settings)

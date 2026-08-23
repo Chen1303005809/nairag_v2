@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
 import type { KnowledgeBase, ReviewQueueItem } from "../api/types";
@@ -10,7 +10,8 @@ vi.mock("../api/client", () => ({
     listReviewQueue: vi.fn(),
     listAssignedReviewKnowledgeBases: vi.fn(),
     listMyReviewHistory: vi.fn(),
-    decideReviewTarget: vi.fn()
+    decideReviewTarget: vi.fn(),
+    retryReviewTargetIndexing: vi.fn()
   }
 }));
 
@@ -71,15 +72,39 @@ beforeEach(() => {
   mockedApi.listMyReviewHistory.mockResolvedValue([historyItem]);
 });
 
+afterEach(() => {
+  cleanup();
+});
+
 describe("ReviewWorkbenchPage history", () => {
   it("shows the current administrator's audit history with uploader and second-precision times", async () => {
     render(<ReviewWorkbenchPage />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "我的审核历史" }));
+    fireEvent.click((await screen.findAllByRole("tab", { name: "我的审核历史" }))[0]);
 
     expect(await screen.findByText("上传人（author）")).toBeInTheDocument();
     expect(screen.getByText("审核人（reviewer）")).toBeInTheDocument();
     expect(screen.getByText("内容完整")).toBeInTheDocument();
     await waitFor(() => expect(mockedApi.listMyReviewHistory).toHaveBeenCalled());
+  });
+
+  it("shows index failures and retries beside them in audit history", async () => {
+    mockedApi.listMyReviewHistory.mockResolvedValue([
+      { ...historyItem, target_status: "index_failed", submission_status: "index_failed" }
+    ]);
+    mockedApi.retryReviewTargetIndexing.mockResolvedValue(undefined);
+    render(<ReviewWorkbenchPage />);
+
+    fireEvent.click((await screen.findAllByRole("tab", { name: "我的审核历史" }))[0]);
+
+    await waitFor(() => expect(mockedApi.listMyReviewHistory).toHaveBeenCalled());
+    expect(await screen.findByText("索引失败")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试索引" }));
+    await waitFor(() =>
+      expect(mockedApi.retryReviewTargetIndexing).toHaveBeenCalledWith(
+        "submission-1",
+        "knowledge-base-1"
+      )
+    );
   });
 });
