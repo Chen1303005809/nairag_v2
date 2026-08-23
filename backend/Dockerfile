@@ -13,6 +13,6 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
 COPY worker.py ./worker.py
-RUN pip install .
+RUN python -m pip install --default-timeout=180 --retries=5 .
 
 EXPOSE 8000
