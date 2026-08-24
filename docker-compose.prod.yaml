@@ -4,7 +4,7 @@
 # This requires a Linux x86_64 host with the NVIDIA Container Toolkit installed.
 x-milvus-client-environment: &milvus-client-environment
   INDEX_BACKEND_MODE: milvus
-  EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:?Set EMBEDDING_SERVICE_URL to the production OpenAI-compatible embedding endpoint}
+  EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:?Set EMBEDDING_SERVICE_URL to the production OpenAI-compatible or Ollama native embedding endpoint}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
   MILVUS_URL: http://milvus:19530
 

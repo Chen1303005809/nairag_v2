@@ -5,6 +5,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
 
@@ -72,7 +73,7 @@ class DeterministicEmbeddingProvider:
 
 
 class QwenEmbeddingProvider:
-    """Call an OpenAI-compatible local Qwen embedding service over HTTP.
+    """Call OpenAI-compatible or Ollama-native Qwen embedding services over HTTP.
 
     The service is intentionally external to the API and worker processes. This
     keeps CUDA/MPS dependencies out of the business image and allows the same
@@ -113,6 +114,12 @@ class QwenEmbeddingProvider:
         if client is None:
             client = httpx.AsyncClient(timeout=self.timeout_seconds)
         try:
+            if self._uses_ollama_native_api():
+                return await self._embed_ollama_native(
+                    client=client,
+                    headers=headers,
+                    values=values,
+                )
             try:
                 response = await client.post(
                     f"{self.base_url}/embeddings",
@@ -154,39 +161,22 @@ class QwenEmbeddingProvider:
             if isinstance(embeddings, list):
                 return self._decode_vector_array(embeddings, expected_count=len(values))
 
-            # Ollama's legacy /api/embeddings endpoint returns one vector in
-            # {"embedding": [...]} and accepts a single "prompt" at a time.
+            # Older compatible services return one vector in {"embedding":
+            # [...]} and accept a single "prompt" at a time.
             if isinstance(payload, dict) and isinstance(payload.get("embedding"), list):
-                if len(values) == 1:
-                    return [self._validate_vector(payload["embedding"])]
-
-                vectors: list[list[float]] = []
-                for value in values:
-                    try:
-                        response = await client.post(
-                            f"{self.base_url}/embeddings",
-                            json={"model": self.model_name, "prompt": value},
-                            headers=headers,
-                        )
-                        response.raise_for_status()
-                        item_payload = response.json()
-                    except (httpx.HTTPError, ValueError) as exc:
-                        raise EmbeddingProviderError(
-                            "embedding service request failed"
-                        ) from exc
-                    vector = (
-                        item_payload.get("embedding")
-                        if isinstance(item_payload, dict)
-                        else None
-                    )
-                    vectors.append(self._validate_vector(vector))
-                return vectors
+                embedding = payload["embedding"]
+                if len(values) == 1 and not self._is_empty_vector(embedding):
+                    return [self._validate_vector(embedding)]
+                return await self._embed_legacy_prompts(
+                    client=client,
+                    headers=headers,
+                    values=values,
+                )
 
             raise EmbeddingProviderError("embedding service returned an unexpected item count")
         finally:
             if owns_client:
                 await client.aclose()
-
 
     def _decode_vector_array(
         self,
@@ -208,12 +198,67 @@ class QwenEmbeddingProvider:
     def _is_flat_array(value: list[object]) -> bool:
         return all(not isinstance(item, list | dict) for item in value)
 
+    def _uses_ollama_native_api(self) -> bool:
+        return urlparse(self.base_url).path.rstrip("/").endswith("/api")
+
+    @staticmethod
+    def _unwrap_singleton_array_layers(vector: object) -> object:
+        while isinstance(vector, list) and len(vector) == 1 and isinstance(vector[0], list):
+            vector = vector[0]
+        return vector
+
+    def _is_empty_vector(self, vector: object) -> bool:
+        unwrapped = self._unwrap_singleton_array_layers(vector)
+        return isinstance(unwrapped, list) and not unwrapped
+
+    async def _embed_ollama_native(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        values: Sequence[str],
+    ) -> list[list[float]]:
+        try:
+            response = await client.post(
+                f"{self.base_url}/embed",
+                json={"model": self.model_name, "input": list(values)},
+                headers=headers,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise EmbeddingProviderError("embedding service request failed") from exc
+        embeddings = payload.get("embeddings") if isinstance(payload, dict) else None
+        return self._decode_vector_array(embeddings, expected_count=len(values))
+
+    async def _embed_legacy_prompts(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        values: Sequence[str],
+    ) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for value in values:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/embeddings",
+                    json={"model": self.model_name, "prompt": value},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                item_payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise EmbeddingProviderError("embedding service request failed") from exc
+            vector = item_payload.get("embedding") if isinstance(item_payload, dict) else None
+            vectors.append(self._validate_vector(vector))
+        return vectors
+
     def _validate_vector(self, vector: object) -> list[float]:
         # A few embedding servers wrap a single vector as [[...]]. Unwrap only
         # singleton array layers; never pad, truncate, or otherwise alter the
         # actual dimension sent to Milvus.
-        while isinstance(vector, list) and len(vector) == 1 and isinstance(vector[0], list):
-            vector = vector[0]
+        vector = self._unwrap_singleton_array_layers(vector)
         if not isinstance(vector, list) or len(vector) != self.dimension:
             actual_dimension = len(vector) if isinstance(vector, list) else "unknown"
             raise EmbeddingProviderError(

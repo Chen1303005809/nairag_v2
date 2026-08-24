@@ -439,8 +439,9 @@ async def test_qwen_embedding_provider_orders_and_validates_vectors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qwen_embedding_provider_supports_ollama_embeddings() -> None:
+async def test_qwen_embedding_provider_supports_legacy_embedding_responses() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/embeddings"
         payload = request.read()
         body = json.loads(payload)
         if "input" in body:
@@ -453,7 +454,7 @@ async def test_qwen_embedding_provider_supports_ollama_embeddings() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
         provider = QwenEmbeddingProvider(
-            "http://ollama.test/api",
+            "http://embedding.test/v1",
             model_name="qwen3-embedding:0.6b",
             dimension=2,
             client=client,
@@ -471,12 +472,60 @@ async def test_qwen_embedding_provider_unwraps_array_embedding_response() -> Non
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
         provider = QwenEmbeddingProvider(
-            "http://embedding.test/api",
+            "http://embedding.test/v1",
             model_name="qwen3-embedding:0.6b",
             dimension=2,
             client=client,
         )
         assert await provider.embed_texts(["a"]) == [[1.0, 0.0]]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_qwen_embedding_provider_retries_empty_legacy_response_with_prompt() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "input" in body:
+            return httpx.Response(200, json={"embedding": []})
+        assert body == {"model": "qwen3-embedding:0.6b", "prompt": "a"}
+        return httpx.Response(200, json={"embedding": [1.0, 0.0]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = QwenEmbeddingProvider(
+            "http://embedding.test/v1",
+            model_name="qwen3-embedding:0.6b",
+            dimension=2,
+            client=client,
+        )
+        assert await provider.embed_texts(["a"]) == [[1.0, 0.0]]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_qwen_embedding_provider_uses_ollama_native_embed_endpoint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/embed"
+        assert json.loads(request.content) == {
+            "model": "qwen3-embedding:0.6b",
+            "input": ["a", "b"],
+        }
+        return httpx.Response(
+            200,
+            json={"embeddings": [[1.0, 0.0], [0.0, 1.0]]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = QwenEmbeddingProvider(
+            "http://embedding.test/api",
+            model_name="qwen3-embedding:0.6b",
+            dimension=2,
+            client=client,
+        )
+        assert await provider.embed_texts(["a", "b"]) == [[1.0, 0.0], [0.0, 1.0]]
     finally:
         await client.aclose()
 
