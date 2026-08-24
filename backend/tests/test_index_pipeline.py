@@ -464,6 +464,24 @@ async def test_qwen_embedding_provider_supports_ollama_embeddings() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qwen_embedding_provider_unwraps_array_embedding_response() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"embedding": [[1.0, 0.0]]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = QwenEmbeddingProvider(
+            "http://embedding.test/api",
+            model_name="qwen3-embedding:0.6b",
+            dimension=2,
+            client=client,
+        )
+        assert await provider.embed_texts(["a"]) == [[1.0, 0.0]]
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_local_artifact_search_uses_hybrid_scores(tmp_path: Path) -> None:
     factory, engine = await build_index_db(tmp_path)
     try:

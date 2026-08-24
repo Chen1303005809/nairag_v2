@@ -128,22 +128,31 @@ class QwenEmbeddingProvider:
             except (httpx.HTTPError, ValueError) as exc:
                 raise EmbeddingProviderError("embedding service request failed") from exc
 
+            if isinstance(payload, list):
+                return self._decode_vector_array(payload, expected_count=len(values))
+
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, list):
-                if len(data) != len(values):
-                    raise EmbeddingProviderError(
-                        "embedding service returned an unexpected item count"
+                if all(isinstance(item, dict) for item in data):
+                    if len(data) != len(values):
+                        raise EmbeddingProviderError(
+                            "embedding service returned an unexpected item count"
+                        )
+                    ordered = sorted(
+                        data,
+                        key=lambda item: item.get("index", 0),
                     )
-                ordered = sorted(
-                    data,
-                    key=lambda item: item.get("index", 0) if isinstance(item, dict) else 0,
-                )
-                return [
-                    self._validate_vector(
-                        item.get("embedding") if isinstance(item, dict) else None
-                    )
-                    for item in ordered
-                ]
+                    return [
+                        self._validate_vector(item.get("embedding"))
+                        for item in ordered
+                    ]
+                return self._decode_vector_array(data, expected_count=len(values))
+
+            # Some compatible services use the modern Ollama-style plural key
+            # for a batch of vectors instead of OpenAI's data objects.
+            embeddings = payload.get("embeddings") if isinstance(payload, dict) else None
+            if isinstance(embeddings, list):
+                return self._decode_vector_array(embeddings, expected_count=len(values))
 
             # Ollama's legacy /api/embeddings endpoint returns one vector in
             # {"embedding": [...]} and accepts a single "prompt" at a time.
@@ -179,9 +188,38 @@ class QwenEmbeddingProvider:
                 await client.aclose()
 
 
+    def _decode_vector_array(
+        self,
+        vectors: object,
+        *,
+        expected_count: int,
+    ) -> list[list[float]]:
+        """Decode flat or batched JSON arrays without changing vector dimensions."""
+
+        if not isinstance(vectors, list):
+            raise EmbeddingProviderError("embedding service returned an unexpected item count")
+        if expected_count == 1 and self._is_flat_array(vectors):
+            return [self._validate_vector(vectors)]
+        if len(vectors) != expected_count:
+            raise EmbeddingProviderError("embedding service returned an unexpected item count")
+        return [self._validate_vector(vector) for vector in vectors]
+
+    @staticmethod
+    def _is_flat_array(value: list[object]) -> bool:
+        return all(not isinstance(item, list | dict) for item in value)
+
     def _validate_vector(self, vector: object) -> list[float]:
+        # A few embedding servers wrap a single vector as [[...]]. Unwrap only
+        # singleton array layers; never pad, truncate, or otherwise alter the
+        # actual dimension sent to Milvus.
+        while isinstance(vector, list) and len(vector) == 1 and isinstance(vector[0], list):
+            vector = vector[0]
         if not isinstance(vector, list) or len(vector) != self.dimension:
-            raise EmbeddingProviderError(f"embedding dimension must be exactly {self.dimension}")
+            actual_dimension = len(vector) if isinstance(vector, list) else "unknown"
+            raise EmbeddingProviderError(
+                f"embedding dimension must be exactly {self.dimension}; "
+                f"received {actual_dimension}"
+            )
         try:
             normalized = [float(value) for value in vector]
         except (TypeError, ValueError) as exc:
