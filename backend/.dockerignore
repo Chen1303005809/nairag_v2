@@ -1,0 +1,14 @@
+# Local Python artifacts must not invalidate Docker's source-copy layers.
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+var/
+*.sqlite3
+*.db
+
+# Runtime configuration and local credentials are mounted or injected at runtime.
+.env
+.env.*
+secrets/
