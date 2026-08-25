@@ -350,9 +350,21 @@ function formatAttachmentSize(sizeBytes: number): string {
 }
 
 function ChildAttachmentField({ root }: { root: "primary_child" | "child" }): JSX.Element {
-  const form = Form.useFormInstance();
-  const name = [root, "attachments"];
-  const attachments = (Form.useWatch(name, form) as EvidenceAttachment[] | undefined) ?? [];
+  return (
+    <Form.Item name={[root, "attachments"]} label="附件">
+      <AttachmentListInput />
+    </Form.Item>
+  );
+}
+
+function AttachmentListInput({
+  value,
+  onChange
+}: {
+  value?: EvidenceAttachment[];
+  onChange?: (attachments: EvidenceAttachment[]) => void;
+}): JSX.Element {
+  const attachments = value ?? [];
   const [uploading, setUploading] = useState(false);
 
   const upload = async (file: File): Promise<void> => {
@@ -363,7 +375,7 @@ function ChildAttachmentField({ root }: { root: "primary_child" | "child" }): JS
     setUploading(true);
     try {
       const attachment = await api.uploadKnowledgeAttachment(file);
-      form.setFieldValue(name, [...attachments, attachment]);
+      onChange?.([...attachments, attachment]);
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "附件上传失败");
     } finally {
@@ -380,55 +392,60 @@ function ChildAttachmentField({ root }: { root: "primary_child" | "child" }): JS
         return;
       }
     }
-    form.setFieldValue(
-      name,
-      attachments.filter((item) => item.id !== attachment.id)
-    );
+    onChange?.(attachments.filter((item) => item.id !== attachment.id));
   };
 
   return (
-    <Form.Item label="附件">
-      <Space direction="vertical" size={8} style={{ width: "100%" }}>
-        {attachments.map((attachment) => (
-          <Space key={attachment.id} wrap>
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      {attachments.map((attachment) => (
+        <Space key={attachment.id} wrap>
+          {attachment.content_type.startsWith("image/") ? (
+            <Image
+              alt={attachment.name}
+              src={api.knowledgeAttachmentDownloadUrl(attachment.id)}
+              width={64}
+              height={64}
+              style={{ objectFit: "cover" }}
+            />
+          ) : null}
+          <Space direction="vertical" size={0}>
             {attachment.content_type.startsWith("image/") ? (
-              <Image
-                alt={attachment.name}
-                src={api.knowledgeAttachmentDownloadUrl(attachment.id)}
-                width={64}
-                height={64}
-                style={{ objectFit: "cover" }}
-              />
-            ) : null}
-            <Space direction="vertical" size={0}>
               <Typography.Text>{attachment.name}</Typography.Text>
-              <Typography.Text type="secondary">
-                {formatAttachmentSize(attachment.size_bytes)}
-              </Typography.Text>
-            </Space>
-            <Button type="link" danger size="small" onClick={() => void remove(attachment)}>
-              移除
-            </Button>
+            ) : (
+              <a
+                href={api.knowledgeAttachmentDownloadUrl(attachment.id)}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {attachment.name}
+              </a>
+            )}
+            <Typography.Text type="secondary">
+              {formatAttachmentSize(attachment.size_bytes)}
+            </Typography.Text>
           </Space>
-        ))}
-        <Upload
-          accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx,.txt"
-          beforeUpload={(file) => {
-            void upload(file);
-            return Upload.LIST_IGNORE;
-          }}
-          disabled={uploading || attachments.length >= 10}
-          showUploadList={false}
-        >
-          <Button loading={uploading} disabled={attachments.length >= 10}>
-            上传附件
+          <Button type="link" danger size="small" onClick={() => void remove(attachment)}>
+            移除
           </Button>
-        </Upload>
-        <Typography.Text type="secondary">
-          支持 PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。图片附件可直接预览，其他类型点击文件名可下载查看。
-        </Typography.Text>
-      </Space>
-    </Form.Item>
+        </Space>
+      ))}
+      <Upload
+        accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx,.txt"
+        beforeUpload={(file) => {
+          void upload(file);
+          return Upload.LIST_IGNORE;
+        }}
+        disabled={uploading || attachments.length >= 10}
+        showUploadList={false}
+      >
+        <Button loading={uploading} disabled={attachments.length >= 10}>
+          上传附件
+        </Button>
+      </Upload>
+      <Typography.Text type="secondary">
+        支持 PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。图片附件可直接预览，其他类型点击文件名可下载查看。
+      </Typography.Text>
+    </Space>
   );
 }
 
@@ -485,6 +502,7 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
           <Select placeholder="--请选择--" options={customerTypeOptions} />
         </Form.Item>
       </div>
+      <ChildAttachmentField root={root} />
       <Collapse
         ghost
         items={[
@@ -505,7 +523,6 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
                 <Form.Item name={[root, "internal_notes"]} label="内部备注">
                   <Input.TextArea rows={3} />
                 </Form.Item>
-                <ChildAttachmentField root={root} />
                 <StructuredWebLinkList root={root} />
               </>
             )

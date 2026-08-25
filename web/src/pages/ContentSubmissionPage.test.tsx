@@ -30,7 +30,11 @@ vi.mock("../api/client", () => ({
     recognizeSearchImage: vi.fn(),
     recognizeConversationImage: vi.fn(),
     createChildRevision: vi.fn(),
-    resubmitRejectedChild: vi.fn()
+    resubmitRejectedChild: vi.fn(),
+    uploadKnowledgeAttachment: vi.fn(),
+    knowledgeAttachmentDownloadUrl: vi.fn(
+      (attachmentId: string) => `/api/v1/knowledge-content/attachments/${attachmentId}/download`
+    )
   }
 }));
 
@@ -303,6 +307,76 @@ describe("ContentSubmissionPage", () => {
     expect(await screen.findByText("最近智能生成批次")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     await waitFor(() => expect(mockedApi.getIngestionBatch).toHaveBeenCalledWith("batch-1"));
+  });
+
+  it("shows uploaded attachments immediately with a download link or image preview", async () => {
+    mockedApi.uploadKnowledgeAttachment
+      .mockResolvedValueOnce({
+        id: "attachment-pdf",
+        name: "manual.pdf",
+        content_type: "application/pdf",
+        size_bytes: 2048
+      })
+      .mockResolvedValueOnce({
+        id: "attachment-png",
+        name: "screenshot.png",
+        content_type: "image/png",
+        size_bytes: 1024
+      });
+    const { container } = render(<ContentSubmissionPage />);
+
+    await screen.findByRole("button", { name: "上传附件" });
+
+    fireEvent.change(container.querySelector("input[type=file]")!, {
+      target: { files: [new File(["pdf"], "manual.pdf", { type: "application/pdf" })] }
+    });
+    await waitFor(() => expect(mockedApi.uploadKnowledgeAttachment).toHaveBeenCalledTimes(1));
+    const pdfLink = await screen.findByRole("link", { name: "manual.pdf" });
+    expect(pdfLink).toHaveAttribute(
+      "href",
+      "/api/v1/knowledge-content/attachments/attachment-pdf/download"
+    );
+
+    fireEvent.change(container.querySelector("input[type=file]")!, {
+      target: { files: [new File(["png"], "screenshot.png", { type: "image/png" })] }
+    });
+    await waitFor(() => expect(mockedApi.uploadKnowledgeAttachment).toHaveBeenCalledTimes(2));
+    const preview = await screen.findByRole("img", { name: "screenshot.png" });
+    expect(preview).toHaveAttribute(
+      "src",
+      "/api/v1/knowledge-content/attachments/attachment-png/download"
+    );
+  });
+
+  it("submits uploaded attachment ids together with the draft content", async () => {
+    mockedApi.uploadKnowledgeAttachment.mockResolvedValueOnce({
+      id: "attachment-1",
+      name: "evidence.png",
+      content_type: "image/png",
+      size_bytes: 1024
+    });
+    const { container } = render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "新建问题小类" }));
+    fireEvent.change(container.querySelector("input[type=file]")!, {
+      target: { files: [new File(["png"], "evidence.png", { type: "image/png" })] }
+    });
+    await waitFor(() => expect(mockedApi.uploadKnowledgeAttachment).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("img", { name: "evidence.png" })).toBeInTheDocument();
+
+    fireEvent.change(await screen.findByRole("textbox", { name: "问题小类" }), {
+      target: { value: "如何找回密码？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "暂存草稿" }));
+
+    await waitFor(() =>
+      expect(mockedApi.createKnowledgeDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          question: "如何找回密码？",
+          attachments: ["attachment-1"]
+        })
+      )
+    );
   });
 
   it("OCRs an image manually attached to a forwarded chat card before creating a fast-upload batch", async () => {
