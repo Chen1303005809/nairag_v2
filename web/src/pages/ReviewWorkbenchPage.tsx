@@ -17,6 +17,7 @@ import type { TableProps } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { ChildRevisionFullView } from "../components/ChildRevisionFullView";
 import { formatDateTime } from "../dateTime";
 import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
@@ -120,59 +121,25 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
   );
 
   const expandedRow = (item: ReviewQueueItem): JSX.Element => (
-    <Descriptions bordered size="small" column={1}>
-      <Descriptions.Item label="上传者">
-        {item.submitter.display_name}（{item.submitter.username}）
-      </Descriptions.Item>
-      <Descriptions.Item label="上传时间">{formatDateTime(item.submitted_at)}</Descriptions.Item>
-      <Descriptions.Item label="审核者">
-        {item.reviewer ? `${item.reviewer.display_name}（${item.reviewer.username}）` : "—"}
-      </Descriptions.Item>
-      <Descriptions.Item label="实际审核时间">{formatDateTime(item.reviewed_at)}</Descriptions.Item>
-      {item.review_comment ? <Descriptions.Item label="审核备注">{item.review_comment}</Descriptions.Item> : null}
-      {item.parent_revision ? (
-        <Descriptions.Item label="问题大类关键词">
-          {item.parent_revision.canonical_keyword}
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <ChildRevisionFullView
+        childRevision={item.child_revision}
+        parentRevision={item.parent_revision}
+      />
+      <Descriptions bordered size="small" column={1} title="审核信息">
+        <Descriptions.Item label="上传者">
+          {item.submitter.display_name}（{item.submitter.username}）
         </Descriptions.Item>
-      ) : null}
-      <Descriptions.Item label="问题">{item.child_revision.question}</Descriptions.Item>
-      <Descriptions.Item label="回复内容">{item.child_revision.response_content}</Descriptions.Item>
-      {item.child_revision.question_variants.length > 0 ? (
-        <Descriptions.Item label="同义问句">
-          {item.child_revision.question_variants.join("；")}
+        <Descriptions.Item label="上传时间">{formatDateTime(item.submitted_at)}</Descriptions.Item>
+        <Descriptions.Item label="审核者">
+          {item.reviewer ? `${item.reviewer.display_name}（${item.reviewer.username}）` : "—"}
         </Descriptions.Item>
-      ) : null}
-      {item.child_revision.attachments.length > 0 ? (
-        <Descriptions.Item label="附件">
-          <Space direction="vertical" size={4}>
-            {item.child_revision.attachments.map((attachment) => (
-              <a
-                key={attachment.id}
-                href={api.knowledgeAttachmentDownloadUrl(attachment.id)}
-                rel="noreferrer"
-                target="_blank"
-              >
-                {attachment.name}
-              </a>
-            ))}
-          </Space>
-        </Descriptions.Item>
-      ) : null}
-      {item.child_revision.web_links.length > 0 ? (
-        <Descriptions.Item label="相关网页链接">
-          <Space direction="vertical" size={4}>
-            {item.child_revision.web_links.map((webLink) => (
-              <a key={webLink.url} href={webLink.url} rel="noreferrer" target="_blank">
-                {webLink.title}
-              </a>
-            ))}
-          </Space>
-        </Descriptions.Item>
-      ) : null}
-      {item.child_revision.internal_notes ? (
-        <Descriptions.Item label="内部备注">{item.child_revision.internal_notes}</Descriptions.Item>
-      ) : null}
-    </Descriptions>
+        <Descriptions.Item label="实际审核时间">{formatDateTime(item.reviewed_at)}</Descriptions.Item>
+        {item.review_comment ? (
+          <Descriptions.Item label="审核备注">{item.review_comment}</Descriptions.Item>
+        ) : null}
+      </Descriptions>
+    </Space>
   );
 
   const queueKnowledgeBaseFilters = useMemo(

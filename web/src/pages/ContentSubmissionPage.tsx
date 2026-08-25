@@ -5,6 +5,7 @@ import {
   Checkbox,
   Collapse,
   Form,
+  Image,
   Input,
   Modal,
   Popconfirm,
@@ -390,8 +391,21 @@ function ChildAttachmentField({ root }: { root: "primary_child" | "child" }): JS
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
         {attachments.map((attachment) => (
           <Space key={attachment.id} wrap>
-            <Typography.Text>{attachment.name}</Typography.Text>
-            <Typography.Text type="secondary">{formatAttachmentSize(attachment.size_bytes)}</Typography.Text>
+            {attachment.content_type.startsWith("image/") ? (
+              <Image
+                alt={attachment.name}
+                src={api.knowledgeAttachmentDownloadUrl(attachment.id)}
+                width={64}
+                height={64}
+                style={{ objectFit: "cover" }}
+              />
+            ) : null}
+            <Space direction="vertical" size={0}>
+              <Typography.Text>{attachment.name}</Typography.Text>
+              <Typography.Text type="secondary">
+                {formatAttachmentSize(attachment.size_bytes)}
+              </Typography.Text>
+            </Space>
             <Button type="link" danger size="small" onClick={() => void remove(attachment)}>
               移除
             </Button>
@@ -411,7 +425,7 @@ function ChildAttachmentField({ root }: { root: "primary_child" | "child" }): JS
           </Button>
         </Upload>
         <Typography.Text type="secondary">
-          支持 PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。
+          支持 PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。图片附件可直接预览，其他类型点击文件名可下载查看。
         </Typography.Text>
       </Space>
     </Form.Item>

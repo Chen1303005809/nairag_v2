@@ -683,7 +683,7 @@ export function SearchPage(): JSX.Element {
                           <Typography.Text type="secondary">未发现待查询问题</Typography.Text>
                         ) : (
                           editableQueries.map((searchQuery, index) => (
-                            <Space.Compact key={`${index}-${searchQuery}`} style={{ width: "100%" }}>
+                            <Space.Compact key={index} style={{ width: "100%" }}>
                               <Input
                                 value={searchQuery}
                                 onChange={(event) => {

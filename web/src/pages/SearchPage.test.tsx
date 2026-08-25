@@ -41,6 +41,15 @@ const recognition: OcrRecognition = {
   recognition_token: "ocr-ticket"
 };
 
+const conversationWithQueriesResponse: ConversationSearchResponse = {
+  queries: ["登录一直失败怎么办？", "如何重置密码？"],
+  total_candidates: 2,
+  no_query_guidance: null,
+  no_match: false,
+  no_match_guidance: null,
+  groups: []
+};
+
 const noMatchResponse: SearchResponse = {
   search_event_id: "event-1",
   query_mode: "image",
@@ -151,6 +160,33 @@ describe("SearchPage OCR", () => {
       )
     );
     expect((await screen.findAllByText("未发现待查询问题")).length).toBeGreaterThan(0);
+  });
+
+  it("keeps the caret in an extracted query input while typing", async () => {
+    mockedApi.search.mockResolvedValue(noMatchResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("tab", { name: /快速检索/ }));
+    fireEvent.paste(screen.getByRole("textbox", { name: "快速检索聊天内容" }), {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain"
+            ? "张客户 09:30\n登录一直失败怎么办？\n\n融航-李支持 09:31\n我需要先查询一下。"
+            : "",
+        items: [],
+        files: []
+      }
+    });
+    mockedApi.conversationSearch.mockResolvedValue(conversationWithQueriesResponse);
+    fireEvent.click(screen.getByRole("button", { name: /提取查询并检索/ }));
+
+    const queryInput = (await screen.findByDisplayValue("登录一直失败怎么办？")) as HTMLInputElement;
+    const caretBefore = queryInput.selectionStart;
+    expect(caretBefore).toBe("登录一直失败怎么办？".length);
+
+    fireEvent.change(queryInput, { target: { value: "登录一直失败怎么办？啊" } });
+    expect(screen.getByDisplayValue("登录一直失败怎么办？啊")).toBe(queryInput);
   });
 
   it("OCRs an image manually attached to a forwarded chat card before assisted search", async () => {
