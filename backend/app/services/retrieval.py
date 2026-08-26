@@ -5,7 +5,7 @@ import json
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -322,17 +322,21 @@ def _create_ann_search_request(
     anns_field: str,
     param: dict[str, object],
     limit: int,
+    expr: str | None = None,
 ) -> Any:
     try:
         from pymilvus import AnnSearchRequest
     except ImportError as exc:  # pragma: no cover - dependency is installed in production.
         raise RuntimeError("pymilvus is required for Milvus search") from exc
-    return AnnSearchRequest(
-        data=data,
-        anns_field=anns_field,
-        param=param,
-        limit=limit,
-    )
+    arguments: dict[str, object] = {
+        "data": data,
+        "anns_field": anns_field,
+        "param": param,
+        "limit": limit,
+    }
+    if expr:
+        arguments["expr"] = expr
+    return AnnSearchRequest(**arguments)
 
 
 def _create_weighted_ranker(dense_weight: float, sparse_weight: float) -> Any:
@@ -344,9 +348,59 @@ def _create_weighted_ranker(dense_weight: float, sparse_weight: float) -> Any:
 
 
 def _milvus_hit_value(hit: object, key: str, default: object = None) -> object:
-    if isinstance(hit, dict):
+    """Read a PyMilvus hit through its mapping protocol before attributes.
+
+    ``pymilvus`` returns ``Hit`` objects that expose result fields through
+    ``hit["..."]``. The ``entity`` attribute on those objects can be a wrapper
+    containing another ``entity`` key, while ``hit["entity"]`` is the actual
+    entity payload. Attribute-first access therefore loses
+    ``child_revision_id`` and silently drops every result.
+    """
+
+    if isinstance(hit, Mapping):
         return hit.get(key, default)
+    try:
+        return hit[key]  # type: ignore[index]
+    except (AttributeError, IndexError, KeyError, TypeError):
+        pass
     return getattr(hit, key, default)
+
+
+def _milvus_entity(hit: object) -> dict[str, object]:
+    """Return the actual entity dictionary from dicts and PyMilvus ``Hit``s."""
+
+    raw_entity = _milvus_hit_value(hit, "entity", {})
+    if not isinstance(raw_entity, Mapping):
+        return {}
+    entity = dict(raw_entity)
+    nested_entity = entity.get("entity")
+    if isinstance(nested_entity, Mapping):
+        outer_entity = entity
+        entity = dict(nested_entity)
+        for key in (
+            "source_item_id",
+            "child_id",
+            "child_revision_id",
+            "field_type",
+            "field_text",
+            "embedding_model",
+        ):
+            if key not in entity and key in outer_entity:
+                entity[key] = outer_entity[key]
+    return entity
+
+
+def _milvus_filter_literal(value: str) -> str:
+    """Escape a string for the Milvus expression literal used below."""
+
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _milvus_model_filter(model_name: str) -> str | None:
+    normalized = model_name.strip()
+    if not normalized:
+        return None
+    return f'embedding_model == "{_milvus_filter_literal(normalized)}"'
 
 
 def _flatten_milvus_hits(results: object) -> list[object]:
@@ -433,38 +487,72 @@ class MilvusClientHybridSearcher:
                 if not math.isfinite(query_weight) or query_weight <= 0:
                     continue
 
+                model_filter = _milvus_model_filter(
+                    str(query.get("embedding_model", ""))
+                )
                 dense_request = self._ann_search_request_factory(
                     data=[vector],
                     anns_field="dense_vector",
                     param={"metric_type": "COSINE"},
                     limit=limit,
+                    expr=model_filter,
                 )
                 sparse_request = self._ann_search_request_factory(
                     data=[text],
                     anns_field="sparse_vector",
                     param={"metric_type": "BM25"},
                     limit=limit,
+                    expr=model_filter,
                 )
                 ranker = self._ranker_factory(
                     MILVUS_DENSE_WEIGHT,
                     MILVUS_SPARSE_WEIGHT,
                 )
-                raw_results = self._client.hybrid_search(
-                    collection_name=collection_name,
-                    reqs=[dense_request, sparse_request],
-                    ranker=ranker,
-                    limit=limit,
-                    output_fields=list(MILVUS_OUTPUT_FIELDS),
-                )
+                match_reason = "hybrid_dense_bm25"
+                try:
+                    raw_results = self._client.hybrid_search(
+                        collection_name=collection_name,
+                        reqs=[dense_request, sparse_request],
+                        ranker=ranker,
+                        limit=limit,
+                        output_fields=list(MILVUS_OUTPUT_FIELDS),
+                    )
+                    if not _flatten_milvus_hits(raw_results):
+                        raise RuntimeError("Milvus hybrid search returned no hits")
+                except Exception:
+                    # Milvus 3.0.0 currently raises ``unsupported ID type``
+                    # when the BM25 branch has no matches. Dense retrieval is
+                    # still valid in that case and must not be replaced by a
+                    # parent-keyword fallback.
+                    raw_results = self._client.search(
+                        collection_name=collection_name,
+                        data=[vector],
+                        anns_field="dense_vector",
+                        filter=model_filter or "",
+                        limit=limit,
+                        output_fields=list(MILVUS_OUTPUT_FIELDS),
+                        search_params={"metric_type": "COSINE"},
+                    )
+                    match_reason = "dense_fallback"
                 channel = str(query.get("channel", "text"))
                 for hit in _flatten_milvus_hits(raw_results):
-                    entity = _milvus_hit_value(hit, "entity", {})
-                    entity = dict(entity) if isinstance(entity, dict) else {}
-                    source_item_id = entity.get("source_item_id") or _milvus_hit_value(
-                        hit,
-                        "id",
+                    entity = _milvus_entity(hit)
+                    source_item_id = (
+                        entity.get("source_item_id")
+                        or _milvus_hit_value(hit, "source_item_id")
+                        or _milvus_hit_value(hit, "id")
                     )
-                    revision_id = entity.get("child_revision_id")
+                    revision_id = entity.get("child_revision_id") or _milvus_hit_value(
+                        hit,
+                        "child_revision_id",
+                    )
+                    field_type = entity.get("field_type") or _milvus_hit_value(
+                        hit,
+                        "field_type",
+                        "response_content",
+                    )
+                    if field_type is not None:
+                        entity["field_type"] = str(field_type)
                     score = _milvus_hit_value(
                         hit,
                         "distance",
@@ -485,6 +573,7 @@ class MilvusClientHybridSearcher:
                             "score": numeric_score,
                             "channel": channel,
                             "query_weight": query_weight,
+                            "match_reason": match_reason,
                         }
                     )
             return results
@@ -528,6 +617,7 @@ class MilvusSearchBackend(SearchIndexBackend):
                 "channel": query.channel,
                 "weight": query.weight,
                 "dense_vector": vector,
+                "embedding_model": self.embedding_provider.model_name,
             }
             for query, vector in zip(active_queries, vectors, strict=True)
         ]
@@ -548,6 +638,9 @@ class MilvusSearchBackend(SearchIndexBackend):
                 sparse_score = float(raw.get("sparse_score", entity.get("sparse_score", 0.0)))
                 channel = str(raw.get("channel", entity.get("channel", "text")))
                 query_weight = float(raw.get("query_weight", 1.0))
+                match_reason = str(
+                    raw.get("match_reason", entity.get("match_reason", "hybrid_dense_bm25"))
+                )
             except (KeyError, TypeError, ValueError):
                 continue
             if not math.isfinite(score) or not math.isfinite(query_weight):
@@ -565,7 +658,7 @@ class MilvusSearchBackend(SearchIndexBackend):
                     dense_score=max(0.0, min(1.0, dense_score)),
                     sparse_score=max(0.0, min(1.0, sparse_score)),
                     channel=channel,
-                    match_reason="hybrid_dense_bm25",
+                    match_reason=match_reason,
                 )
             )
         return sorted(hits, key=lambda hit: hit.score, reverse=True)[:limit]

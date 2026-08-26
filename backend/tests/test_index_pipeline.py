@@ -755,8 +755,20 @@ async def test_milvus_client_hybrid_searcher_loads_and_searches_one_query_at_a_t
     result = await searcher.hybrid_search(
         collection_name="nairag_support_g1",
         queries=[
-            {"text": "账号", "channel": "text", "weight": 1.0, "dense_vector": [0.1]},
-            {"text": "登录", "channel": "ocr", "weight": 0.35, "dense_vector": [0.2]},
+            {
+                "text": "账号",
+                "channel": "text",
+                "weight": 1.0,
+                "dense_vector": [0.1],
+                "embedding_model": "qwen3-embedding:0.6b",
+            },
+            {
+                "text": "登录",
+                "channel": "ocr",
+                "weight": 0.35,
+                "dense_vector": [0.2],
+                "embedding_model": "qwen3-embedding:0.6b",
+            },
         ],
         limit=2,
     )
@@ -775,6 +787,145 @@ async def test_milvus_client_hybrid_searcher_loads_and_searches_one_query_at_a_t
     ] for call in client.calls)
     assert [request.data for request in client.calls[0]["reqs"]] == [[[0.1]], ["账号"]]
     assert [request.data for request in client.calls[1]["reqs"]] == [[[0.2]], ["登录"]]
+    assert all(
+        request.expr == 'embedding_model == "qwen3-embedding:0.6b"'
+        for call in client.calls
+        for request in call["reqs"]
+    )
     assert result[0]["entity"]["source_item_id"] == "source-1"
     assert result[0]["channel"] == "text"
     assert result[1]["channel"] == "ocr"
+
+
+@pytest.mark.asyncio
+async def test_milvus_client_hybrid_searcher_parses_real_hit_entity_shape() -> None:
+    revision_id = uuid4()
+
+    class FakeHit:
+        """The relevant mapping/attribute behavior of pymilvus Hit."""
+
+        def __init__(self) -> None:
+            self.id = "source-1"
+            self.distance = 0.9
+            self.score = 0.9
+            self.entity = {
+                "source_item_id": "source-1",
+                "distance": 0.9,
+                "entity": {
+                    "source_item_id": "source-1",
+                    "child_revision_id": str(revision_id),
+                    "field_type": "question",
+                },
+            }
+
+        def __getitem__(self, key: str) -> object:
+            if key == "entity":
+                return self.entity["entity"]
+            if key == "source_item_id":
+                return "source-1"
+            if key == "distance":
+                return self.distance
+            if key == "child_revision_id":
+                return str(revision_id)
+            if key == "field_type":
+                return "question"
+            raise KeyError(key)
+
+    class FakeAnnSearchRequest:
+        def __init__(self, **kwargs: object) -> None:
+            self.__dict__.update(kwargs)
+
+    class FakeMilvusClient:
+        def load_collection(self, *, collection_name: str) -> None:
+            assert collection_name == "nairag_support_g1"
+
+        def hybrid_search(self, **kwargs: object) -> list[list[FakeHit]]:
+            return [[FakeHit()]]
+
+    searcher = MilvusClientHybridSearcher(
+        "https://milvus.test",
+        client=FakeMilvusClient(),
+        ann_search_request_factory=FakeAnnSearchRequest,
+    )
+
+    result = await searcher.hybrid_search(
+        collection_name="nairag_support_g1",
+        queries=[
+            {
+                "text": "账号",
+                "channel": "text",
+                "weight": 1.0,
+                "dense_vector": [0.1],
+                "embedding_model": "qwen3-embedding:0.6b",
+            }
+        ],
+        limit=2,
+    )
+
+    assert result[0]["entity"] == {
+        "source_item_id": "source-1",
+        "child_revision_id": str(revision_id),
+        "field_type": "question",
+    }
+    assert result[0]["score"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_milvus_client_hybrid_searcher_falls_back_to_dense_search() -> None:
+    revision_id = uuid4()
+
+    class FakeAnnSearchRequest:
+        def __init__(self, **kwargs: object) -> None:
+            self.__dict__.update(kwargs)
+
+    class FakeMilvusClient:
+        def __init__(self) -> None:
+            self.search_calls: list[dict[str, object]] = []
+
+        def load_collection(self, *, collection_name: str) -> None:
+            assert collection_name == "nairag_support_g1"
+
+        def hybrid_search(self, **kwargs: object) -> list[list[dict[str, object]]]:
+            raise RuntimeError("unsupported ID type")
+
+        def search(self, **kwargs: object) -> list[list[dict[str, object]]]:
+            self.search_calls.append(kwargs)
+            return [
+                [
+                    {
+                        "source_item_id": "source-1",
+                        "distance": 0.88,
+                        "entity": {
+                            "source_item_id": "source-1",
+                            "child_revision_id": str(revision_id),
+                            "field_type": "question",
+                        },
+                    }
+                ]
+            ]
+
+    client = FakeMilvusClient()
+    searcher = MilvusClientHybridSearcher(
+        "https://milvus.test",
+        client=client,
+        ann_search_request_factory=FakeAnnSearchRequest,
+    )
+
+    result = await searcher.hybrid_search(
+        collection_name="nairag_support_g1",
+        queries=[
+            {
+                "text": "没有词法命中",
+                "channel": "text",
+                "weight": 1.0,
+                "dense_vector": [0.1],
+                "embedding_model": "qwen3-embedding:0.6b",
+            }
+        ],
+        limit=2,
+    )
+
+    assert result[0]["match_reason"] == "dense_fallback"
+    assert result[0]["score"] == 0.88
+    assert client.search_calls[0]["anns_field"] == "dense_vector"
+    assert client.search_calls[0]["filter"] == 'embedding_model == "qwen3-embedding:0.6b"'
