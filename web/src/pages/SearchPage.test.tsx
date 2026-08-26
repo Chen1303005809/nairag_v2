@@ -58,6 +58,46 @@ const noMatchResponse: SearchResponse = {
   groups: []
 };
 
+const matchedResponse: SearchResponse = {
+  search_event_id: "event-2",
+  query_mode: "text",
+  no_match: false,
+  no_match_guidance: null,
+  groups: [
+    {
+      parent_id: "parent-1",
+      parent_name: "账号问题",
+      canonical_keyword: "账号",
+      children: [
+        {
+          result_item_id: "result-1",
+          rank: 1,
+          score: 0.8765,
+          child_id: "child-1",
+          knowledge_base_id: "knowledge-base-1",
+          knowledge_base_name: "支持知识库",
+          child_revision_id: "revision-1",
+          question: "如何找回密码？",
+          response_content: "请联系管理员重置密码。",
+          question_variants: ["密码找回流程怎么走？"],
+          follow_up_guidance: null,
+          question_type: null,
+          business_object: null,
+          purpose: null,
+          customer_type: null,
+          feature_explanation: null,
+          example: null,
+          attachments: [],
+          web_links: [],
+          helpful_count: 0,
+          match_reason: "hybrid_dense_bm25",
+          matched_field: "question_variant"
+        }
+      ]
+    }
+  ]
+};
+
 const conversationNoQueryResponse: ConversationSearchResponse = {
   queries: [],
   total_candidates: 0,
@@ -121,6 +161,20 @@ describe("SearchPage OCR", () => {
 
     await waitFor(() => expect(mockedApi.recognizeSearchImage).toHaveBeenCalledWith(image));
     expect(await screen.findByText("账号 登录失败")).toBeInTheDocument();
+  });
+
+  it("shows similarity and the matched knowledge field", async () => {
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+
+    expect(await screen.findByText("相似度：87.65%")).toBeInTheDocument();
+    expect(screen.getByText("命中字段：同义问句")).toBeInTheDocument();
   });
 
   it("parses a pasted conversation and requests assisted search", async () => {

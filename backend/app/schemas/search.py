@@ -97,6 +97,7 @@ class SearchResultResponse(BaseModel):
     web_links: list[WebLinkInput]
     helpful_count: int
     match_reason: str
+    matched_field: str | None
 
 
 class SearchParentGroupResponse(BaseModel):

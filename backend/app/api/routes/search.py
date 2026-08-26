@@ -103,6 +103,7 @@ def as_search_response(details) -> SearchResponse:
                         ],
                         helpful_count=candidate.publication.helpful_count,
                         match_reason=result.match_reason,
+                        matched_field=result.matched_field,
                     )
                     for result, candidate in items
                 ],
@@ -163,6 +164,7 @@ def as_conversation_search_response(
                         ],
                         helpful_count=item.candidate.publication.helpful_count,
                         match_reason=item.result_item.match_reason,
+                        matched_field=item.result_item.matched_field,
                         matched_queries=list(item.matched_queries),
                     )
                     for rank, item in enumerate(items, start=1)

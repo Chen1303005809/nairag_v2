@@ -244,6 +244,7 @@ export interface SearchResult {
   web_links: WebLinkInput[];
   helpful_count: number;
   match_reason: string;
+  matched_field: string | null;
 }
 
 export interface SearchFilters {

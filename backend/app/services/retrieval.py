@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Final
 from uuid import UUID
-
-import httpx
 
 from app.core.config import Settings
 from app.services.embedding import (
@@ -63,6 +63,16 @@ FIELD_WEIGHTS = {
     "question_variant": 0.95,
     "response_content": 0.85,
 }
+MILVUS_DENSE_WEIGHT: Final = 0.65
+MILVUS_SPARSE_WEIGHT: Final = 0.35
+MILVUS_OUTPUT_FIELDS: Final = (
+    "source_item_id",
+    "child_id",
+    "child_revision_id",
+    "field_type",
+    "field_text",
+    "embedding_model",
+)
 
 
 @dataclass(frozen=True)
@@ -294,30 +304,97 @@ class MilvusHybridSearcher:
         raise NotImplementedError
 
 
-class MilvusHttpHybridSearcher:
-    """Small REST gateway for the deployment's Milvus hybrid-search endpoint."""
+def _create_milvus_client(base_url: str, token: str | None) -> Any:
+    try:
+        from pymilvus import MilvusClient
+    except ImportError as exc:  # pragma: no cover - dependency is installed in production.
+        raise RuntimeError("pymilvus is required for Milvus search") from exc
+
+    arguments: dict[str, object] = {"uri": base_url}
+    if token:
+        arguments["token"] = token
+    return MilvusClient(**arguments)
+
+
+def _create_ann_search_request(
+    *,
+    data: list[object],
+    anns_field: str,
+    param: dict[str, object],
+    limit: int,
+) -> Any:
+    try:
+        from pymilvus import AnnSearchRequest
+    except ImportError as exc:  # pragma: no cover - dependency is installed in production.
+        raise RuntimeError("pymilvus is required for Milvus search") from exc
+    return AnnSearchRequest(
+        data=data,
+        anns_field=anns_field,
+        param=param,
+        limit=limit,
+    )
+
+
+def _create_weighted_ranker(dense_weight: float, sparse_weight: float) -> Any:
+    try:
+        from pymilvus import WeightedRanker
+    except ImportError as exc:  # pragma: no cover - dependency is installed in production.
+        raise RuntimeError("pymilvus is required for Milvus search") from exc
+    return WeightedRanker(dense_weight, sparse_weight)
+
+
+def _milvus_hit_value(hit: object, key: str, default: object = None) -> object:
+    if isinstance(hit, dict):
+        return hit.get(key, default)
+    return getattr(hit, key, default)
+
+
+def _flatten_milvus_hits(results: object) -> list[object]:
+    """Normalize MilvusClient's one-query nested result shape for the app contract."""
+
+    if hasattr(results, "to_list"):
+        results = results.to_list()
+    if not isinstance(results, list):
+        return []
+    if len(results) == 1 and isinstance(results[0], list):
+        return results[0]
+    return results
+
+
+class MilvusClientHybridSearcher:
+    """Official PyMilvus hybrid search adapter.
+
+    ``MilvusClient.hybrid_search`` is synchronous, so the blocking SDK call is
+    isolated in a worker thread. One application query becomes one hybrid call
+    containing exactly one dense and one BM25 ``AnnSearchRequest``. This keeps
+    text and OCR channels independent while satisfying Milvus's one-vector and
+    one-ranker constraints.
+    """
 
     def __init__(
         self,
         base_url: str,
         *,
         token: str | None = None,
-        path: str = "/v2/vectordb/entities/hybrid_search",
-        timeout_seconds: float = 60.0,
-        client: httpx.AsyncClient | None = None,
+        client: Any | None = None,
+        client_factory: Callable[[str, str | None], Any] | None = None,
+        ann_search_request_factory: Callable[..., Any] | None = None,
+        ranker_factory: Callable[[float, float], Any] | None = None,
     ) -> None:
         normalized_url = base_url.rstrip("/")
         if not normalized_url:
             raise ValueError("base_url must not be empty")
-        if not path.startswith("/"):
-            raise ValueError("path must start with '/'")
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
         self.base_url = normalized_url
         self.token = token
-        self.path = path
-        self.timeout_seconds = timeout_seconds
-        self._client = client
+        if client is not None and client_factory is not None:
+            raise ValueError("client and client_factory cannot both be provided")
+        self._client = (
+            client
+            if client is not None
+            else (client_factory or _create_milvus_client)(self.base_url, self.token)
+        )
+        self._ann_search_request_factory = ann_search_request_factory or _create_ann_search_request
+        self._ranker_factory = ranker_factory or _create_weighted_ranker
 
     async def hybrid_search(
         self,
@@ -328,35 +405,91 @@ class MilvusHttpHybridSearcher:
     ) -> list[dict[str, object]]:
         if not collection_name or not queries or limit <= 0:
             return []
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-        client = self._client
-        owns_client = client is None
-        if client is None:
-            client = httpx.AsyncClient(timeout=self.timeout_seconds)
+        return await asyncio.to_thread(
+            self._hybrid_search_sync,
+            collection_name,
+            list(queries),
+            limit,
+        )
+
+    def _hybrid_search_sync(
+        self,
+        collection_name: str,
+        queries: list[dict[str, object]],
+        limit: int,
+    ) -> list[dict[str, object]]:
         try:
-            try:
-                response = await client.post(
-                    f"{self.base_url}{self.path}",
-                    json={
-                        "collectionName": collection_name,
-                        "queries": list(queries),
-                        "limit": limit,
-                    },
-                    headers=headers,
+            self._client.load_collection(collection_name=collection_name)
+            results: list[dict[str, object]] = []
+            for query in queries:
+                text = str(query.get("text", "")).strip()
+                vector = query.get("dense_vector")
+                if not text or not isinstance(vector, list) or not vector:
+                    continue
+                try:
+                    query_weight = float(query.get("weight", 1.0))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(query_weight) or query_weight <= 0:
+                    continue
+
+                dense_request = self._ann_search_request_factory(
+                    data=[vector],
+                    anns_field="dense_vector",
+                    param={"metric_type": "COSINE"},
+                    limit=limit,
                 )
-                response.raise_for_status()
-                payload = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                raise SearchIndexUnavailableError(collection_name) from exc
-        finally:
-            if owns_client:
-                await client.aclose()
-        if isinstance(payload, dict) and payload.get("code") not in (None, 0, "0"):
-            raise SearchIndexUnavailableError(collection_name)
-        raw_hits = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(raw_hits, list):
-            raise SearchIndexUnavailableError(collection_name)
-        return [item for item in raw_hits if isinstance(item, dict)]
+                sparse_request = self._ann_search_request_factory(
+                    data=[text],
+                    anns_field="sparse_vector",
+                    param={"metric_type": "BM25"},
+                    limit=limit,
+                )
+                ranker = self._ranker_factory(
+                    MILVUS_DENSE_WEIGHT,
+                    MILVUS_SPARSE_WEIGHT,
+                )
+                raw_results = self._client.hybrid_search(
+                    collection_name=collection_name,
+                    reqs=[dense_request, sparse_request],
+                    ranker=ranker,
+                    limit=limit,
+                    output_fields=list(MILVUS_OUTPUT_FIELDS),
+                )
+                channel = str(query.get("channel", "text"))
+                for hit in _flatten_milvus_hits(raw_results):
+                    entity = _milvus_hit_value(hit, "entity", {})
+                    entity = dict(entity) if isinstance(entity, dict) else {}
+                    source_item_id = entity.get("source_item_id") or _milvus_hit_value(
+                        hit,
+                        "id",
+                    )
+                    revision_id = entity.get("child_revision_id")
+                    score = _milvus_hit_value(
+                        hit,
+                        "distance",
+                        _milvus_hit_value(hit, "score", entity.get("score", 0.0)),
+                    )
+                    if source_item_id is None or revision_id is None:
+                        continue
+                    try:
+                        numeric_score = float(score)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(numeric_score):
+                        continue
+                    entity["source_item_id"] = str(source_item_id)
+                    results.append(
+                        {
+                            "entity": entity,
+                            "score": numeric_score,
+                            "channel": channel,
+                            "query_weight": query_weight,
+                        }
+                    )
+            return results
+        except Exception as exc:
+            raise SearchIndexUnavailableError(collection_name) from exc
 
 
 class MilvusSearchBackend(SearchIndexBackend):
@@ -384,6 +517,8 @@ class MilvusSearchBackend(SearchIndexBackend):
         if not collection_name:
             raise SearchIndexUnavailableError(knowledge_base_id)
         active_queries = [query for query in queries if query.text.strip() and query.weight > 0]
+        if not active_queries:
+            return []
         vectors = await self.embedding_provider.embed_texts(
             [query.text for query in active_queries]
         )
@@ -412,8 +547,12 @@ class MilvusSearchBackend(SearchIndexBackend):
                 dense_score = float(raw.get("dense_score", entity.get("dense_score", score)))
                 sparse_score = float(raw.get("sparse_score", entity.get("sparse_score", 0.0)))
                 channel = str(raw.get("channel", entity.get("channel", "text")))
+                query_weight = float(raw.get("query_weight", 1.0))
             except (KeyError, TypeError, ValueError):
                 continue
+            if not math.isfinite(score) or not math.isfinite(query_weight):
+                continue
+            score *= max(query_weight, 0.0) * FIELD_WEIGHTS.get(field_type, 1.0)
             if not math.isfinite(score):
                 continue
             hits.append(
@@ -451,10 +590,9 @@ def create_search_index_backend(settings: Settings) -> SearchIndexBackend:
     from app.services.embedding import QwenEmbeddingProvider
 
     return MilvusSearchBackend(
-        searcher=MilvusHttpHybridSearcher(
+        searcher=MilvusClientHybridSearcher(
             settings.milvus_url,
             token=settings.milvus_token,
-            timeout_seconds=settings.embedding_timeout_seconds,
         ),
         embedding_provider=QwenEmbeddingProvider(
             settings.embedding_service_url,

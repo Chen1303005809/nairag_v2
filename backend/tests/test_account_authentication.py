@@ -909,6 +909,7 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert search_payload["no_match"] is False
                     result_item = search_payload["groups"][0]["children"][0]
                     assert result_item["match_reason"].startswith("hybrid_dense_bm25")
+                    assert result_item["matched_field"] == "question"
                     feedback = await author.post(
                         f"/api/v1/search/events/{search_payload['search_event_id']}/feedback",
                         headers=csrf_headers(author, settings),

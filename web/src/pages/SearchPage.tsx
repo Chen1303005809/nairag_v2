@@ -54,6 +54,17 @@ interface RenderableResult extends SearchResult {
   matched_queries?: string[];
 }
 
+const matchedFieldLabels: Record<string, string> = {
+  question: "问题",
+  question_variant: "同义问句",
+  response_content: "回复内容",
+  "parent.canonical_keyword": "父类关键词"
+};
+
+function matchedFieldLabel(field: string | null): string {
+  return field ? matchedFieldLabels[field] ?? field : "未记录";
+}
+
 function ResultItemView({
   item,
   feedbackGiven,
@@ -85,8 +96,12 @@ function ResultItemView({
                 ? "字段筛选"
                 : "相关命中"}
         </Tag>
+        <Tag color="geekblue">
+          相似度：{(item.score * 100).toFixed(2)}%
+        </Tag>
+        <Tag color="purple">命中字段：{matchedFieldLabel(item.matched_field)}</Tag>
         {item.matched_queries?.map((query) => (
-          <Tag key={query} color="purple">
+          <Tag key={query} color="magenta">
             命中查询：{query}
           </Tag>
         ))}

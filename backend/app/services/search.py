@@ -71,6 +71,7 @@ class ScoredCandidate:
     candidate: SearchCandidate
     score: float
     match_reason: str
+    matched_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,38 @@ def _channel_score(query: str, candidate: SearchCandidate) -> tuple[float, str]:
     response_hit = 0.25 if normalized_query in response else 0.0
     score = min(0.86, overlap * 0.72 + response_hit)
     return score, "semantic" if score else "semantic"
+
+
+def _matched_field_for_query(query: str, candidate: SearchCandidate) -> str | None:
+    normalized_query = _normalize_text(query)
+    if not normalized_query:
+        return None
+    question = _normalize_text(candidate.child_revision.question)
+    variants = [_normalize_text(item.question_text) for item in candidate.question_variants]
+    response = _normalize_text(candidate.child_revision.response_content)
+    if normalized_query == question or normalized_query in question:
+        return "question"
+    if any(normalized_query == variant or normalized_query in variant for variant in variants):
+        return "question_variant"
+    if normalized_query in response:
+        return "response_content"
+
+    query_tokens = _tokens(normalized_query)
+    if not query_tokens:
+        return None
+    field_scores = [
+        (len(query_tokens & _tokens(question)) / len(query_tokens), "question"),
+        (
+            max(
+                (len(query_tokens & _tokens(variant)) / len(query_tokens) for variant in variants),
+                default=0.0,
+            ),
+            "question_variant",
+        ),
+        (len(query_tokens & _tokens(response)) / len(query_tokens), "response_content"),
+    ]
+    score, field = max(field_scores, key=lambda item: item[0])
+    return field if score > 0 else None
 
 
 def _parent_keyword_match(query: str, candidate: SearchCandidate) -> tuple[int, str] | None:
@@ -339,16 +372,21 @@ def _score_candidate(
     ocr_text: str | None,
 ) -> ScoredCandidate:
     channels = [value for value in (query, ocr_text) if value]
-    channel_scores = [_channel_score(value, candidate) for value in channels]
+    channel_scores = [(value, _channel_score(value, candidate)) for value in channels]
     if not channel_scores:
         return ScoredCandidate(candidate, 0.0, "semantic")
     if query and ocr_text:
-        score = channel_scores[0][0] * 0.65 + channel_scores[1][0] * 0.35
+        score = channel_scores[0][1][0] * 0.65 + channel_scores[1][1][0] * 0.35
     else:
-        score = channel_scores[0][0]
+        score = channel_scores[0][1][0]
     score += _helpful_bonus(candidate.publication.helpful_count)
-    reason = max(channel_scores, key=lambda item: item[0])[1]
-    return ScoredCandidate(candidate, min(score, 1.0), reason)
+    best_channel, (_best_score, reason) = max(channel_scores, key=lambda item: item[1][0])
+    return ScoredCandidate(
+        candidate,
+        min(score, 1.0),
+        reason,
+        matched_field=_matched_field_for_query(best_channel, candidate),
+    )
 
 
 async def _score_candidates_from_index(
@@ -410,12 +448,12 @@ async def _score_candidates_from_index(
     if not index_available:
         return None
 
-    best_by_candidate: dict[tuple[UUID, UUID], tuple[float, str]] = {}
+    best_by_candidate: dict[tuple[UUID, UUID], tuple[float, str, str]] = {}
     for hit in hits:
         key = (hit.knowledge_base_id, hit.child_revision_id)
         previous = best_by_candidate.get(key)
         if previous is None or hit.score > previous[0]:
-            best_by_candidate[key] = (hit.score, hit.match_reason)
+            best_by_candidate[key] = (hit.score, hit.match_reason, hit.field_type)
 
     scored: list[ScoredCandidate] = []
     for candidate in candidates:
@@ -423,11 +461,18 @@ async def _score_candidates_from_index(
             (candidate.knowledge_base.id, candidate.child_revision.id)
         )
         if score_and_reason is None:
-            score, reason = 0.0, "hybrid_dense_bm25"
+            score, reason, matched_field = 0.0, "hybrid_dense_bm25", None
         else:
-            score, reason = score_and_reason
+            score, reason, matched_field = score_and_reason
         score += _helpful_bonus(candidate.publication.helpful_count)
-        scored.append(ScoredCandidate(candidate, min(score, 1.0), reason))
+        scored.append(
+            ScoredCandidate(
+                candidate,
+                min(score, 1.0),
+                reason,
+                matched_field=matched_field,
+            )
+        )
     return scored
 
 
@@ -467,7 +512,7 @@ async def search_published_content(
     candidates = await _load_candidates(session, knowledge_base_id=knowledge_base_id)
     if retrieval_mode == "field_filter":
         selected = [
-            ScoredCandidate(candidate, 1.0, "field_filter")
+            ScoredCandidate(candidate, 1.0, "field_filter", matched_field=None)
             for candidate in candidates
             if _matches_field_filters(
                 candidate,
@@ -534,6 +579,7 @@ async def search_published_content(
                             0.25,
                         ),
                         match_reason,
+                        matched_field="parent.canonical_keyword",
                     )
                 )
                 fallback_parent_ids.add(item.candidate.parent_revision.parent_id)
@@ -581,6 +627,7 @@ async def search_published_content(
             parent_id=item.candidate.child.parent_id,
             parent_revision_id=item.candidate.parent_revision.id,
             match_reason=item.match_reason,
+            matched_field=item.matched_field,
         )
         session.add(result)
         result_parent_revisions[item.candidate.parent_revision.parent_id] = (

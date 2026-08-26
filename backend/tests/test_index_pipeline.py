@@ -52,7 +52,7 @@ from app.services.index_jobs import claim_next_index_job, run_next_index_job
 from app.services.retrieval import (
     IndexQuery,
     LocalArtifactSearchBackend,
-    MilvusHttpHybridSearcher,
+    MilvusClientHybridSearcher,
     MilvusSearchBackend,
 )
 from app.worker import run_worker
@@ -671,7 +671,7 @@ async def test_milvus_http_writer_ensures_fixed_collection_schema() -> None:
 
 
 @pytest.mark.asyncio
-async def test_milvus_search_backend_maps_and_clamps_gateway_hits() -> None:
+async def test_milvus_search_backend_maps_and_clamps_client_hits() -> None:
     revision_id = uuid4()
     knowledge_base_id = uuid4()
 
@@ -717,27 +717,64 @@ async def test_milvus_search_backend_maps_and_clamps_gateway_hits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_milvus_http_hybrid_searcher_uses_current_collection() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v2/vectordb/entities/hybrid_search"
-        assert request.headers["Authorization"] == "Bearer milvus-token"
-        body = json.loads(request.content)
-        assert body["collectionName"] == "nairag_support_g1"
-        assert body["limit"] == 2
-        return httpx.Response(200, json={"code": 0, "data": [{"score": 0.9}]})
+async def test_milvus_client_hybrid_searcher_loads_and_searches_one_query_at_a_time() -> None:
+    class FakeAnnSearchRequest:
+        def __init__(self, **kwargs: object) -> None:
+            self.__dict__.update(kwargs)
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    try:
-        searcher = MilvusHttpHybridSearcher(
-            "https://milvus.test",
-            token="milvus-token",
-            client=client,
-        )
-        result = await searcher.hybrid_search(
-            collection_name="nairag_support_g1",
-            queries=[{"text": "账号", "dense_vector": [0.1]}],
-            limit=2,
-        )
-        assert result == [{"score": 0.9}]
-    finally:
-        await client.aclose()
+    class FakeMilvusClient:
+        def __init__(self) -> None:
+            self.loaded_collections: list[str] = []
+            self.calls: list[dict[str, object]] = []
+
+        def load_collection(self, *, collection_name: str) -> None:
+            self.loaded_collections.append(collection_name)
+
+        def hybrid_search(self, **kwargs: object) -> list[list[dict[str, object]]]:
+            self.calls.append(kwargs)
+            return [
+                [
+                    {
+                        "id": "source-1",
+                        "distance": 0.9,
+                        "entity": {
+                            "child_revision_id": str(uuid4()),
+                            "field_type": "question",
+                        },
+                    }
+                ]
+            ]
+
+    client = FakeMilvusClient()
+    searcher = MilvusClientHybridSearcher(
+        "https://milvus.test",
+        client=client,
+        ann_search_request_factory=FakeAnnSearchRequest,
+        ranker_factory=lambda dense, sparse: (dense, sparse),
+    )
+    result = await searcher.hybrid_search(
+        collection_name="nairag_support_g1",
+        queries=[
+            {"text": "账号", "channel": "text", "weight": 1.0, "dense_vector": [0.1]},
+            {"text": "登录", "channel": "ocr", "weight": 0.35, "dense_vector": [0.2]},
+        ],
+        limit=2,
+    )
+
+    assert client.loaded_collections == ["nairag_support_g1"]
+    assert len(client.calls) == 2
+    assert all(len(call["reqs"]) == 2 for call in client.calls)
+    assert all(call["limit"] == 2 for call in client.calls)
+    assert all(call["output_fields"] == [
+        "source_item_id",
+        "child_id",
+        "child_revision_id",
+        "field_type",
+        "field_text",
+        "embedding_model",
+    ] for call in client.calls)
+    assert [request.data for request in client.calls[0]["reqs"]] == [[[0.1]], ["账号"]]
+    assert [request.data for request in client.calls[1]["reqs"]] == [[[0.2]], ["登录"]]
+    assert result[0]["entity"]["source_item_id"] == "source-1"
+    assert result[0]["channel"] == "text"
+    assert result[1]["channel"] == "ocr"
