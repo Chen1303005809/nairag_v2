@@ -226,6 +226,17 @@ export interface SearchResult {
   result_item_id: string;
   rank: number;
   score: number;
+  hybrid_score: number | null;
+  rerank_score: number | null;
+  selection_stage:
+    | "hybrid"
+    | "rerank"
+    | "llm"
+    | "score_fallback"
+    | "keyword_fallback"
+    | "field_filter"
+    | "legacy";
+  helpful_count_at_search: number;
   child_id: string;
   knowledge_base_id: string;
   knowledge_base_name: string;
@@ -277,6 +288,8 @@ export interface SearchResponse {
   query_mode: "text" | "image" | "mixed";
   no_match: boolean;
   no_match_guidance: string | null;
+  degraded: boolean;
+  degradation_reasons: string[];
   groups: SearchGroup[];
 }
 
@@ -305,6 +318,8 @@ export interface ConversationSearchResponse {
   no_query_guidance: string | null;
   no_match: boolean;
   no_match_guidance: string | null;
+  degraded: boolean;
+  degradation_reasons: string[];
   groups: ConversationSearchGroup[];
 }
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 from uuid import UUID
 
@@ -29,12 +30,16 @@ from app.models.knowledge_content import (
     SearchResultItem,
     WebLink,
 )
+from app.services.embedding import RerankerProvider
+from app.services.llm import RelevanceCandidate, RelevanceJudge
 from app.services.ocr import OcrRecognition
 from app.services.retrieval import (
     IndexQuery,
     SearchIndexBackend,
     SearchIndexUnavailableError,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SearchKnowledgeBaseUnavailableError(Exception):
@@ -69,9 +74,56 @@ class SearchCandidate:
 @dataclass(frozen=True)
 class ScoredCandidate:
     candidate: SearchCandidate
-    score: float
+    hybrid_score: float
     match_reason: str
     matched_field: str | None = None
+    source_rank: int = 0
+
+
+@dataclass(frozen=True)
+class SelectedCandidate:
+    candidate: SearchCandidate
+    score: float
+    hybrid_score: float | None
+    rerank_score: float | None
+    selection_stage: str
+    helpful_count_at_search: int
+    match_reason: str
+    matched_field: str | None = None
+    source_rank: int = 0
+
+
+@dataclass(frozen=True)
+class SearchPipelineOptions:
+    high_confidence_threshold: float = 0.7
+    rerank_threshold: float = 0.5
+    fallback_threshold: float = 0.22
+    candidate_pool_size: int = 24
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.high_confidence_threshold, "high_confidence_threshold"),
+            (self.rerank_threshold, "rerank_threshold"),
+            (self.fallback_threshold, "fallback_threshold"),
+        ):
+            if not 0 <= value <= 1:
+                raise ValueError(f"{name} must be between 0 and 1")
+        if self.fallback_threshold > self.high_confidence_threshold:
+            raise ValueError("fallback_threshold must not exceed high_confidence_threshold")
+        if self.candidate_pool_size <= 0:
+            raise ValueError("candidate_pool_size must be positive")
+
+
+@dataclass(frozen=True)
+class IndexedScoring:
+    scored: list[ScoredCandidate] | None
+    index_degraded: bool = False
+
+
+@dataclass(frozen=True)
+class SelectionDecision:
+    selected: list[SelectedCandidate]
+    degradation_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,11 +131,12 @@ class SearchDetails:
     event: SearchEvent
     groups: list[tuple[ParentRevision, list[tuple[SearchResultItem, SearchCandidate]]]]
     no_match_guidance: str | None
+    degraded: bool = False
+    degradation_reasons: tuple[str, ...] = ()
 
 
 NO_MATCH_GUIDANCE = "未找到足够相关的知识，请转研发查询。"
 NO_FILTER_MATCH_GUIDANCE = "未找到符合字段条件的知识。"
-SEARCH_THRESHOLD = 0.22
 MAX_FALLBACK_PARENTS = 3
 HELPFUL_SCORE_CAP = 0.12
 
@@ -379,7 +432,6 @@ def _score_candidate(
         score = channel_scores[0][1][0] * 0.65 + channel_scores[1][1][0] * 0.35
     else:
         score = channel_scores[0][1][0]
-    score += _helpful_bonus(candidate.publication.helpful_count)
     best_channel, (_best_score, reason) = max(channel_scores, key=lambda item: item[1][0])
     return ScoredCandidate(
         candidate,
@@ -389,15 +441,7 @@ def _score_candidate(
     )
 
 
-async def _score_candidates_from_index(
-    candidates: list[SearchCandidate],
-    *,
-    query: str | None,
-    ocr_text: str | None,
-    knowledge_base_id: UUID | None,
-    limit: int,
-    index_backend: SearchIndexBackend,
-) -> list[ScoredCandidate] | None:
+def _build_index_queries(query: str | None, ocr_text: str | None) -> list[IndexQuery]:
     queries: list[IndexQuery] = []
     if query:
         queries.append(
@@ -415,16 +459,33 @@ async def _score_candidates_from_index(
                 weight=0.35 if query else 1.0,
             )
         )
+    return queries
+
+
+async def _score_candidates_from_index(
+    candidates: list[SearchCandidate],
+    *,
+    query: str | None,
+    ocr_text: str | None,
+    knowledge_base_id: UUID | None,
+    limit: int,
+    candidate_pool_size: int,
+    index_backend: SearchIndexBackend,
+) -> IndexedScoring:
+    queries = _build_index_queries(query, ocr_text)
     if not queries:
-        return []
+        return IndexedScoring(scored=[])
 
     knowledge_base_ids = (
         {knowledge_base_id}
         if knowledge_base_id is not None
         else {candidate.knowledge_base.id for candidate in candidates}
     )
+    if not candidates:
+        return IndexedScoring(scored=[])
     hits = []
     index_available = False
+    unavailable_knowledge_base_ids: set[UUID] = set()
     for target_knowledge_base_id in knowledge_base_ids:
         target_collection_name = next(
             (
@@ -438,15 +499,23 @@ async def _score_candidates_from_index(
             target_hits = await index_backend.search(
                 knowledge_base_id=target_knowledge_base_id,
                 queries=queries,
-                limit=max(limit * 12, 24),
+                limit=max(limit * 12, candidate_pool_size),
                 collection_name=target_collection_name,
             )
         except SearchIndexUnavailableError:
+            unavailable_knowledge_base_ids.add(target_knowledge_base_id)
+            continue
+        except Exception:
+            LOGGER.warning(
+                "index backend failed; using deterministic retrieval fallback",
+                exc_info=True,
+            )
+            unavailable_knowledge_base_ids.add(target_knowledge_base_id)
             continue
         index_available = True
         hits.extend(target_hits)
     if not index_available:
-        return None
+        return IndexedScoring(scored=None, index_degraded=True)
 
     best_by_candidate: dict[tuple[UUID, UUID], tuple[float, str, str]] = {}
     for hit in hits:
@@ -457,6 +526,11 @@ async def _score_candidates_from_index(
 
     scored: list[ScoredCandidate] = []
     for candidate in candidates:
+        if candidate.knowledge_base.id in unavailable_knowledge_base_ids:
+            scored.append(
+                _score_candidate(candidate, query=query, ocr_text=ocr_text)
+            )
+            continue
         score_and_reason = best_by_candidate.get(
             (candidate.knowledge_base.id, candidate.child_revision.id)
         )
@@ -464,7 +538,6 @@ async def _score_candidates_from_index(
             score, reason, matched_field = 0.0, "hybrid_dense_bm25", None
         else:
             score, reason, matched_field = score_and_reason
-        score += _helpful_bonus(candidate.publication.helpful_count)
         scored.append(
             ScoredCandidate(
                 candidate,
@@ -473,7 +546,272 @@ async def _score_candidates_from_index(
                 matched_field=matched_field,
             )
         )
-    return scored
+    return IndexedScoring(
+        scored=scored,
+        index_degraded=bool(unavailable_knowledge_base_ids),
+    )
+
+
+def _rank_scored_candidates(scored: list[ScoredCandidate]) -> list[ScoredCandidate]:
+    """Give every raw candidate a deterministic retrieval rank before selection."""
+
+    ordered = sorted(
+        scored,
+        # ``sorted`` is stable, so equal raw scores retain the adapter's
+        # original candidate order for the final stable-order tie break.
+        key=lambda item: -item.hybrid_score,
+    )
+    return [replace(item, source_rank=rank) for rank, item in enumerate(ordered, start=1)]
+
+
+def _candidate_document(candidate: SearchCandidate) -> str:
+    variants = "\n".join(item.question_text for item in candidate.question_variants)
+    sections = [f"问题：{candidate.child_revision.question}"]
+    if variants:
+        sections.append(f"同义问句：{variants}")
+    sections.append(f"回复内容：{candidate.child_revision.response_content}")
+    return "\n".join(sections)
+
+
+def _combined_judgement_query(queries: list[IndexQuery]) -> str:
+    if len(queries) == 1:
+        return queries[0].text
+    return "\n".join(f"{query.channel} 查询：{query.text}" for query in queries)
+
+
+def _make_selected(
+    item: ScoredCandidate,
+    *,
+    base_score: float,
+    selection_stage: str,
+    rerank_score: float | None = None,
+) -> SelectedCandidate:
+    helpful_count = item.candidate.publication.helpful_count
+    return SelectedCandidate(
+        candidate=item.candidate,
+        score=min(base_score + _helpful_bonus(helpful_count), 1.0),
+        hybrid_score=item.hybrid_score,
+        rerank_score=rerank_score,
+        selection_stage=selection_stage,
+        helpful_count_at_search=helpful_count,
+        match_reason=item.match_reason,
+        matched_field=item.matched_field,
+        source_rank=item.source_rank,
+    )
+
+
+def _sort_selected_candidates(items: list[SelectedCandidate]) -> list[SelectedCandidate]:
+    return sorted(
+        items,
+        key=lambda item: (
+            -item.score,
+            -item.helpful_count_at_search,
+            item.source_rank,
+            str(item.candidate.knowledge_base.id),
+            str(item.candidate.child_revision.id),
+        ),
+    )
+
+
+class StagedRetrievalPipeline:
+    """Select trustworthy candidates without exposing provider-specific control flow."""
+
+    def __init__(
+        self,
+        *,
+        reranker: RerankerProvider | None,
+        relevance_judge: RelevanceJudge | None,
+        options: SearchPipelineOptions,
+    ) -> None:
+        self._reranker = reranker
+        self._relevance_judge = relevance_judge
+        self._options = options
+
+    async def select(
+        self,
+        scored: list[ScoredCandidate],
+        *,
+        queries: list[IndexQuery],
+        index_degraded: bool,
+    ) -> SelectionDecision:
+        ranked = _rank_scored_candidates(scored)
+        base_degradation_reasons = ["index_unavailable"] if index_degraded else []
+        high_confidence = [
+            item
+            for item in ranked
+            if item.hybrid_score >= self._options.high_confidence_threshold
+        ]
+        if high_confidence:
+            return SelectionDecision(
+                selected=[
+                    _make_selected(
+                        item,
+                        base_score=item.hybrid_score,
+                        selection_stage="hybrid",
+                    )
+                    for item in high_confidence
+                ],
+                degradation_reasons=tuple(base_degradation_reasons),
+            )
+
+        # Only actual hybrid hits enter expensive model stages.  Zero-score
+        # published rows remain available to the independent keyword fallback,
+        # but are not retrieval candidates.
+        pool = [item for item in ranked if item.hybrid_score > 0][
+            : self._options.candidate_pool_size
+        ]
+        if not pool:
+            return SelectionDecision(
+                selected=[],
+                degradation_reasons=tuple(base_degradation_reasons),
+            )
+
+        rerank_scores: dict[tuple[UUID, UUID], float] = {}
+        reranker_failed = False
+        if self._reranker is not None:
+            try:
+                documents = [_candidate_document(item.candidate) for item in pool]
+                combined_scores = [0.0] * len(pool)
+                for query in queries:
+                    scores = await self._reranker.rerank(query.text, documents)
+                    if len(scores) != len(pool):
+                        raise ValueError("reranker returned an unexpected item count")
+                    for position, score in enumerate(scores):
+                        numeric_score = float(score)
+                        if not math.isfinite(numeric_score):
+                            raise ValueError("reranker returned a non-finite score")
+                        combined_scores[position] += query.weight * max(
+                            0.0,
+                            min(1.0, numeric_score),
+                        )
+                rerank_scores = {
+                    (item.candidate.knowledge_base.id, item.candidate.child_revision.id): score
+                    for item, score in zip(pool, combined_scores, strict=True)
+                }
+                reranked = [
+                    (
+                        item,
+                        rerank_scores[
+                            (
+                                item.candidate.knowledge_base.id,
+                                item.candidate.child_revision.id,
+                            )
+                        ],
+                    )
+                    for item in pool
+                ]
+                accepted = [
+                    _make_selected(
+                        item,
+                        base_score=rerank_score,
+                        rerank_score=rerank_score,
+                        selection_stage="rerank",
+                    )
+                    for item, rerank_score in reranked
+                    if rerank_score >= self._options.rerank_threshold
+                ]
+                if accepted:
+                    return SelectionDecision(
+                        selected=accepted,
+                        degradation_reasons=tuple(base_degradation_reasons),
+                    )
+            except Exception:
+                LOGGER.warning(
+                    "optional reranker failed; continuing to the next stage",
+                    exc_info=True,
+                )
+                reranker_failed = True
+                rerank_scores = {}
+
+        llm_failed = False
+        if self._relevance_judge is not None:
+            try:
+                relevance_candidates = [
+                    RelevanceCandidate(
+                        candidate_id=(
+                            f"{item.candidate.knowledge_base.id}:"
+                            f"{item.candidate.child_revision.id}"
+                        ),
+                        document=_candidate_document(item.candidate),
+                    )
+                    for item in pool
+                ]
+                judgements = await self._relevance_judge.judge_search_relevance(
+                    _combined_judgement_query(queries),
+                    relevance_candidates,
+                )
+                expected_ids = [candidate.candidate_id for candidate in relevance_candidates]
+                actual_ids = [judgement.candidate_id for judgement in judgements]
+                if len(actual_ids) != len(expected_ids):
+                    raise ValueError("relevance judge did not cover every candidate")
+                if len(set(actual_ids)) != len(actual_ids):
+                    raise ValueError("relevance judge returned duplicate candidate IDs")
+                if set(actual_ids) != set(expected_ids):
+                    raise ValueError("relevance judge returned unknown candidate IDs")
+                relevant_ids = {
+                    judgement.candidate_id
+                    for judgement in judgements
+                    if judgement.relevant
+                }
+                accepted = []
+                for item, relevance_candidate in zip(pool, relevance_candidates, strict=True):
+                    if relevance_candidate.candidate_id not in relevant_ids:
+                        continue
+                    candidate_key = (
+                        item.candidate.knowledge_base.id,
+                        item.candidate.child_revision.id,
+                    )
+                    rerank_score = rerank_scores.get(candidate_key)
+                    accepted.append(
+                        _make_selected(
+                            item,
+                            base_score=(
+                                rerank_score if rerank_score is not None else item.hybrid_score
+                            ),
+                            rerank_score=rerank_score,
+                            selection_stage="llm",
+                        )
+                    )
+                return SelectionDecision(
+                    selected=accepted,
+                    degradation_reasons=tuple(base_degradation_reasons),
+                )
+            except Exception:
+                LOGGER.warning(
+                    "optional relevance judge failed; using score fallback",
+                    exc_info=True,
+                )
+                llm_failed = True
+
+        fallback_selected = [
+            _make_selected(
+                item,
+                base_score=item.hybrid_score,
+                rerank_score=rerank_scores.get(
+                    (item.candidate.knowledge_base.id, item.candidate.child_revision.id)
+                ),
+                selection_stage="score_fallback",
+            )
+            for item in pool
+            if item.hybrid_score >= self._options.fallback_threshold
+        ]
+        fallback_reasons = list(base_degradation_reasons)
+        # An unavailable optional model is a visible degradation only when its
+        # absence actually caused the 0.22 basic-score path to provide results.
+        # A separately injected keyword fallback must remain independent.
+        if fallback_selected:
+            if self._reranker is None:
+                fallback_reasons.append("reranker_unconfigured")
+            elif reranker_failed:
+                fallback_reasons.append("reranker_failed")
+            if self._relevance_judge is None:
+                fallback_reasons.append("llm_unconfigured")
+            elif llm_failed:
+                fallback_reasons.append("llm_failed")
+        return SelectionDecision(
+            selected=fallback_selected,
+            degradation_reasons=tuple(dict.fromkeys(fallback_reasons)),
+        )
 
 
 async def search_published_content(
@@ -493,6 +831,9 @@ async def search_published_content(
     customer_type: str | None = None,
     ocr_recognition: OcrRecognition | None = None,
     ocr_keyword_fallback_min_confidence: float = 0.9,
+    reranker: RerankerProvider | None = None,
+    relevance_judge: RelevanceJudge | None = None,
+    pipeline_options: SearchPipelineOptions | None = None,
 ) -> SearchDetails:
     if ocr_recognition is not None and ocr_recognition.text != ocr_text:
         raise ValueError("OCR recognition text must match ocr_text")
@@ -510,10 +851,21 @@ async def search_published_content(
         else SearchQueryMode.TEXT
     )
     candidates = await _load_candidates(session, knowledge_base_id=knowledge_base_id)
+    options = pipeline_options or SearchPipelineOptions()
+    degradation_reasons: tuple[str, ...] = ()
     if retrieval_mode == "field_filter":
         selected = [
-            ScoredCandidate(candidate, 1.0, "field_filter", matched_field=None)
-            for candidate in candidates
+            SelectedCandidate(
+                candidate=candidate,
+                score=1.0,
+                hybrid_score=None,
+                rerank_score=None,
+                selection_stage="field_filter",
+                helpful_count_at_search=candidate.publication.helpful_count,
+                match_reason="field_filter",
+                source_rank=rank,
+            )
+            for rank, candidate in enumerate(candidates, start=1)
             if _matches_field_filters(
                 candidate,
                 parent_type=parent_type,
@@ -535,22 +887,42 @@ async def search_published_content(
         )
     else:
         scored: list[ScoredCandidate] | None = None
+        index_degraded = False
         if index_backend is not None:
-            scored = await _score_candidates_from_index(
+            indexed = await _score_candidates_from_index(
                 candidates,
                 query=query,
                 ocr_text=ocr_text,
                 knowledge_base_id=knowledge_base_id,
                 limit=limit,
+                candidate_pool_size=options.candidate_pool_size,
                 index_backend=index_backend,
             )
+            scored = indexed.scored
+            index_degraded = indexed.index_degraded
         if scored is None:
             scored = [_score_candidate(item, query=query, ocr_text=ocr_text) for item in candidates]
-        selected = [item for item in scored if item.score >= SEARCH_THRESHOLD]
+            index_degraded = index_backend is not None
 
-        fallback_candidates: list[ScoredCandidate] = []
+        decision = await StagedRetrievalPipeline(
+            reranker=reranker,
+            relevance_judge=relevance_judge,
+            options=options,
+        ).select(
+            scored,
+            queries=_build_index_queries(query, ocr_text),
+            index_degraded=index_degraded,
+        )
+        selected = list(decision.selected)
+        degradation_reasons = decision.degradation_reasons
+
+        fallback_candidates: list[SelectedCandidate] = []
         fallback_parent_ids: set[UUID] = set()
-        for item in scored:
+        selected_keys = {
+            (item.candidate.knowledge_base.id, item.candidate.child_revision.id)
+            for item in selected
+        }
+        for item in _rank_scored_candidates(scored):
             if not item.candidate.child.is_primary:
                 continue
             matches: list[tuple[int, str]] = []
@@ -567,19 +939,18 @@ async def search_published_content(
                     matches.append((ocr_match[0], "ocr_keyword_fallback"))
             if not matches or item.candidate.parent_revision.parent_id in fallback_parent_ids:
                 continue
-            if item not in selected:
+            key = (item.candidate.knowledge_base.id, item.candidate.child_revision.id)
+            if key not in selected_keys:
                 quality, match_reason = max(matches, key=lambda match: match[0])
                 fallback_candidates.append(
-                    ScoredCandidate(
-                        item.candidate,
-                        min(
-                            0.18
-                            + quality * 0.01
-                            + _helpful_bonus(item.candidate.publication.helpful_count),
-                            0.25,
+                    _make_selected(
+                        replace(
+                            item,
+                            match_reason=match_reason,
+                            matched_field="parent.canonical_keyword",
                         ),
-                        match_reason,
-                        matched_field="parent.canonical_keyword",
+                        base_score=min(0.18 + quality * 0.01, 0.25),
+                        selection_stage="keyword_fallback",
                     )
                 )
                 fallback_parent_ids.add(item.candidate.parent_revision.parent_id)
@@ -587,17 +958,7 @@ async def search_published_content(
                 break
 
         selected.extend(fallback_candidates)
-        selected.sort(
-            key=lambda item: (
-                item.candidate.parent_revision.parent_id,
-                -item.score,
-                item.candidate.knowledge_base.name,
-            )
-        )
-        # Keep semantic results ahead of fallback results while retaining all
-        # knowledge-base variants of the selected parent groups.
-        selected.sort(key=lambda item: item.score, reverse=True)
-        selected = selected[:limit]
+        selected = _sort_selected_candidates(selected)[:limit]
 
     event = SearchEvent(
         user_id=user_id,
@@ -610,6 +971,8 @@ async def search_published_content(
         query_mode=mode,
         knowledge_base_id=knowledge_base_id,
         no_match=not selected,
+        degraded=bool(degradation_reasons),
+        degradation_reasons=list(degradation_reasons) or None,
     )
     session.add(event)
     await session.flush()
@@ -628,6 +991,10 @@ async def search_published_content(
             parent_revision_id=item.candidate.parent_revision.id,
             match_reason=item.match_reason,
             matched_field=item.matched_field,
+            hybrid_score=item.hybrid_score,
+            rerank_score=item.rerank_score,
+            selection_stage=item.selection_stage,
+            helpful_count_at_search=item.helpful_count_at_search,
         )
         session.add(result)
         result_parent_revisions[item.candidate.parent_revision.parent_id] = (
@@ -638,7 +1005,12 @@ async def search_published_content(
         )
     await session.flush()
     groups = [(result_parent_revisions[parent_id], items) for parent_id, items in grouped.items()]
-    groups.sort(key=lambda group: max(item.score for item, _candidate in group[1]), reverse=True)
+    groups.sort(
+        key=lambda group: min(
+            (-item.score, -item.helpful_count_at_search, item.rank)
+            for item, _candidate in group[1]
+        )
+    )
     return SearchDetails(
         event=event,
         groups=groups,
@@ -647,6 +1019,8 @@ async def search_published_content(
             if not selected
             else None
         ),
+        degraded=bool(degradation_reasons),
+        degradation_reasons=degradation_reasons,
     )
 
 

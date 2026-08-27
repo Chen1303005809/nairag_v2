@@ -61,6 +61,29 @@ const matchedFieldLabels: Record<string, string> = {
   "parent.canonical_keyword": "父类关键词"
 };
 
+const selectionStageLabels: Record<SearchResult["selection_stage"], string> = {
+  hybrid: "混合检索直返",
+  rerank: "重排确认",
+  llm: "LLM 相关判断",
+  score_fallback: "基础检索兜底",
+  keyword_fallback: "关键词保底",
+  field_filter: "字段筛选",
+  legacy: "历史结果"
+};
+
+function selectionStageColor(stage: SearchResult["selection_stage"]): string {
+  if (stage === "keyword_fallback" || stage === "score_fallback") {
+    return "gold";
+  }
+  if (stage === "field_filter") {
+    return "cyan";
+  }
+  if (stage === "llm") {
+    return "purple";
+  }
+  return "green";
+}
+
 function matchedFieldLabel(field: string | null): string {
   return field ? matchedFieldLabels[field] ?? field : "未记录";
 }
@@ -78,27 +101,18 @@ function ResultItemView({
     <Space direction="vertical" size={4} style={{ width: "100%" }}>
       <Space wrap>
         <Tag color="blue">{item.knowledge_base_name}</Tag>
-        <Tag
-          color={
-            item.match_reason === "parent_keyword_fallback" ||
-            item.match_reason === "ocr_keyword_fallback"
-              ? "gold"
-              : item.match_reason === "field_filter"
-                ? "cyan"
-                : "green"
-          }
-        >
-          {item.match_reason === "parent_keyword_fallback"
-            ? "关键词保底"
-            : item.match_reason === "ocr_keyword_fallback"
-              ? "OCR 关键词保底"
-              : item.match_reason === "field_filter"
-                ? "字段筛选"
-                : "相关命中"}
+        <Tag color={selectionStageColor(item.selection_stage)}>
+          命中阶段：{selectionStageLabels[item.selection_stage]}
         </Tag>
         <Tag color="geekblue">
-          相似度：{(item.score * 100).toFixed(2)}%
+          综合相关度：{(item.score * 100).toFixed(2)}%
         </Tag>
+        {item.hybrid_score !== null ? (
+          <Tag color="blue">混合分：{(item.hybrid_score * 100).toFixed(2)}%</Tag>
+        ) : null}
+        {item.rerank_score !== null ? (
+          <Tag color="volcano">重排分：{(item.rerank_score * 100).toFixed(2)}%</Tag>
+        ) : null}
         <Tag color="purple">命中字段：{matchedFieldLabel(item.matched_field)}</Tag>
         {item.matched_queries?.map((query) => (
           <Tag key={query} color="magenta">
@@ -747,6 +761,15 @@ export function SearchPage(): JSX.Element {
       </Card>
       {activeTab !== "conversation" && result ? (
         <div style={{ marginTop: 16 }}>
+          {result.degraded ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="已使用基础检索兜底"
+              description="部分候选已按基础检索流程返回，结果可能未经过完整模型验证。"
+            />
+          ) : null}
           {result.no_match ? (
             <Alert type="info" showIcon message="无匹配" description={result.no_match_guidance} />
           ) : (
@@ -760,6 +783,15 @@ export function SearchPage(): JSX.Element {
       ) : null}
       {activeTab === "conversation" && conversationResult ? (
         <div style={{ marginTop: 16 }}>
+          {conversationResult.degraded ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="已使用基础检索兜底"
+              description="部分查询已按基础检索流程返回，结果可能未经过完整模型验证。"
+            />
+          ) : null}
           {conversationResult.no_query_guidance ? (
             <Alert
               type="info"

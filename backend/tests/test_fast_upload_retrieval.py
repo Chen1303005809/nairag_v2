@@ -60,7 +60,9 @@ from app.services.llm import (
     LlmProviderError,
     OpenAiCompatibleLlmProvider,
     QueryExtraction,
+    RelevanceCandidate,
 )
+from app.services.search import search_published_content
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -239,6 +241,16 @@ class StubIngestionProvider:
         return QueryExtraction(queries=[], total_candidates=0)
 
 
+class EmptyIndexBackend:
+    async def search(self, **_kwargs):
+        return []
+
+
+class FailingIndexBackend:
+    async def search(self, **_kwargs):
+        raise RuntimeError("embedding service unavailable")
+
+
 def test_conversation_validation_requires_both_parties_and_limits() -> None:
     settings = make_settings(Path("/tmp/nairag-fast-upload-test"))
     customer_only = [NormalizedConversationMessage(speaker="张客户", role="customer", body="问题")]
@@ -390,6 +402,55 @@ async def test_openai_compatible_provider_maps_http_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_requires_complete_relevance_decisions() -> None:
+    candidates = [
+        RelevanceCandidate(candidate_id="candidate-a", document="问题：登录失败"),
+        RelevanceCandidate(candidate_id="candidate-b", document="问题：重置密码"),
+    ]
+    provider = OpenAiCompatibleLlmProvider(
+        base_url="https://llm.local/v1",
+        api_key="test-key",
+        model="deepseek-chat",
+        timeout_seconds=5,
+        http_client=httpx.AsyncClient(
+            base_url="https://llm.local/v1",
+            transport=httpx.MockTransport(
+                lambda request: llm_http_response(
+                    {
+                        "decisions": [
+                            {"candidate_id": "candidate-a", "relevant": True},
+                            {"candidate_id": "candidate-b", "relevant": False},
+                        ]
+                    }
+                )
+            ),
+        ),
+    )
+    decisions = await provider.judge_search_relevance("登录失败怎么办？", candidates)
+    assert [(item.candidate_id, item.relevant) for item in decisions] == [
+        ("candidate-a", True),
+        ("candidate-b", False),
+    ]
+
+    invalid = OpenAiCompatibleLlmProvider(
+        base_url="https://llm.local/v1",
+        api_key="test-key",
+        model="deepseek-chat",
+        timeout_seconds=5,
+        http_client=httpx.AsyncClient(
+            base_url="https://llm.local/v1",
+            transport=httpx.MockTransport(
+                lambda request: llm_http_response(
+                    {"decisions": [{"candidate_id": "candidate-a", "relevant": True}]}
+                )
+            ),
+        ),
+    )
+    with pytest.raises(LlmOutputError, match="覆盖全部候选"):
+        await invalid.judge_search_relevance("登录失败怎么办？", candidates)
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_keeps_valid_candidates_when_one_is_malformed() -> None:
     provider = OpenAiCompatibleLlmProvider(
         base_url="https://llm.local/v1",
@@ -420,6 +481,68 @@ async def test_openai_provider_keeps_valid_candidates_when_one_is_malformed() ->
     assert [item.question for item in extraction.candidates] == ["登录失败怎么办？"]
     assert extraction.non_candidates[0].topic == "模型返回的候选"
     assert extraction.non_candidates[0].reason == "候选字段不完整或格式无效"
+
+
+@pytest.mark.asyncio
+async def test_search_persists_staged_scores_and_keeps_keyword_fallback_independent(
+    tmp_path: Path,
+) -> None:
+    factory, engine, _settings = await build_db(tmp_path)
+    try:
+        async with factory() as session:
+            user = await create_user(session)
+            _parent, knowledge_base, _child, _revision = await create_published_graph(
+                session,
+                user.id,
+            )
+
+            high_confidence = await search_published_content(
+                session,
+                user_id=user.id,
+                query="登录失败怎么办？",
+                ocr_text=None,
+                knowledge_base_id=knowledge_base.id,
+                retrieval_mode="vector",
+                limit=10,
+            )
+            result_item = high_confidence.groups[0][1][0][0]
+            assert result_item.selection_stage == "hybrid"
+            assert result_item.hybrid_score == 1.0
+            assert result_item.rerank_score is None
+            assert result_item.helpful_count_at_search == 0
+            assert high_confidence.event.degraded is False
+
+            index_fallback = await search_published_content(
+                session,
+                user_id=user.id,
+                query="登录失败怎么办？",
+                ocr_text=None,
+                knowledge_base_id=knowledge_base.id,
+                retrieval_mode="vector",
+                limit=10,
+                index_backend=FailingIndexBackend(),
+            )
+            index_fallback_item = index_fallback.groups[0][1][0][0]
+            assert index_fallback_item.selection_stage == "hybrid"
+            assert index_fallback.event.degradation_reasons == ["index_unavailable"]
+
+            keyword_fallback = await search_published_content(
+                session,
+                user_id=user.id,
+                query="登录",
+                ocr_text=None,
+                knowledge_base_id=knowledge_base.id,
+                retrieval_mode="vector",
+                limit=10,
+                index_backend=EmptyIndexBackend(),
+            )
+            fallback_item = keyword_fallback.groups[0][1][0][0]
+            assert fallback_item.selection_stage == "keyword_fallback"
+            assert fallback_item.match_reason == "parent_keyword_fallback"
+            assert keyword_fallback.event.degraded is False
+            assert keyword_fallback.event.degradation_reasons is None
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

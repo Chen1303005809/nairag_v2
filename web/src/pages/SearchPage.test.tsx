@@ -47,6 +47,8 @@ const conversationWithQueriesResponse: ConversationSearchResponse = {
   no_query_guidance: null,
   no_match: false,
   no_match_guidance: null,
+  degraded: false,
+  degradation_reasons: [],
   groups: []
 };
 
@@ -55,6 +57,8 @@ const noMatchResponse: SearchResponse = {
   query_mode: "image",
   no_match: true,
   no_match_guidance: "未找到足够相关的知识，请转研发查询。",
+  degraded: false,
+  degradation_reasons: [],
   groups: []
 };
 
@@ -63,6 +67,8 @@ const matchedResponse: SearchResponse = {
   query_mode: "text",
   no_match: false,
   no_match_guidance: null,
+  degraded: false,
+  degradation_reasons: [],
   groups: [
     {
       parent_id: "parent-1",
@@ -73,6 +79,10 @@ const matchedResponse: SearchResponse = {
           result_item_id: "result-1",
           rank: 1,
           score: 0.8765,
+          hybrid_score: 0.8123,
+          rerank_score: 0.8456,
+          selection_stage: "rerank",
+          helpful_count_at_search: 0,
           child_id: "child-1",
           knowledge_base_id: "knowledge-base-1",
           knowledge_base_name: "支持知识库",
@@ -104,6 +114,8 @@ const conversationNoQueryResponse: ConversationSearchResponse = {
   no_query_guidance: "未发现待查询问题",
   no_match: false,
   no_match_guidance: null,
+  degraded: false,
+  degradation_reasons: [],
   groups: []
 };
 
@@ -163,7 +175,7 @@ describe("SearchPage OCR", () => {
     expect(await screen.findByText("账号 登录失败")).toBeInTheDocument();
   });
 
-  it("shows similarity and the matched knowledge field", async () => {
+  it("shows staged scores and the matched knowledge field", async () => {
     mockedApi.search.mockResolvedValue(matchedResponse);
     render(<SearchPage />);
     await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
@@ -173,8 +185,28 @@ describe("SearchPage OCR", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
 
-    expect(await screen.findByText("相似度：87.65%")).toBeInTheDocument();
+    expect(await screen.findByText("综合相关度：87.65%")).toBeInTheDocument();
+    expect(screen.getByText("混合分：81.23%")).toBeInTheDocument();
+    expect(screen.getByText("重排分：84.56%")).toBeInTheDocument();
+    expect(screen.getByText("命中阶段：重排确认")).toBeInTheDocument();
     expect(screen.getByText("命中字段：同义问句")).toBeInTheDocument();
+  });
+
+  it("shows a visible warning when basic-score fallback was used", async () => {
+    mockedApi.search.mockResolvedValue({
+      ...matchedResponse,
+      degraded: true,
+      degradation_reasons: ["llm_unconfigured"]
+    });
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+
+    expect(await screen.findByText("已使用基础检索兜底")).toBeInTheDocument();
   });
 
   it("parses a pasted conversation and requests assisted search", async () => {

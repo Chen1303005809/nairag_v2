@@ -717,6 +717,8 @@ class SearchEvent(Base):
         index=True,
     )
     no_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    degraded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    degradation_reasons: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
@@ -748,6 +750,12 @@ class SearchResultItem(Base):
     )
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
     score: Mapped[float] = mapped_column(nullable=False)
+    hybrid_score: Mapped[float | None] = mapped_column(nullable=True)
+    rerank_score: Mapped[float | None] = mapped_column(nullable=True)
+    selection_stage: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="legacy"
+    )
+    helpful_count_at_search: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     child_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("child.id", ondelete="RESTRICT"),

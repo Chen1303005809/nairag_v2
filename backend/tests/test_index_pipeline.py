@@ -37,6 +37,8 @@ from app.services.embedding import (
     DeterministicEmbeddingProvider,
     EmbeddingProviderError,
     QwenEmbeddingProvider,
+    QwenRerankerProvider,
+    RerankerProviderError,
 )
 from app.services.index_backend import (
     RESPONSE_CHUNK_OVERLAP,
@@ -436,6 +438,29 @@ async def test_qwen_embedding_provider_orders_and_validates_vectors() -> None:
             await provider.embed_texts(["a"])
     finally:
         await invalid_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_qwen_reranker_rejects_duplicate_document_indices() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/rerank"
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 0, "relevance_score": 0.9},
+                    {"index": 0, "relevance_score": 0.8},
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        provider = QwenRerankerProvider("https://reranker.test/v1", client=client)
+        with pytest.raises(RerankerProviderError, match="duplicate document index"):
+            await provider.rerank("登录失败", ["文档一", "文档二"])
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio

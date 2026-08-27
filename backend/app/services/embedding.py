@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.core.config import Settings
+
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_RERANKER_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 DEFAULT_EMBEDDING_DIMENSION = 1024
@@ -332,6 +334,7 @@ class QwenRerankerProvider:
         if not isinstance(raw_results, list) or len(raw_results) != len(values):
             raise RerankerProviderError("reranker service returned an unexpected item count")
         scores = [0.0] * len(values)
+        seen_indices: set[int] = set()
         for position, item in enumerate(raw_results):
             if not isinstance(item, dict):
                 raise RerankerProviderError("reranker result must be an object")
@@ -339,11 +342,29 @@ class QwenRerankerProvider:
             score = item.get("relevance_score", item.get("score"))
             if not isinstance(index, int) or index < 0 or index >= len(values):
                 raise RerankerProviderError("reranker returned an invalid document index")
+            if index in seen_indices:
+                raise RerankerProviderError("reranker returned a duplicate document index")
             try:
                 numeric_score = float(score)
             except (TypeError, ValueError) as exc:
                 raise RerankerProviderError("reranker score is not numeric") from exc
             if not math.isfinite(numeric_score):
                 raise RerankerProviderError("reranker score is not finite")
+            seen_indices.add(index)
             scores[index] = numeric_score
+        if len(seen_indices) != len(values):
+            raise RerankerProviderError("reranker omitted a document index")
         return scores
+
+
+def create_reranker_provider(settings: Settings) -> RerankerProvider | None:
+    """Create the optional reranker independently from the index adapter."""
+
+    if settings.reranker_service_url is None:
+        return None
+    return QwenRerankerProvider(
+        settings.reranker_service_url,
+        api_key=settings.reranker_api_key,
+        model_name=settings.reranker_model,
+        timeout_seconds=settings.reranker_timeout_seconds,
+    )

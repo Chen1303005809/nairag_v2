@@ -6,7 +6,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
@@ -16,8 +16,6 @@ from app.services.embedding import (
     DEFAULT_EMBEDDING_DIMENSION,
     DeterministicEmbeddingProvider,
     EmbeddingProvider,
-    QwenRerankerProvider,
-    RerankerProvider,
 )
 
 
@@ -152,17 +150,11 @@ class LocalArtifactSearchBackend(SearchIndexBackend):
         artifact_dir: Path,
         *,
         embedding_provider: EmbeddingProvider | None = None,
-        reranker: RerankerProvider | None = None,
-        rerank_limit: int = 24,
     ) -> None:
-        if rerank_limit <= 0:
-            raise ValueError("rerank_limit must be positive")
         self.artifact_dir = artifact_dir
         self.embedding_provider = embedding_provider or DeterministicEmbeddingProvider(
             dimension=DEFAULT_EMBEDDING_DIMENSION
         )
-        self.reranker = reranker
-        self.rerank_limit = rerank_limit
 
     def _load_fragments(self, knowledge_base_id: UUID) -> list[_ArtifactFragment]:
         directory = self.artifact_dir / str(knowledge_base_id)
@@ -259,33 +251,20 @@ class LocalArtifactSearchBackend(SearchIndexBackend):
                 if hybrid_score > 0:
                     ranked.append((index, hybrid_score, dense_score, sparse_score))
             ranked.sort(key=lambda item: item[1], reverse=True)
-            ranked = ranked[: self.rerank_limit]
+            ranked = ranked[:limit]
 
-            rerank_scores: list[float] | None = None
-            if self.reranker is not None and ranked:
-                documents = [fragments[index].field_text for index, *_scores in ranked]
-                rerank_scores = await self.reranker.rerank(query.text, documents)
-                if len(rerank_scores) != len(ranked):
-                    raise SearchIndexUnavailableError(knowledge_base_id)
-
-            for position, (index, hybrid_score, dense_score, sparse_score) in enumerate(ranked):
+            for index, hybrid_score, dense_score, sparse_score in ranked:
                 fragment = fragments[index]
-                score = hybrid_score
-                reason = "hybrid_dense_bm25"
-                if rerank_scores is not None:
-                    rerank_score = max(0.0, min(1.0, rerank_scores[position]))
-                    score = 0.7 * hybrid_score + 0.3 * query.weight * rerank_score
-                    reason = "hybrid_dense_bm25_reranked"
                 hit = IndexHit(
                     knowledge_base_id=knowledge_base_id,
                     child_revision_id=fragment.child_revision_id,
                     source_item_id=fragment.source_item_id,
                     field_type=fragment.field_type,
-                    score=score,
+                    score=hybrid_score,
                     dense_score=dense_score,
                     sparse_score=sparse_score,
                     channel=query.channel,
-                    match_reason=reason,
+                    match_reason="hybrid_dense_bm25",
                 )
                 previous = best_hits.get(fragment.source_item_id)
                 if previous is None or hit.score > previous.score:
@@ -590,17 +569,11 @@ class MilvusSearchBackend(SearchIndexBackend):
         *,
         searcher: MilvusHybridSearcher,
         embedding_provider: EmbeddingProvider,
-        reranker: RerankerProvider | None = None,
-        rerank_limit: int = 24,
     ) -> None:
         if embedding_provider.dimension != DEFAULT_EMBEDDING_DIMENSION:
             raise ValueError(f"embedding dimension must be exactly {DEFAULT_EMBEDDING_DIMENSION}")
-        if rerank_limit <= 0:
-            raise ValueError("rerank_limit must be positive")
         self.searcher = searcher
         self.embedding_provider = embedding_provider
-        self.reranker = reranker
-        self.rerank_limit = rerank_limit
 
     async def search(
         self,
@@ -631,10 +604,9 @@ class MilvusSearchBackend(SearchIndexBackend):
         raw_hits = await self.searcher.hybrid_search(
             collection_name=collection_name,
             queries=search_queries,
-            limit=max(limit, self.rerank_limit) if self.reranker is not None else limit,
+            limit=limit,
         )
         hits: list[IndexHit] = []
-        rerank_candidates: dict[int, list[tuple[IndexHit, str]]] = {}
         for raw in raw_hits:
             entity = raw.get("entity") if isinstance(raw.get("entity"), dict) else raw
             try:
@@ -667,70 +639,13 @@ class MilvusSearchBackend(SearchIndexBackend):
                 channel=channel,
                 match_reason=match_reason,
             )
-            document = str(entity.get("field_text", "")).strip()
-            raw_query_index = raw.get("query_index")
-            if (
-                isinstance(raw_query_index, int)
-                and 0 <= raw_query_index < len(active_queries)
-            ):
-                query_index = raw_query_index
-            elif len(active_queries) == 1:
-                query_index = 0
-            else:
-                query_index = None
-            if self.reranker is not None and query_index is not None and document:
-                rerank_candidates.setdefault(query_index, []).append((hit, document))
-            else:
-                hits.append(hit)
-
-        if self.reranker is not None:
-            for query_index, candidates in rerank_candidates.items():
-                reranked_candidates = candidates[: self.rerank_limit]
-                hits.extend(hit for hit, _document in candidates[self.rerank_limit :])
-                rerank_scores = await self.reranker.rerank(
-                    active_queries[query_index].text,
-                    [document for _hit, document in reranked_candidates],
-                )
-                if len(rerank_scores) != len(reranked_candidates):
-                    raise SearchIndexUnavailableError(knowledge_base_id)
-                query_weight = active_queries[query_index].weight
-                for (hit, _document), rerank_score in zip(
-                    reranked_candidates,
-                    rerank_scores,
-                    strict=True,
-                ):
-                    normalized_rerank_score = max(0.0, min(1.0, rerank_score))
-                    hits.append(
-                        replace(
-                            hit,
-                            score=max(
-                                0.0,
-                                min(
-                                    1.0,
-                                    0.7 * hit.score
-                                    + 0.3 * query_weight * normalized_rerank_score,
-                                ),
-                            ),
-                            match_reason=f"{hit.match_reason}_reranked",
-                        )
-                    )
+            hits.append(hit)
         return sorted(hits, key=lambda hit: hit.score, reverse=True)[:limit]
 
 
 def create_search_index_backend(settings: Settings) -> SearchIndexBackend:
-    reranker = None
-    if settings.reranker_service_url:
-        reranker = QwenRerankerProvider(
-            settings.reranker_service_url,
-            api_key=settings.reranker_api_key,
-            model_name=settings.reranker_model,
-            timeout_seconds=settings.reranker_timeout_seconds,
-        )
     if settings.index_backend_mode == "local_artifact":
-        return LocalArtifactSearchBackend(
-            settings.index_artifact_dir,
-            reranker=reranker,
-        )
+        return LocalArtifactSearchBackend(settings.index_artifact_dir)
     if settings.embedding_service_url is None or settings.milvus_url is None:
         raise RuntimeError("Milvus search requires embedding and Milvus service URLs")
     from app.services.embedding import QwenEmbeddingProvider
@@ -747,5 +662,4 @@ def create_search_index_backend(settings: Settings) -> SearchIndexBackend:
             dimension=settings.embedding_dimension,
             timeout_seconds=settings.embedding_timeout_seconds,
         ),
-        reranker=reranker,
     )

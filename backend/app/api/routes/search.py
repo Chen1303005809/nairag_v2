@@ -46,6 +46,7 @@ from app.services.ocr import (
 )
 from app.services.search import (
     SearchKnowledgeBaseUnavailableError,
+    SearchPipelineOptions,
     SearchResultNotFoundError,
     SearchResultStaleError,
     record_helpful_feedback,
@@ -62,6 +63,8 @@ def as_search_response(details) -> SearchResponse:
         query_mode=details.event.query_mode,
         no_match=details.event.no_match,
         no_match_guidance=details.no_match_guidance,
+        degraded=details.degraded,
+        degradation_reasons=list(details.degradation_reasons),
         groups=[
             SearchParentGroupResponse(
                 parent_id=parent_revision.parent_id,
@@ -72,6 +75,18 @@ def as_search_response(details) -> SearchResponse:
                         result_item_id=result.id,
                         rank=result.rank,
                         score=round(result.score, 6),
+                        hybrid_score=(
+                            round(result.hybrid_score, 6)
+                            if result.hybrid_score is not None
+                            else None
+                        ),
+                        rerank_score=(
+                            round(result.rerank_score, 6)
+                            if result.rerank_score is not None
+                            else None
+                        ),
+                        selection_stage=result.selection_stage,
+                        helpful_count_at_search=result.helpful_count_at_search,
                         child_id=candidate.child.id,
                         knowledge_base_id=candidate.knowledge_base.id,
                         knowledge_base_name=candidate.knowledge_base.name,
@@ -122,6 +137,8 @@ def as_conversation_search_response(
         no_query_guidance=details.no_query_guidance,
         no_match=details.no_match,
         no_match_guidance=details.no_match_guidance,
+        degraded=details.degraded,
+        degradation_reasons=list(details.degradation_reasons),
         groups=[
             ConversationSearchParentGroupResponse(
                 parent_id=parent_revision.parent_id,
@@ -133,6 +150,18 @@ def as_conversation_search_response(
                         search_event_id=item.result_item.search_event_id,
                         rank=rank,
                         score=round(item.best_score, 6),
+                        hybrid_score=(
+                            round(item.result_item.hybrid_score, 6)
+                            if item.result_item.hybrid_score is not None
+                            else None
+                        ),
+                        rerank_score=(
+                            round(item.result_item.rerank_score, 6)
+                            if item.result_item.rerank_score is not None
+                            else None
+                        ),
+                        selection_stage=item.result_item.selection_stage,
+                        helpful_count_at_search=item.result_item.helpful_count_at_search,
                         child_id=item.candidate.child.id,
                         knowledge_base_id=item.candidate.knowledge_base.id,
                         knowledge_base_name=item.candidate.knowledge_base.name,
@@ -289,6 +318,7 @@ async def search_content(
                 detail="OCR 识别凭据无效或已过期，请重新上传图片",
             ) from exc
         ocr_text = ocr_recognition.text
+    llm_provider = getattr(request.app.state, "llm_provider", None)
     try:
         details = await search_published_content(
             session,
@@ -306,6 +336,18 @@ async def search_content(
             index_backend=request.app.state.search_index_backend,
             ocr_recognition=ocr_recognition,
             ocr_keyword_fallback_min_confidence=settings.ocr_keyword_fallback_min_confidence,
+            reranker=getattr(request.app.state, "reranker_provider", None),
+            relevance_judge=(
+                llm_provider
+                if hasattr(llm_provider, "judge_search_relevance")
+                else None
+            ),
+            pipeline_options=SearchPipelineOptions(
+                high_confidence_threshold=settings.search_high_confidence_threshold,
+                rerank_threshold=settings.search_rerank_threshold,
+                fallback_threshold=settings.search_fallback_threshold,
+                candidate_pool_size=settings.search_candidate_pool_size,
+            ),
         )
     except SearchKnowledgeBaseUnavailableError as exc:
         raise HTTPException(
@@ -343,6 +385,7 @@ async def conversation_assisted_search_content(
             settings=settings,
             index_backend=request.app.state.search_index_backend,
             provider=provider,
+            reranker=getattr(request.app.state, "reranker_provider", None),
         )
     except FastSearchValidationError as exc:
         raise HTTPException(

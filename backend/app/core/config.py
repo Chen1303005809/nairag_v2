@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     reranker_service_api_key_file: Path | None = None
     reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
     reranker_timeout_seconds: float = 60.0
+    search_high_confidence_threshold: float = 0.7
+    search_rerank_threshold: float = 0.5
+    search_fallback_threshold: float = 0.22
+    search_candidate_pool_size: int = 24
     ocr_service_url: str | None = None
     ocr_service_api_key_file: Path | None = None
     ocr_model: str = "PP-OCRv6_medium"
@@ -111,9 +115,9 @@ class Settings(BaseSettings):
         path = Path(value)
         return path if path.is_absolute() else PROJECT_ROOT / path
 
-    @field_validator("ocr_service_url", mode="before")
+    @field_validator("ocr_service_url", "reranker_service_url", mode="before")
     @classmethod
-    def normalize_optional_ocr_service_url(cls, value: object) -> object:
+    def normalize_optional_service_url(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -184,6 +188,20 @@ class Settings(BaseSettings):
             raise ValueError("EMBEDDING_TIMEOUT_SECONDS must be positive")
         if self.reranker_timeout_seconds <= 0:
             raise ValueError("RERANKER_TIMEOUT_SECONDS must be positive")
+        for value, setting_name in (
+            (self.search_high_confidence_threshold, "SEARCH_HIGH_CONFIDENCE_THRESHOLD"),
+            (self.search_rerank_threshold, "SEARCH_RERANK_THRESHOLD"),
+            (self.search_fallback_threshold, "SEARCH_FALLBACK_THRESHOLD"),
+        ):
+            if not 0 <= value <= 1:
+                raise ValueError(f"{setting_name} must be between 0 and 1")
+        if self.search_fallback_threshold > self.search_high_confidence_threshold:
+            raise ValueError(
+                "SEARCH_FALLBACK_THRESHOLD must not exceed "
+                "SEARCH_HIGH_CONFIDENCE_THRESHOLD"
+            )
+        if not 1 <= self.search_candidate_pool_size <= 200:
+            raise ValueError("SEARCH_CANDIDATE_POOL_SIZE must be between 1 and 200")
         if self.ocr_model != "PP-OCRv6_medium":
             raise ValueError("OCR_MODEL must be exactly PP-OCRv6_medium")
         if self.ocr_timeout_seconds <= 0:

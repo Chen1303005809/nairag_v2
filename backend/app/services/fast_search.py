@@ -14,8 +14,14 @@ from app.services.conversation import (
     NormalizedConversationMessage,
     validate_conversation,
 )
+from app.services.embedding import RerankerProvider
 from app.services.llm import LlmProvider
-from app.services.search import SearchCandidate, SearchDetails, search_published_content
+from app.services.search import (
+    SearchCandidate,
+    SearchDetails,
+    SearchPipelineOptions,
+    search_published_content,
+)
 
 
 class FastSearchValidationError(ValueError):
@@ -41,6 +47,8 @@ class ConversationSearchDetails:
     no_match: bool
     no_match_guidance: str | None
     groups: list[tuple[ParentRevision, list[MergedSearchItem]]]
+    degraded: bool = False
+    degradation_reasons: tuple[str, ...] = ()
 
 
 async def conversation_assisted_search(
@@ -53,6 +61,7 @@ async def conversation_assisted_search(
     settings: Settings,
     index_backend,
     provider: LlmProvider,
+    reranker: RerankerProvider | None = None,
 ) -> ConversationSearchDetails:
     try:
         conversation = validate_conversation(
@@ -73,6 +82,8 @@ async def conversation_assisted_search(
             no_match=False,
             no_match_guidance=None,
             groups=[],
+            degraded=False,
+            degradation_reasons=(),
         )
 
     details_by_query: list[tuple[str, SearchDetails]] = []
@@ -86,6 +97,16 @@ async def conversation_assisted_search(
             retrieval_mode="vector",
             limit=limit,
             index_backend=index_backend,
+            reranker=reranker,
+            relevance_judge=(
+                provider if hasattr(provider, "judge_search_relevance") else None
+            ),
+            pipeline_options=SearchPipelineOptions(
+                high_confidence_threshold=settings.search_high_confidence_threshold,
+                rerank_threshold=settings.search_rerank_threshold,
+                fallback_threshold=settings.search_fallback_threshold,
+                candidate_pool_size=settings.search_candidate_pool_size,
+            ),
         )
         details_by_query.append((query, details))
 
@@ -107,7 +128,15 @@ async def conversation_assisted_search(
                     continue
                 if query not in existing.matched_queries:
                     existing.matched_queries.append(query)
-                if result_item.score > existing.best_score:
+                if (
+                    result_item.score,
+                    result_item.helpful_count_at_search,
+                    -result_item.rank,
+                ) > (
+                    existing.best_score,
+                    existing.result_item.helpful_count_at_search,
+                    -existing.result_item.rank,
+                ):
                     merged_by_key[key] = MergedSearchItem(
                         result_item=result_item,
                         candidate=candidate,
@@ -117,7 +146,11 @@ async def conversation_assisted_search(
 
     merged_items = sorted(
         merged_by_key.values(),
-        key=lambda item: (-item.best_score, item.result_item.rank),
+        key=lambda item: (
+            -item.best_score,
+            -item.result_item.helpful_count_at_search,
+            item.result_item.rank,
+        ),
     )
     grouped: dict[UUID, list[MergedSearchItem]] = {}
     for item in merged_items:
@@ -127,7 +160,14 @@ async def conversation_assisted_search(
         (parent_revisions[parent_id], items)
         for parent_id, items in sorted(
             grouped.items(),
-            key=lambda pair: (-max(item.best_score for item in pair[1]), pair[0]),
+            key=lambda pair: min(
+                (
+                    -item.best_score,
+                    -item.result_item.helpful_count_at_search,
+                    item.result_item.rank,
+                )
+                for item in pair[1]
+            ),
         )
     ]
 
@@ -140,4 +180,12 @@ async def conversation_assisted_search(
             details_by_query[0][1].no_match_guidance if not merged_items else None
         ),
         groups=groups,
+        degraded=any(details.degraded for _query, details in details_by_query),
+        degradation_reasons=tuple(
+            dict.fromkeys(
+                reason
+                for _query, details in details_by_query
+                for reason in details.degradation_reasons
+            )
+        ),
     )

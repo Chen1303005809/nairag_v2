@@ -79,6 +79,10 @@ class SearchResultResponse(BaseModel):
     result_item_id: UUID
     rank: int
     score: float
+    hybrid_score: float | None
+    rerank_score: float | None
+    selection_stage: str
+    helpful_count_at_search: int
     child_id: UUID
     knowledge_base_id: UUID
     knowledge_base_name: str
@@ -112,6 +116,8 @@ class SearchResponse(BaseModel):
     query_mode: SearchQueryMode
     no_match: bool
     no_match_guidance: str | None
+    degraded: bool
+    degradation_reasons: list[str]
     groups: list[SearchParentGroupResponse]
 
 
@@ -149,4 +155,6 @@ class ConversationSearchResponse(BaseModel):
     no_query_guidance: str | None
     no_match: bool
     no_match_guidance: str | None
+    degraded: bool
+    degradation_reasons: list[str]
     groups: list[ConversationSearchParentGroupResponse]
