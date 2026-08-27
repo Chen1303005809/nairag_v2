@@ -24,7 +24,7 @@
    ```bash
    python3.12 -m venv .venv
    . .venv/bin/activate
-   pip install -e ./backend[dev]
+   pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple -e ./backend[dev]
    ```
 
 2. 在项目根目录创建唯一配置文件。后端、Vite 本地开发服务器和 Docker Compose 都从此处读取配置；相对路径也以项目根目录为基准：

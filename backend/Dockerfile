@@ -4,7 +4,8 @@ FROM python:3.12.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DEFAULT_TIMEOUT=180 \
-    PIP_RETRIES=5
+    PIP_RETRIES=5 \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /app
 
@@ -22,7 +23,7 @@ requirements = [
 ]
 print("\n".join(requirements))
 PY
-python -m pip install --default-timeout=180 --retries=5 -r /tmp/runtime-requirements.txt
+python -m pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple --default-timeout=180 --retries=5 -r /tmp/runtime-requirements.txt
 rm -f /tmp/runtime-requirements.txt
 EOF
 
@@ -31,6 +32,6 @@ COPY alembic ./alembic
 COPY app ./app
 COPY scripts ./scripts
 COPY worker.py ./worker.py
-RUN python -m pip install --no-deps --no-build-isolation .
+RUN python -m pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple --no-deps --no-build-isolation .
 
 EXPOSE 8000

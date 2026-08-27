@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DEFAULT_TIMEOUT=180 \
     PIP_RETRIES=5 \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     HF_HOME=/var/lib/nairag-reranker/model-cache
 
 WORKDIR /app
@@ -12,8 +13,9 @@ COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install \
         --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
         torch==2.11.0 \
-    && python -m pip install -r requirements.txt \
+    && python -m pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt \
     && useradd --create-home --uid 10002 reranker \
     && mkdir -p /var/lib/nairag-reranker/model-cache \
     && chown -R reranker:reranker /app /var/lib/nairag-reranker
