@@ -6,6 +6,9 @@ x-milvus-client-environment: &milvus-client-environment
   INDEX_BACKEND_MODE: milvus
   EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:?Set EMBEDDING_SERVICE_URL to the production OpenAI-compatible or Ollama native embedding endpoint}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+  RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-}
+  RERANKER_MODEL: ${RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+  RERANKER_TIMEOUT_SECONDS: ${RERANKER_TIMEOUT_SECONDS:-60}
   MILVUS_URL: http://milvus:19530
 
 x-attachment-client-environment: &attachment-client-environment
