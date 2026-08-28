@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { ChildRevisionFullView } from "../components/ChildRevisionFullView";
+import { TableActionBar } from "../components/TableActionBar";
 import { formatDateTime } from "../dateTime";
 import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
@@ -228,10 +229,15 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "操作",
       key: "actions",
+      width: 100,
+      fixed: "right",
+      ellipsis: true,
       render: (_value: unknown, item: ReviewQueueItem) => (
-        <Button type="primary" onClick={() => setDecisionItem(item)}>
-          审核
-        </Button>
+        <TableActionBar>
+          <Button type="primary" onClick={() => setDecisionItem(item)}>
+            审核
+          </Button>
+        </TableActionBar>
       )
     }
   ];
@@ -293,8 +299,11 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "当前状态/操作",
       key: "status_actions",
+      width: 180,
+      fixed: "right",
+      ellipsis: true,
       render: (_value: unknown, item: ReviewQueueItem) => (
-        <Space>
+        <TableActionBar>
           {targetStatus(item.target_status)}
           {item.target_status === "index_failed" ? (
             <Button
@@ -306,7 +315,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
               重试索引
             </Button>
           ) : null}
-        </Space>
+        </TableActionBar>
       )
     }
   ];

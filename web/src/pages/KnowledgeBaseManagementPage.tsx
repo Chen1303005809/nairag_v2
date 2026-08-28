@@ -21,6 +21,7 @@ import { KnowledgeDetailModal } from "../components/KnowledgeDetailModal";
 import { formatDateTime } from "../dateTime";
 import type { ManagedKnowledgeBase, ManagedKnowledgeEntry, ReviewerAssignment, User } from "../api/types";
 import { uniqueTableFilterOptions } from "../tableFilters";
+import { TableActionBar } from "../components/TableActionBar";
 
 interface CreateKnowledgeBaseValues {
   logicalKey: string;
@@ -266,15 +267,17 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
       title: "操作",
       key: "actions",
       width: 190,
+      fixed: "right",
+      ellipsis: true,
       render: (_, knowledgeBase) => (
-        <Space size="small">
+        <TableActionBar>
           <Button type="link" onClick={() => void loadAssignments(knowledgeBase)}>
             审查授权
           </Button>
           <Button type="link" onClick={() => openEdit(knowledgeBase)}>
             编辑
           </Button>
-        </Space>
+        </TableActionBar>
       )
     }
   ];
@@ -347,8 +350,9 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
       key: "actions",
       width: 220,
       fixed: "right",
+      ellipsis: true,
       render: (_, entry) => (
-        <Space size="small">
+        <TableActionBar>
           <Button type="link" onClick={() => setViewingKnowledge(entry)}>
             查看细则
           </Button>
@@ -365,7 +369,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
               删除
             </Button>
           </Popconfirm>
-        </Space>
+        </TableActionBar>
       )
     }
   ];
@@ -508,6 +512,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
           className="reviewer-assignment-table"
           rowKey={(assignment) => assignment.reviewer.id}
           dataSource={assignments}
+          scroll={{ x: 500 }}
           pagination={false}
           locale={{ emptyText: "尚未分配审查管理员" }}
           columns={[
@@ -530,17 +535,21 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
               title: "操作",
               key: "action",
               width: 110,
+              fixed: "right",
+              ellipsis: true,
               render: (_, assignment) => (
-                <Popconfirm
-                  title="解除该审查授权？"
-                  okText="解除"
-                  cancelText="取消"
-                  onConfirm={() => unassignReviewer(assignment.reviewer.id)}
-                >
-                  <Button type="link" danger>
-                    解除授权
-                  </Button>
-                </Popconfirm>
+                <TableActionBar>
+                  <Popconfirm
+                    title="解除该审查授权？"
+                    okText="解除"
+                    cancelText="取消"
+                    onConfirm={() => unassignReviewer(assignment.reviewer.id)}
+                  >
+                    <Button type="link" danger>
+                      解除授权
+                    </Button>
+                  </Popconfirm>
+                </TableActionBar>
               )
             }
           ]}

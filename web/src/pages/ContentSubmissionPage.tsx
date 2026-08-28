@@ -31,6 +31,7 @@ import {
 import { ConversationEditor } from "../components/ConversationEditor";
 import type { ConversationEditorHandle } from "../components/ConversationEditor";
 import { KnowledgeDetailModal } from "../components/KnowledgeDetailModal";
+import { TableActionBar } from "../components/TableActionBar";
 import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   AvailableParent,
@@ -1100,15 +1101,20 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "操作",
       key: "actions",
+      width: 130,
+      fixed: "right",
+      ellipsis: true,
       render: (_value: unknown, submission: ReviewSubmission) => {
         const editable =
           submission.child_revision !== null &&
           (submission.submission_kind === "child" || submission.parent_revision !== null) &&
           submission.targets.some((target) => target.status === "rejected");
         return editable ? (
-          <Button type="link" onClick={() => openResubmission(submission)}>
-            编辑重提
-          </Button>
+          <TableActionBar>
+            <Button type="link" onClick={() => openResubmission(submission)}>
+              编辑重提
+            </Button>
+          </TableActionBar>
         ) : null;
       }
     }
@@ -1153,15 +1159,16 @@ export function ContentSubmissionPage(): JSX.Element {
       key: "actions",
       width: 220,
       fixed: "right",
+      ellipsis: true,
       render: (_value: unknown, entry: EditableContentEntry) => (
-        <Space size="small">
+        <TableActionBar>
           <Button type="link" onClick={() => setViewingPublishedEntry(entry)}>
             查看细则
           </Button>
           <Button type="link" onClick={() => openPublishedRevision(entry)}>
             修改并提交审核
           </Button>
-        </Space>
+        </TableActionBar>
       )
     }
   ];
@@ -1226,8 +1233,10 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "操作",
       key: "actions",
       width: 220,
+      fixed: "right",
+      ellipsis: true,
       render: (_value: unknown, draft: KnowledgeDraft) => (
-        <Space>
+        <TableActionBar>
           <Button type="link" onClick={() => openDraft(draft)}>
             编辑
           </Button>
@@ -1245,7 +1254,7 @@ export function ContentSubmissionPage(): JSX.Element {
               删除
             </Button>
           </Popconfirm>
-        </Space>
+        </TableActionBar>
       )
     }
   ];
@@ -1272,10 +1281,15 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "操作",
       key: "actions",
+      width: 120,
+      fixed: "right",
+      ellipsis: true,
       render: (_value: unknown, batch: IngestionBatch) => (
-        <Button type="link" onClick={() => void loadIngestionBatch(batch.id)}>
-          查看详情
-        </Button>
+        <TableActionBar>
+          <Button type="link" onClick={() => void loadIngestionBatch(batch.id)}>
+            查看详情
+          </Button>
+        </TableActionBar>
       )
     }
   ];
@@ -1425,6 +1439,7 @@ export function ContentSubmissionPage(): JSX.Element {
                       size="small"
                       columns={ingestionBatchColumns}
                       dataSource={ingestionBatches}
+                      scroll={{ x: 480 }}
                       pagination={{ pageSize: 5, hideOnSinglePage: true }}
                       locale={{ emptyText: "尚未发起智能生成" }}
                     />

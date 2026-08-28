@@ -5,7 +5,6 @@ import {
   Modal,
   Popconfirm,
   Select,
-  Space,
   Switch,
   Table,
   Tag,
@@ -19,6 +18,7 @@ import { api } from "../api/client";
 import type { User, UserRole } from "../api/types";
 import { RoleTag, roleLabel } from "../components/role";
 import { showTemporaryPassword } from "../components/TemporaryPasswordModal";
+import { TableActionBar } from "../components/TableActionBar";
 
 interface CreateUserValues {
   username: string;
@@ -141,8 +141,10 @@ export function AccountManagementPage(): JSX.Element {
       title: "操作",
       key: "actions",
       width: 190,
+      fixed: "right",
+      ellipsis: true,
       render: (_, user) => (
-        <Space size="small">
+        <TableActionBar>
           <Button type="link" onClick={() => openEdit(user)}>
             编辑
           </Button>
@@ -159,7 +161,7 @@ export function AccountManagementPage(): JSX.Element {
               <Button type="link">重置密码</Button>
             </Popconfirm>
           )}
-        </Space>
+        </TableActionBar>
       )
     }
   ];
@@ -183,7 +185,7 @@ export function AccountManagementPage(): JSX.Element {
         columns={columns}
         dataSource={users}
         loading={loading}
-        scroll={{ x: 850 }}
+        scroll={{ x: 920 }}
         pagination={{ pageSize: 10, showSizeChanger: false }}
       />
 
