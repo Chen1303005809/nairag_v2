@@ -1130,7 +1130,9 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: `当前${CHILD_CATEGORY_LABEL}`,
       dataIndex: ["child_revision", "question"],
-      key: "question"
+      key: "question",
+      width: 320,
+      ellipsis: true
     },
     {
       title: "已发布知识库",
@@ -1150,6 +1152,7 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "操作",
       key: "actions",
       width: 220,
+      fixed: "right",
       render: (_value: unknown, entry: EditableContentEntry) => (
         <Space size="small">
           <Button type="link" onClick={() => setViewingPublishedEntry(entry)}>

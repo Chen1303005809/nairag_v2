@@ -283,9 +283,16 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     {
       title: "知识内容",
       key: "content",
+      width: 360,
       render: (_, entry) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{entry.child_revision.question}</Typography.Text>
+          <Typography.Text
+            strong
+            ellipsis={{ tooltip: entry.child_revision.question }}
+            style={{ maxWidth: 320 }}
+          >
+            {entry.child_revision.question}
+          </Typography.Text>
           <Typography.Text type="secondary">
             {entry.parent_name} · {entry.is_primary ? "问题小类（与问题大类一同提交）" : "问题小类"} · v
             {entry.child_revision.revision_number}
@@ -339,6 +346,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
       title: "操作",
       key: "actions",
       width: 220,
+      fixed: "right",
       render: (_, entry) => (
         <Space size="small">
           <Button type="link" onClick={() => setViewingKnowledge(entry)}>
