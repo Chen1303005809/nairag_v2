@@ -118,6 +118,14 @@ function nullable(value: string | undefined): string | null {
   return normalized || null;
 }
 
+function canResubmitSubmission(submission: ReviewSubmission): boolean {
+  return (
+    submission.child_revision !== null &&
+    (submission.submission_kind === "child" || submission.parent_revision !== null) &&
+    submission.targets.some((target) => target.status === "rejected")
+  );
+}
+
 function toChildContent(values: ChildContentFormValues): ChildContentInput {
   return {
     question: values.question,
@@ -1019,6 +1027,7 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "上传内容",
       dataIndex: "title",
       key: "title",
+      width: 320,
       render: (title: string, submission: ReviewSubmission) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{title}</Typography.Text>
@@ -1031,6 +1040,7 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "目标知识库",
       key: "targets",
+      width: 280,
       filters: submissionKnowledgeBaseFilters,
       filterSearch: true,
       onFilter: (value, submission) => submission.targets.some((target) => target.id === String(value)),
@@ -1051,6 +1061,8 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "上传者",
       key: "submitter",
+      width: 220,
+      ellipsis: true,
       filters: submissionUploaderFilters,
       filterSearch: true,
       onFilter: (value, submission) => submission.submitter.id === String(value),
@@ -1072,6 +1084,7 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "审核者",
       key: "reviewer",
+      width: 300,
       render: (_value: unknown, submission: ReviewSubmission) => (
         <Space direction="vertical" size={0}>
           {submission.targets.map((target) => (
@@ -1088,6 +1101,7 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "实际审核时间",
       key: "reviewed_at",
+      width: 260,
       render: (_value: unknown, submission: ReviewSubmission) => (
         <Space direction="vertical" size={0}>
           {submission.targets.map((target) => (
@@ -1098,32 +1112,31 @@ export function ContentSubmissionPage(): JSX.Element {
         </Space>
       )
     },
-    {
+  ];
+
+  if (submissions.some(canResubmitSubmission)) {
+    submissionColumns.push({
       title: "操作",
       key: "actions",
       width: 130,
       fixed: "right",
       ellipsis: true,
-      render: (_value: unknown, submission: ReviewSubmission) => {
-        const editable =
-          submission.child_revision !== null &&
-          (submission.submission_kind === "child" || submission.parent_revision !== null) &&
-          submission.targets.some((target) => target.status === "rejected");
-        return editable ? (
+      render: (_value: unknown, submission: ReviewSubmission) =>
+        canResubmitSubmission(submission) ? (
           <TableActionBar>
             <Button type="link" onClick={() => openResubmission(submission)}>
               编辑重提
             </Button>
           </TableActionBar>
-        ) : null;
-      }
-    }
-  ];
+        ) : null
+    });
+  }
 
   const editableEntryColumns: TableProps<EditableContentEntry>["columns"] = [
     {
       title: PARENT_CATEGORY_LABEL,
       key: "parent",
+      width: 240,
       render: (_value: unknown, entry: EditableContentEntry) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{entry.parent_name}</Typography.Text>
@@ -1143,6 +1156,7 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "已发布知识库",
       key: "knowledge_bases",
+      width: 280,
       filters: editableKnowledgeBaseFilters,
       filterSearch: true,
       onFilter: (value, entry) => entry.knowledge_bases.some((knowledgeBase) => knowledgeBase.id === String(value)),
@@ -1185,9 +1199,12 @@ export function ContentSubmissionPage(): JSX.Element {
       title: CHILD_CATEGORY_LABEL,
       dataIndex: "question",
       key: "question",
+      width: 360,
       render: (question: string | null, draft: KnowledgeDraft) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>{question || "未填写问题"}</Typography.Text>
+          <Typography.Text ellipsis={{ tooltip: question || "未填写问题" }}>
+            {question || "未填写问题"}
+          </Typography.Text>
           {draft.response_content ? (
             <Typography.Text type="secondary" ellipsis={{ tooltip: draft.response_content }}>
               {draft.response_content}
@@ -1200,6 +1217,8 @@ export function ContentSubmissionPage(): JSX.Element {
       title: PARENT_CATEGORY_LABEL,
       dataIndex: "parent_id",
       key: "parent_id",
+      width: 260,
+      ellipsis: true,
       render: (parentId: string | null) => {
         const parent = availableParents.find((item) => item.id === parentId);
         return parent ? `${parent.canonical_keyword}（${parent.name}）` : "未选择";
@@ -1209,6 +1228,7 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "目标知识库",
       dataIndex: "knowledge_base_ids",
       key: "knowledge_base_ids",
+      width: 280,
       render: (knowledgeBaseIds: string[]) => (
         <Space size={[4, 4]} wrap>
           {knowledgeBaseIds.length === 0 ? (
@@ -1232,7 +1252,7 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "操作",
       key: "actions",
-      width: 220,
+      width: 260,
       fixed: "right",
       ellipsis: true,
       render: (_value: unknown, draft: KnowledgeDraft) => (

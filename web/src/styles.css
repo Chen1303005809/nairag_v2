@@ -99,11 +99,38 @@ body {
   display: inline-flex;
   min-width: 0;
   max-width: 100%;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
 }
 
 .table-action-bar .ant-btn,
 .table-action-bar .ant-typography {
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.table-action-bar .ant-btn > span {
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.ant-table-cell > .ant-space {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ant-table-cell > .ant-space .ant-space-item {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ant-table-cell > .ant-space .ant-typography {
+  display: block;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -111,8 +138,9 @@ body {
   white-space: nowrap;
 }
 
-.table-action-bar .ant-btn > span {
-  min-width: 0;
+.ant-table-cell > .ant-space .ant-tag {
+  display: inline-block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -122,8 +122,8 @@ export function AccountManagementPage(): JSX.Element {
   };
 
   const columns: ColumnsType<User> = [
-    { title: "用户名", dataIndex: "username", width: 170 },
-    { title: "显示名称", dataIndex: "display_name", width: 180 },
+    { title: "用户名", dataIndex: "username", width: 170, ellipsis: true },
+    { title: "显示名称", dataIndex: "display_name", width: 180, ellipsis: true },
     { title: "角色", dataIndex: "role", width: 140, render: (role: UserRole) => <RoleTag role={role} /> },
     {
       title: "状态",

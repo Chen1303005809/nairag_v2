@@ -185,12 +185,15 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "上传内容",
       key: "content",
+      width: 360,
       render: (_value: unknown, item: ReviewQueueItem) => contentCell(item)
     },
     {
       title: "目标知识库",
       dataIndex: ["knowledge_base", "name"],
       key: "knowledge_base",
+      width: 220,
+      ellipsis: true,
       filters: queueKnowledgeBaseFilters,
       filterSearch: true,
       onFilter: (value, item) => item.knowledge_base.id === String(value)
@@ -198,6 +201,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "上传者",
       key: "submitter",
+      width: 220,
+      ellipsis: true,
       filters: queueUploaderFilters,
       filterSearch: true,
       onFilter: (value, item) => item.submitter.id === String(value),
@@ -246,12 +251,15 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "上传内容",
       key: "content",
+      width: 360,
       render: (_value: unknown, item: ReviewQueueItem) => contentCell(item)
     },
     {
       title: "目标知识库",
       dataIndex: ["knowledge_base", "name"],
       key: "knowledge_base",
+      width: 220,
+      ellipsis: true,
       filters: historyKnowledgeBaseFilters,
       filterSearch: true,
       onFilter: (value, item) => item.knowledge_base.id === String(value)
@@ -259,6 +267,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "上传者",
       key: "submitter",
+      width: 220,
+      ellipsis: true,
       filters: historyUploaderFilters,
       filterSearch: true,
       onFilter: (value, item) => item.submitter.id === String(value),
@@ -274,6 +284,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "审核者",
       key: "reviewer",
+      width: 220,
+      ellipsis: true,
       render: (_value: unknown, item: ReviewQueueItem) =>
         item.reviewer ? `${item.reviewer.display_name}（${item.reviewer.username}）` : "—"
     },
@@ -294,6 +306,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       title: "审核备注",
       dataIndex: "review_comment",
       key: "review_comment",
+      width: 280,
+      ellipsis: true,
       render: (value: string | null) => value || "—"
     },
     {

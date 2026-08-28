@@ -229,6 +229,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     {
       title: "知识库",
       key: "knowledge_base",
+      width: 250,
       render: (_, knowledgeBase) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{knowledgeBase.name}</Typography.Text>
@@ -306,17 +307,21 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     {
       title: "知识库",
       key: "knowledge_base",
+      width: 220,
       filters: managedKnowledgeBaseFilters,
       filterSearch: true,
       onFilter: (value, entry) => entry.knowledge_base.id === String(value),
+      ellipsis: true,
       render: (_, entry) => entry.knowledge_base.name
     },
     {
       title: "上传者",
       key: "uploaded_by",
+      width: 240,
       filters: managedKnowledgeUploaderFilters,
       filterSearch: true,
       onFilter: (value, entry) => entry.uploaded_by.id === String(value),
+      ellipsis: true,
       render: (_, entry) => `${entry.uploaded_by.display_name}（${entry.uploaded_by.username}）`
     },
     {
@@ -519,6 +524,8 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
             {
               title: "审查管理员",
               key: "reviewer",
+              width: 280,
+              ellipsis: true,
               render: (_, assignment) => `${assignment.reviewer.display_name}（${assignment.reviewer.username}）`
             },
             {

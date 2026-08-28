@@ -309,6 +309,22 @@ describe("ContentSubmissionPage", () => {
     await waitFor(() => expect(mockedApi.getIngestionBatch).toHaveBeenCalledWith("batch-1"));
   });
 
+  it("does not show an empty action column for uploads without resubmission actions", async () => {
+    mockedApi.listMyContentSubmissions.mockResolvedValue([
+      {
+        ...rejectedSubmission,
+        status: "published",
+        targets: [{ ...rejectedSubmission.targets[0], status: "approved" }]
+      }
+    ]);
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
+    await screen.findByText("账号登录");
+
+    expect(screen.queryByRole("columnheader", { name: "操作" })).not.toBeInTheDocument();
+  });
+
   it("shows uploaded attachments immediately with a download link or image preview", async () => {
     mockedApi.uploadKnowledgeAttachment
       .mockResolvedValueOnce({
