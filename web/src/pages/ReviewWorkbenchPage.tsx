@@ -213,6 +213,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       title: "上传时间",
       dataIndex: "submitted_at",
       key: "submitted_at",
+      width: 200,
+      ellipsis: true,
       render: (value: string) => formatDateTime(value)
     },
     {
@@ -279,6 +281,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       title: "上传时间",
       dataIndex: "submitted_at",
       key: "submitted_at",
+      width: 200,
+      ellipsis: true,
       render: (value: string) => formatDateTime(value)
     },
     {
@@ -293,6 +297,8 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       title: "实际审核时间",
       dataIndex: "reviewed_at",
       key: "reviewed_at",
+      width: 200,
+      ellipsis: true,
       render: (value: string | null) => formatDateTime(value)
     },
     {
