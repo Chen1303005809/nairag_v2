@@ -147,7 +147,7 @@ services:
       context: ./reranker_service
       dockerfile: Dockerfile.gpu
     environment:
-      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       RERANKER_MODEL: ${RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
       RERANKER_DEVICE: ${RERANKER_DEVICE:-cuda}
       RERANKER_MAX_LENGTH: ${RERANKER_MAX_LENGTH:-2048}
@@ -156,7 +156,7 @@ services:
     expose:
       - "9002"
     volumes:
-      - reranker_model_cache:/var/lib/nairag-reranker/model-cache
+      - ./volumes/reranker_model/model:/var/lib/nairag-reranker/model-cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9002/healthz', timeout=2)"]
       interval: 10s
@@ -193,9 +193,6 @@ services:
     secrets:
       - attachment_minio_access_key
       - attachment_minio_secret_key
-
-volumes:
-  reranker_model_cache:
 
 secrets:
   attachment_minio_access_key:
