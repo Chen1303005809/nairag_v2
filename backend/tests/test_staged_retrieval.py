@@ -104,7 +104,7 @@ def pipeline(*, reranker=None, judge=None) -> StagedRetrievalPipeline:
 
 
 @pytest.mark.asyncio
-async def test_high_hybrid_score_short_circuits_models_and_excludes_lower_candidates() -> None:
+async def test_high_hybrid_score_short_circuits_models_and_returns_all_retrieval_hits() -> None:
     reranker = RecordingReranker([0.9, 0.9])
     judge = RecordingJudge({0, 1})
     decision = await pipeline(reranker=reranker, judge=judge).select(
@@ -113,8 +113,8 @@ async def test_high_hybrid_score_short_circuits_models_and_excludes_lower_candid
         index_degraded=False,
     )
 
-    assert [item.selection_stage for item in decision.selected] == ["hybrid"]
-    assert [item.hybrid_score for item in decision.selected] == [0.72]
+    assert [item.selection_stage for item in decision.selected] == ["hybrid", "hybrid"]
+    assert [item.hybrid_score for item in decision.selected] == [0.72, 0.69]
     assert reranker.calls == []
     assert judge.calls == []
 

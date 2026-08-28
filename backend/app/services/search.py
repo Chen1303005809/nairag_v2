@@ -636,12 +636,15 @@ class StagedRetrievalPipeline:
     ) -> SelectionDecision:
         ranked = _rank_scored_candidates(scored)
         base_degradation_reasons = ["index_unavailable"] if index_degraded else []
-        high_confidence = [
-            item
+        has_high_confidence = any(
+            item.hybrid_score >= self._options.high_confidence_threshold
             for item in ranked
-            if item.hybrid_score >= self._options.high_confidence_threshold
-        ]
-        if high_confidence:
+        )
+        if has_high_confidence:
+            # A high-confidence hit makes the whole first-stage retrieval set
+            # trustworthy enough to skip the expensive model stages. Zero-score
+            # published rows are not retrieval hits and remain excluded.
+            retrieval_hits = [item for item in ranked if item.hybrid_score > 0]
             return SelectionDecision(
                 selected=[
                     _make_selected(
@@ -649,7 +652,7 @@ class StagedRetrievalPipeline:
                         base_score=item.hybrid_score,
                         selection_stage="hybrid",
                     )
-                    for item in high_confidence
+                    for item in retrieval_hits
                 ],
                 degradation_reasons=tuple(base_degradation_reasons),
             )
