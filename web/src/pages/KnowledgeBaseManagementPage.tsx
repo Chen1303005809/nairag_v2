@@ -17,6 +17,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { KnowledgeDetailModal } from "../components/KnowledgeDetailModal";
 import { formatDateTime } from "../dateTime";
 import type { ManagedKnowledgeBase, ManagedKnowledgeEntry, ReviewerAssignment, User } from "../api/types";
 import { uniqueTableFilterOptions } from "../tableFilters";
@@ -59,6 +60,7 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
   const [assignments, setAssignments] = useState<ReviewerAssignment[]>([]);
   const [assigningReviewerId, setAssigningReviewerId] = useState<string>();
   const [reviewerLoading, setReviewerLoading] = useState(false);
+  const [viewingKnowledge, setViewingKnowledge] = useState<ManagedKnowledgeEntry | null>(null);
   const [createForm] = Form.useForm<CreateKnowledgeBaseValues>();
   const [editForm] = Form.useForm<UpdateKnowledgeBaseValues>();
 
@@ -336,21 +338,26 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
     {
       title: "操作",
       key: "actions",
-      width: 110,
+      width: 220,
       render: (_, entry) => (
-        <Popconfirm
-          title="删除该知识及其嵌入？"
-          description="删除后立即停止检索可见性，并在后台清理该知识库中的全部派生嵌入；修订和审计历史会保留。"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true, loading: submitting }}
-          onConfirm={() => void deleteManagedKnowledge(entry)}
-          disabled={entry.status !== "published"}
-        >
-          <Button type="link" danger disabled={entry.status !== "published"}>
-            删除
+        <Space size="small">
+          <Button type="link" onClick={() => setViewingKnowledge(entry)}>
+            查看细则
           </Button>
-        </Popconfirm>
+          <Popconfirm
+            title="删除该知识及其嵌入？"
+            description="删除后立即停止检索可见性，并在后台清理该知识库中的全部派生嵌入；修订和审计历史会保留。"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true, loading: submitting }}
+            onConfirm={() => void deleteManagedKnowledge(entry)}
+            disabled={entry.status !== "published"}
+          >
+            <Button type="link" danger disabled={entry.status !== "published"}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       )
     }
   ];
@@ -531,6 +538,13 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
           ]}
         />
       </Modal>
+      <KnowledgeDetailModal
+        open={viewingKnowledge !== null}
+        onClose={() => setViewingKnowledge(null)}
+        childRevision={viewingKnowledge?.child_revision ?? null}
+        parentRevision={null}
+        parentName={viewingKnowledge?.parent_name}
+      />
     </section>
   );
 }

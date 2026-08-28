@@ -30,6 +30,7 @@ import {
 } from "../conversation";
 import { ConversationEditor } from "../components/ConversationEditor";
 import type { ConversationEditorHandle } from "../components/ConversationEditor";
+import { KnowledgeDetailModal } from "../components/KnowledgeDetailModal";
 import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   AvailableParent,
@@ -599,6 +600,7 @@ export function ContentSubmissionPage(): JSX.Element {
   const [editingSubmission, setEditingSubmission] = useState<ReviewSubmission | null>(null);
   const [resubmitting, setResubmitting] = useState(false);
   const [editingPublishedEntry, setEditingPublishedEntry] = useState<EditableContentEntry | null>(null);
+  const [viewingPublishedEntry, setViewingPublishedEntry] = useState<EditableContentEntry | null>(null);
   const [savingPublishedRevision, setSavingPublishedRevision] = useState(false);
   const [activeSubmissionTab, setActiveSubmissionTab] = useState("parent");
   const [drafts, setDrafts] = useState<KnowledgeDraft[]>([]);
@@ -1147,11 +1149,16 @@ export function ContentSubmissionPage(): JSX.Element {
     {
       title: "操作",
       key: "actions",
-      width: 120,
+      width: 220,
       render: (_value: unknown, entry: EditableContentEntry) => (
-        <Button type="link" onClick={() => openPublishedRevision(entry)}>
-          修改并提交审核
-        </Button>
+        <Space size="small">
+          <Button type="link" onClick={() => setViewingPublishedEntry(entry)}>
+            查看细则
+          </Button>
+          <Button type="link" onClick={() => openPublishedRevision(entry)}>
+            修改并提交审核
+          </Button>
+        </Space>
       )
     }
   ];
@@ -1701,6 +1708,13 @@ export function ContentSubmissionPage(): JSX.Element {
           </>
         )}
       </Modal>
+      <KnowledgeDetailModal
+        open={viewingPublishedEntry !== null}
+        onClose={() => setViewingPublishedEntry(null)}
+        childRevision={viewingPublishedEntry?.child_revision ?? null}
+        parentRevision={viewingPublishedEntry?.parent_revision}
+        parentName={viewingPublishedEntry?.parent_name}
+      />
     </section>
   );
 }

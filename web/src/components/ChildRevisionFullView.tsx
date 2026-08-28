@@ -5,10 +5,12 @@ import type { ReviewChildRevision, ReviewParentRevision } from "../api/types";
 
 export function ChildRevisionFullView({
   childRevision,
-  parentRevision
+  parentRevision,
+  parentName
 }: {
   childRevision: ReviewChildRevision;
   parentRevision?: ReviewParentRevision | null;
+  parentName?: string;
 }): JSX.Element {
   const revision = childRevision;
   return (
@@ -31,6 +33,8 @@ export function ChildRevisionFullView({
             </Descriptions.Item>
           ) : null}
         </>
+      ) : parentName ? (
+        <Descriptions.Item label="问题大类">{parentName}</Descriptions.Item>
       ) : null}
       <Descriptions.Item label="问题">
         <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
