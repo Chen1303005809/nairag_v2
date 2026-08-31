@@ -11,7 +11,10 @@ services:
       timeout: 5s
       retries: 20
     volumes:
-      - lightrag-postgres-data:/var/lib/postgresql/data
+      # PostgreSQL 18 stores its cluster beneath a major-versioned directory
+      # (for example, /var/lib/postgresql/18/docker).
+      # Keep that directory tree in the repository's ignored volumes/ folder.
+      - ../volumes/lightrag_postgres_data:/var/lib/postgresql
     networks:
       - lightrag-data
 
@@ -56,7 +59,6 @@ services:
       retries: 20
 
 volumes:
-  lightrag-postgres-data:
   lightrag-work:
   lightrag-input:
   lightrag-logs:
