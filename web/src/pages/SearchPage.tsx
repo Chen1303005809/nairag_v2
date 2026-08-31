@@ -6,6 +6,7 @@ import {
   Descriptions,
   Image,
   Input,
+  Modal,
   Select,
   Space,
   Tag,
@@ -27,8 +28,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type {
   ConversationSearchResult,
+  ConversationSearchResponse,
   KnowledgeBase,
   OcrRecognition,
+  SearchAnnotationResultFeedbackInput,
+  SearchAnnotationResultLabel,
+  SearchAnnotationReviewResponse,
   SearchResponse,
   SearchResult,
   SearchRetrievalMode
@@ -48,11 +53,22 @@ import {
 } from "../conversation";
 import { ConversationEditor } from "../components/ConversationEditor";
 import type { ConversationEditorHandle } from "../components/ConversationEditor";
-import { mergeSearchResponses } from "../searchMerge";
 
 interface RenderableResult extends SearchResult {
   matched_queries?: string[];
 }
+
+interface ResultAnnotationDraft {
+  feedbackType?: SearchAnnotationResultLabel;
+  otherNote: string;
+}
+
+const annotationFeedbackLabels: Record<SearchAnnotationResultLabel, string> = {
+  high_score_irrelevant: "分数高但是无关",
+  low_score_relevant: "分数低但是有关",
+  normal: "结果正常",
+  other: "其他"
+};
 
 const matchedFieldLabels: Record<string, string> = {
   question: "问题",
@@ -91,11 +107,13 @@ function matchedFieldLabel(field: string | null): string {
 function ResultItemView({
   item,
   feedbackGiven,
-  onFeedback
+  onFeedback,
+  showHelpfulFeedback = true
 }: {
   item: RenderableResult;
   feedbackGiven: boolean;
   onFeedback: (item: RenderableResult) => void;
+  showHelpfulFeedback?: boolean;
 }): JSX.Element {
   return (
     <Space direction="vertical" size={4} style={{ width: "100%" }}>
@@ -202,15 +220,17 @@ function ResultItemView({
           </Descriptions.Item>
         ) : null}
       </Descriptions>
-      <Button
-        type={feedbackGiven ? "primary" : "default"}
-        size="small"
-        icon={<LikeOutlined />}
-        disabled={feedbackGiven}
-        onClick={() => onFeedback(item)}
-      >
-        {feedbackGiven ? "已反馈" : `有用（${item.helpful_count}）`}
-      </Button>
+      {showHelpfulFeedback ? (
+        <Button
+          type={feedbackGiven ? "primary" : "default"}
+          size="small"
+          icon={<LikeOutlined />}
+          disabled={feedbackGiven}
+          onClick={() => onFeedback(item)}
+        >
+          {feedbackGiven ? "已反馈" : `有用（${item.helpful_count}）`}
+        </Button>
+      ) : null}
     </Space>
   );
 }
@@ -258,6 +278,255 @@ function ResultsGroupsView({
   );
 }
 
+function visibleResultsForAnnotation(
+  groups: Array<{
+    children: RenderableResult[];
+  }>
+): RenderableResult[] {
+  const resultIds = new Set<string>();
+  return groups.flatMap((group) =>
+    group.children.filter((item) => {
+      if (resultIds.has(item.result_item_id)) {
+        return false;
+      }
+      resultIds.add(item.result_item_id);
+      return true;
+    })
+  );
+}
+
+function SearchAnnotationReviewPanel({
+  interactionId,
+  results,
+  onSubmit
+}: {
+  interactionId: string | null;
+  results: RenderableResult[];
+  onSubmit: (
+    feedbacks: SearchAnnotationResultFeedbackInput[]
+  ) => Promise<SearchAnnotationReviewResponse>;
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [drafts, setDrafts] = useState<Record<string, ResultAnnotationDraft>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  if (!interactionId) {
+    return null;
+  }
+
+  const currentResult = results[currentIndex];
+  const currentDraft = currentResult
+    ? drafts[currentResult.result_item_id] ?? { otherNote: "" }
+    : undefined;
+  const isComplete = results.every((item) => Boolean(drafts[item.result_item_id]?.feedbackType));
+  const isOther = currentDraft?.feedbackType === "other";
+  const otherNoteMissing = isOther && !currentDraft?.otherNote.trim();
+
+  const updateDraft = (
+    resultItemId: string,
+    feedbackType: SearchAnnotationResultLabel,
+    otherNote?: string
+  ): void => {
+    setDrafts((current) => ({
+      ...current,
+      [resultItemId]: {
+        feedbackType,
+        otherNote: feedbackType === "other" ? otherNote ?? current[resultItemId]?.otherNote ?? "" : ""
+      }
+    }));
+  };
+
+  const recordAndContinue = (feedbackType: Exclude<SearchAnnotationResultLabel, "other">): void => {
+    if (!currentResult) {
+      return;
+    }
+    updateDraft(currentResult.result_item_id, feedbackType);
+    setCurrentIndex((index) => index + 1);
+  };
+
+  const saveOtherAndContinue = (): void => {
+    if (!currentResult || !currentDraft || !currentDraft.otherNote.trim()) {
+      return;
+    }
+    updateDraft(currentResult.result_item_id, "other", currentDraft.otherNote);
+    setCurrentIndex((index) => index + 1);
+  };
+
+  const submit = async (): Promise<void> => {
+    if (!isComplete || submitting) {
+      return;
+    }
+    const feedbacks = results.map((item) => {
+      const draft = drafts[item.result_item_id];
+      if (!draft?.feedbackType) {
+        throw new Error("请逐条完成本次检索结果的标注");
+      }
+      return {
+        search_result_item_id: item.result_item_id,
+        feedback_type: draft.feedbackType,
+        ...(draft.feedbackType === "other" ? { other_note: draft.otherNote.trim() } : {})
+      };
+    });
+    setSubmitting(true);
+    try {
+      const review = await onSubmit(feedbacks);
+      setSubmitted(true);
+      setOpen(false);
+      message.success(review.already_recorded ? "本次检索已标注" : "已记录本次检索标注");
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "标注提交失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const labelCounts = results.reduce<Record<SearchAnnotationResultLabel, number>>(
+    (counts, item) => {
+      const feedbackType = drafts[item.result_item_id]?.feedbackType;
+      if (feedbackType) {
+        counts[feedbackType] += 1;
+      }
+      return counts;
+    },
+    { high_score_irrelevant: 0, low_score_relevant: 0, normal: 0, other: 0 }
+  );
+
+  return (
+    <Card size="small" style={{ marginTop: 16 }} title="本次检索标注">
+      <Space direction="vertical" size={10} style={{ width: "100%" }}>
+        <Typography.Text type="secondary">
+          以本次检索为一个 Review 提交。点击后请逐条标注；“跳过”会记录为“结果正常”（高分有关或低分无关）。
+        </Typography.Text>
+        {submitted ? (
+          <Alert
+            type="success"
+            showIcon
+            message="已记录本次检索标注，提交后不可修改。"
+          />
+        ) : (
+          <Button type="primary" onClick={() => setOpen(true)}>
+            {results.length === 0 ? "完成无结果标注" : "开始逐条标注"}
+          </Button>
+        )}
+      </Space>
+      <Modal
+        footer={null}
+        onCancel={() => setOpen(false)}
+        open={open}
+        title="检索结果标注"
+        width={820}
+      >
+        {results.length === 0 ? (
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              type="info"
+              showIcon
+              message="本次检索没有展示结果"
+              description="可完成该次无结果 Review；这不会标记为某条结果的问题。"
+            />
+            <Space>
+              <Button onClick={() => setOpen(false)}>取消</Button>
+              <Button type="primary" loading={submitting} onClick={() => void submit()}>
+                完成并提交
+              </Button>
+            </Space>
+          </Space>
+        ) : currentResult ? (
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Typography.Text type="secondary">
+              第 {currentIndex + 1} / {results.length} 条。选择标签后会进入下一条；可以返回修改已处理的结果。
+            </Typography.Text>
+            <ResultItemView
+              item={currentResult}
+              feedbackGiven={false}
+              onFeedback={() => undefined}
+              showHelpfulFeedback={false}
+            />
+            <Card size="small" title="为这条结果选择标签">
+              <Space wrap>
+                <Button
+                  danger
+                  type={currentDraft?.feedbackType === "high_score_irrelevant" ? "primary" : "default"}
+                  onClick={() => recordAndContinue("high_score_irrelevant")}
+                >
+                  高分无关
+                </Button>
+                <Button
+                  type={currentDraft?.feedbackType === "low_score_relevant" ? "primary" : "default"}
+                  onClick={() => recordAndContinue("low_score_relevant")}
+                >
+                  低分有关
+                </Button>
+                <Button
+                  type={currentDraft?.feedbackType === "normal" ? "primary" : "default"}
+                  onClick={() => recordAndContinue("normal")}
+                >
+                  跳过（结果正常）
+                </Button>
+                <Button
+                  type={currentDraft?.feedbackType === "other" ? "primary" : "default"}
+                  onClick={() => updateDraft(currentResult.result_item_id, "other")}
+                >
+                  其他
+                </Button>
+              </Space>
+              {isOther ? (
+                <Space direction="vertical" size={8} style={{ marginTop: 12, width: "100%" }}>
+                  <Input.TextArea
+                    aria-label="其他结果标注说明"
+                    autoSize={{ minRows: 3, maxRows: 8 }}
+                    maxLength={4000}
+                    placeholder="请说明这条检索结果的问题（必填，最多 4000 字）"
+                    value={currentDraft?.otherNote ?? ""}
+                    onChange={(event) =>
+                      updateDraft(currentResult.result_item_id, "other", event.target.value)
+                    }
+                  />
+                  <Button
+                    type="primary"
+                    disabled={otherNoteMissing}
+                    onClick={saveOtherAndContinue}
+                  >
+                    保存其他并继续
+                  </Button>
+                </Space>
+              ) : null}
+            </Card>
+            <Space>
+              <Button disabled={currentIndex === 0} onClick={() => setCurrentIndex((index) => index - 1)}>
+                上一条
+              </Button>
+              <Button onClick={() => setOpen(false)}>稍后继续</Button>
+            </Space>
+          </Space>
+        ) : (
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              type="success"
+              showIcon
+              message="已逐条完成标注"
+              description="请确认后提交整个检索 Review；提交后不可修改。"
+            />
+            <Space wrap>
+              {(Object.keys(annotationFeedbackLabels) as SearchAnnotationResultLabel[]).map((type) => (
+                <Tag key={type}>{annotationFeedbackLabels[type]}：{labelCounts[type]}</Tag>
+              ))}
+            </Space>
+            <Space>
+              <Button onClick={() => setCurrentIndex(Math.max(results.length - 1, 0))}>返回修改</Button>
+              <Button type="primary" loading={submitting} onClick={() => void submit()}>
+                完成并提交
+              </Button>
+            </Space>
+          </Space>
+        )}
+      </Modal>
+    </Card>
+  );
+}
+
 type SearchTabKey = SearchRetrievalMode | "conversation";
 
 export function SearchPage(): JSX.Element {
@@ -280,9 +549,7 @@ export function SearchPage(): JSX.Element {
   const conversationEditorRef = useRef<ConversationEditorHandle>(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [retrievingQueries, setRetrievingQueries] = useState(false);
-  const [conversationResult, setConversationResult] = useState<
-    ReturnType<typeof mergeSearchResponses> | import("../api/types").ConversationSearchResponse
-  >();
+  const [conversationResult, setConversationResult] = useState<ConversationSearchResponse>();
   const [editableQueries, setEditableQueries] = useState<string[]>([]);
 
   useEffect(() => {
@@ -362,25 +629,24 @@ export function SearchPage(): JSX.Element {
       return;
     }
     setLoading(true);
+    setFeedbackIds(new Set());
     try {
-      setResult(
-        await api.search(
-          retrievalMode,
-          retrievalMode === "vector" ? normalizedQuery : undefined,
-          knowledgeBaseId,
-          retrievalMode === "field_filter"
-            ? {
-                parent_type: parentType,
-                question_type: questionType,
-                business_object: businessObject,
-                purpose,
-                customer_type: customerType
-              }
-            : {},
-          retrievalMode === "vector" ? ocrRecognition?.recognition_token : undefined
-        )
+      const response = await api.search(
+        retrievalMode,
+        retrievalMode === "vector" ? normalizedQuery : undefined,
+        knowledgeBaseId,
+        retrievalMode === "field_filter"
+          ? {
+              parent_type: parentType,
+              question_type: questionType,
+              business_object: businessObject,
+              purpose,
+              customer_type: customerType
+            }
+          : {},
+        retrievalMode === "vector" ? ocrRecognition?.recognition_token : undefined
       );
-      setFeedbackIds(new Set());
+      setResult(response);
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "检索失败");
     } finally {
@@ -431,10 +697,7 @@ export function SearchPage(): JSX.Element {
     setRetrievingQueries(true);
     setFeedbackIds(new Set());
     try {
-      const responses = await Promise.all(
-        queries.map((searchQuery) => api.search("vector", searchQuery, knowledgeBaseId))
-      );
-      setConversationResult(mergeSearchResponses(queries, responses));
+      setConversationResult(await api.queryBatchSearch(queries, knowledgeBaseId));
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "重新检索失败");
     } finally {
@@ -779,6 +1042,17 @@ export function SearchPage(): JSX.Element {
               onFeedback={(item) => void markHelpful(item)}
             />
           )}
+          <SearchAnnotationReviewPanel
+            key={result.search_interaction_id ?? "missing-search-interaction"}
+            interactionId={result.search_interaction_id}
+            results={visibleResultsForAnnotation(result.groups)}
+            onSubmit={(resultFeedbacks) =>
+              api.submitSearchAnnotationReview(
+                result.search_interaction_id ?? "",
+                resultFeedbacks
+              )
+            }
+          />
         </div>
       ) : null}
       {activeTab === "conversation" && conversationResult ? (
@@ -813,6 +1087,19 @@ export function SearchPage(): JSX.Element {
               onFeedback={(item) => void markConversationHelpful(item)}
             />
           )}
+          {!conversationResult.no_query_guidance ? (
+            <SearchAnnotationReviewPanel
+              key={conversationResult.search_interaction_id ?? "missing-conversation-interaction"}
+              interactionId={conversationResult.search_interaction_id}
+              results={visibleResultsForAnnotation(conversationResult.groups)}
+              onSubmit={(resultFeedbacks) =>
+                api.submitSearchAnnotationReview(
+                  conversationResult.search_interaction_id ?? "",
+                  resultFeedbacks
+                )
+              }
+            />
+          ) : null}
         </div>
       ) : null}
     </section>

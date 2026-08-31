@@ -26,6 +26,8 @@ from app.models.knowledge_content import (
     ReviewSubmissionKind,
     ReviewSubmissionStatus,
     SearchEvent,
+    SearchInteraction,
+    SearchInteractionType,
     SearchQueryMode,
     SearchResultItem,
     WebLink,
@@ -129,6 +131,7 @@ class SelectionDecision:
 @dataclass(frozen=True)
 class SearchDetails:
     event: SearchEvent
+    interaction: SearchInteraction | None
     groups: list[tuple[ParentRevision, list[tuple[SearchResultItem, SearchCandidate]]]]
     no_match_guidance: str | None
     degraded: bool = False
@@ -837,11 +840,26 @@ async def search_published_content(
     reranker: RerankerProvider | None = None,
     relevance_judge: RelevanceJudge | None = None,
     pipeline_options: SearchPipelineOptions | None = None,
+    search_interaction: SearchInteraction | None = None,
+    query_order: int | None = None,
 ) -> SearchDetails:
     if ocr_recognition is not None and ocr_recognition.text != ocr_text:
         raise ValueError("OCR recognition text must match ocr_text")
     if not 0 <= ocr_keyword_fallback_min_confidence <= 1:
         raise ValueError("ocr_keyword_fallback_min_confidence must be between 0 and 1")
+    if retrieval_mode == "field_filter" and search_interaction is not None:
+        raise ValueError("field filter searches cannot belong to a search interaction")
+    if search_interaction is None and query_order is not None:
+        raise ValueError("query_order requires a search interaction")
+    if search_interaction is not None:
+        if search_interaction.user_id != user_id:
+            raise ValueError("search interaction owner must match the search user")
+        if search_interaction.interaction_type != SearchInteractionType.QUICK_SEARCH:
+            raise ValueError("only quick-search interactions can contain multiple query events")
+        if query_order is None or query_order < 1:
+            raise ValueError("quick-search query_order must be positive")
+        if search_interaction.knowledge_base_id != knowledge_base_id:
+            raise ValueError("quick-search events must keep the interaction knowledge-base scope")
     if knowledge_base_id is not None:
         knowledge_base = await session.get(KnowledgeBase, knowledge_base_id)
         if knowledge_base is None or not knowledge_base.is_active:
@@ -963,6 +981,24 @@ async def search_published_content(
         selected.extend(fallback_candidates)
         selected = _sort_selected_candidates(selected)[:limit]
 
+    interaction = search_interaction
+    effective_query_order: int | None = None
+    if retrieval_mode == "vector":
+        if interaction is None:
+            interaction = SearchInteraction(
+                user_id=user_id,
+                interaction_type=SearchInteractionType.VECTOR,
+                knowledge_base_id=knowledge_base_id,
+                no_match=not selected,
+                degraded=bool(degradation_reasons),
+                degradation_reasons=list(degradation_reasons) or None,
+            )
+            session.add(interaction)
+            await session.flush()
+            effective_query_order = 1
+        else:
+            effective_query_order = query_order
+
     event = SearchEvent(
         user_id=user_id,
         query_text=query,
@@ -972,6 +1008,8 @@ async def search_published_content(
         ocr_model_version=(ocr_recognition.model_version if ocr_recognition is not None else None),
         ocr_image_sha256=(ocr_recognition.image_sha256 if ocr_recognition is not None else None),
         query_mode=mode,
+        search_interaction_id=interaction.id if interaction is not None else None,
+        query_order=effective_query_order,
         knowledge_base_id=knowledge_base_id,
         no_match=not selected,
         degraded=bool(degradation_reasons),
@@ -1016,6 +1054,7 @@ async def search_published_content(
     )
     return SearchDetails(
         event=event,
+        interaction=interaction,
         groups=groups,
         no_match_guidance=(
             (NO_FILTER_MATCH_GUIDANCE if retrieval_mode == "field_filter" else NO_MATCH_GUIDANCE)

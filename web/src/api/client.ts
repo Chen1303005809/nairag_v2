@@ -1,4 +1,9 @@
 import type {
+  AnnotationFeedbackDetail,
+  AnnotationFeedbackFilters,
+  AnnotationFeedbackListFilters,
+  AnnotationFeedbackPage,
+  AnnotationFeedbackSummary,
   AvailableParent,
   ChildContentInput,
   ConversationSearchResponse,
@@ -21,6 +26,8 @@ import type {
   ReviewQueueItem,
   ReviewSubmission,
   SearchFilters,
+  SearchAnnotationReviewResponse,
+  SearchAnnotationResultFeedbackInput,
   SearchRetrievalMode,
   SearchResponse,
   HelpfulFeedbackResponse,
@@ -87,6 +94,17 @@ function jsonRequest(method: string, body: object, csrfToken?: string): RequestI
     },
     body: JSON.stringify(body)
   };
+}
+
+function queryString(values: object): string {
+  const parameters = new URLSearchParams();
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      parameters.set(key, String(value));
+    }
+  });
+  const serialized = parameters.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
 async function issuePreAuthCsrfToken(): Promise<string> {
@@ -284,6 +302,13 @@ export const api = {
       limit: 10
     }),
 
+  queryBatchSearch: (queries: string[], knowledgeBaseId?: string): Promise<ConversationSearchResponse> =>
+    sessionMutation<ConversationSearchResponse>("POST", "/search/query-batch", {
+      queries,
+      knowledge_base_id: knowledgeBaseId || null,
+      limit: 10
+    }),
+
   createIngestionBatch: (messages: NormalizedMessageInput[]): Promise<IngestionBatch> =>
     sessionMutation<IngestionBatch>("POST", "/intelligent-ingestion/batches", { messages }),
 
@@ -332,6 +357,33 @@ export const api = {
       `/search/events/${searchEventId}/feedback`,
       { result_item_id: resultItemId }
     ),
+
+  submitSearchAnnotationReview: (
+    interactionId: string,
+    resultFeedbacks: SearchAnnotationResultFeedbackInput[]
+  ): Promise<SearchAnnotationReviewResponse> =>
+    sessionMutation<SearchAnnotationReviewResponse>(
+      "POST",
+      `/search/interactions/${interactionId}/annotation-feedback`,
+      { result_feedbacks: resultFeedbacks }
+    ),
+
+  getAnnotationFeedbackSummary: (
+    filters: AnnotationFeedbackFilters = {}
+  ): Promise<AnnotationFeedbackSummary> =>
+    request<AnnotationFeedbackSummary>(
+      `/search/admin/annotation-feedback/summary${queryString(filters)}`
+    ),
+
+  listAnnotationFeedback: (
+    filters: AnnotationFeedbackListFilters = {}
+  ): Promise<AnnotationFeedbackPage> =>
+    request<AnnotationFeedbackPage>(
+      `/search/admin/annotation-feedback${queryString({ page: 1, page_size: 20, ...filters })}`
+    ),
+
+  getAnnotationFeedbackDetail: (feedbackId: string): Promise<AnnotationFeedbackDetail> =>
+    request<AnnotationFeedbackDetail>(`/search/admin/annotation-feedback/${feedbackId}`),
 
   createParentSubmission: (
     parent: ParentContentInput,

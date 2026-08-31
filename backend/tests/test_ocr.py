@@ -139,7 +139,9 @@ async def test_uploading_an_image_issues_a_user_bound_ocr_token_and_records_safe
                     json={"ocr_recognition_token": payload["recognition_token"]},
                 )
                 assert searched.status_code == 200
-                assert searched.json()["query_mode"] == "image"
+                search_payload = searched.json()
+                assert search_payload["query_mode"] == "image"
+                assert search_payload["search_interaction_id"]
 
             session_factory = app.state.session_factory  # type: ignore[attr-defined]
             async with session_factory() as session:
@@ -163,6 +165,8 @@ async def test_uploading_an_image_issues_a_user_bound_ocr_token_and_records_safe
                 assert event.ocr_confidence == 0.97
                 assert event.ocr_model_version == OCR_MODEL_NAME
                 assert event.ocr_image_sha256 == hashlib.sha256(PNG_BYTES).hexdigest()
+                assert str(event.search_interaction_id) == search_payload["search_interaction_id"]
+                assert event.query_order == 1
     finally:
         await engine.dispose()
 

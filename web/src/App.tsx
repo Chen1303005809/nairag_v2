@@ -42,6 +42,11 @@ const SearchPage = lazy(async () => {
   return { default: page.SearchPage };
 });
 
+const AnnotationFeedbackDashboardPage = lazy(async () => {
+  const page = await import("./pages/AnnotationFeedbackDashboardPage");
+  return { default: page.AnnotationFeedbackDashboardPage };
+});
+
 function App(): JSX.Element {
   const [user, setUser] = useState<User>();
   const [loading, setLoading] = useState(true);
@@ -172,6 +177,15 @@ function App(): JSX.Element {
                   children: (
                     <Suspense fallback={<Spin />}>
                       <SearchPage />
+                    </Suspense>
+                  )
+                },
+                {
+                  key: "data-dashboard",
+                  label: "数据面板",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <AnnotationFeedbackDashboardPage />
                     </Suspense>
                   )
                 },

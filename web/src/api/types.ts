@@ -285,6 +285,7 @@ export interface SearchGroup {
 
 export interface SearchResponse {
   search_event_id: string;
+  search_interaction_id: string | null;
   query_mode: "text" | "image" | "mixed";
   no_match: boolean;
   no_match_guidance: string | null;
@@ -313,6 +314,7 @@ export interface ConversationSearchGroup {
 }
 
 export interface ConversationSearchResponse {
+  search_interaction_id: string | null;
   queries: string[];
   total_candidates: number;
   no_query_guidance: string | null;
@@ -397,4 +399,116 @@ export interface HelpfulFeedbackResponse {
   accepted: boolean;
   already_recorded: boolean;
   helpful_count: number;
+}
+
+export type SearchInteractionType = "vector" | "quick_search";
+
+export type SearchAnnotationResultLabel =
+  | "high_score_irrelevant"
+  | "low_score_relevant"
+  | "normal"
+  | "other";
+
+export interface SearchAnnotationResultFeedbackInput {
+  search_result_item_id: string;
+  feedback_type: SearchAnnotationResultLabel;
+  other_note?: string;
+}
+
+export interface SearchAnnotationResultFeedback {
+  search_result_item_id: string;
+  feedback_type: SearchAnnotationResultLabel;
+  other_note: string | null;
+}
+
+export interface SearchAnnotationReviewResponse {
+  accepted: boolean;
+  already_recorded: boolean;
+  reviewed_result_count: number;
+  submitted_at: string;
+  result_feedbacks: SearchAnnotationResultFeedback[];
+}
+
+export interface AnnotationFeedbackFilters {
+  annotated_from?: string;
+  annotated_to?: string;
+  knowledge_base_id?: string;
+  query_keyword?: string;
+}
+
+export interface AnnotationFeedbackListFilters extends AnnotationFeedbackFilters {
+  feedback_type?: SearchAnnotationResultLabel;
+  page?: number;
+  page_size?: number;
+}
+
+export interface AnnotationFeedbackUser {
+  id: string;
+  username: string;
+  display_name: string;
+}
+
+export interface AnnotationFeedbackSummary {
+  completed_review_count: number;
+  annotated_result_count: number;
+  high_score_irrelevant_count: number;
+  low_score_relevant_count: number;
+  normal_count: number;
+  other_count: number;
+}
+
+export interface AnnotationFeedbackListItem {
+  id: string;
+  submitted_by: AnnotationFeedbackUser;
+  interaction_type: SearchInteractionType;
+  queries: string[];
+  target_knowledge_base_id: string | null;
+  target_knowledge_base_name: string | null;
+  high_score_irrelevant_count: number;
+  low_score_relevant_count: number;
+  normal_count: number;
+  other_count: number;
+  searched_at: string;
+  submitted_at: string;
+  result_count: number;
+}
+
+export interface AnnotationFeedbackPage {
+  items: AnnotationFeedbackListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AnnotationFeedbackResultDetail {
+  result_item_id: string;
+  rank: number;
+  score: number;
+  hybrid_score: number | null;
+  rerank_score: number | null;
+  selection_stage: string;
+  matched_field: string | null;
+  parent_name: string;
+  question: string;
+  knowledge_base_id: string;
+  knowledge_base_name: string;
+  matched_queries: string[];
+  feedback_type: SearchAnnotationResultLabel;
+  other_note: string | null;
+}
+
+export interface AnnotationFeedbackQueryDetail {
+  search_event_id: string;
+  query_order: number;
+  query_text: string | null;
+  ocr_text: string | null;
+  no_match: boolean;
+  results: AnnotationFeedbackResultDetail[];
+}
+
+export interface AnnotationFeedbackDetail extends AnnotationFeedbackListItem {
+  no_match: boolean;
+  degraded: boolean;
+  degradation_reasons: string[];
+  query_details: AnnotationFeedbackQueryDetail[];
 }

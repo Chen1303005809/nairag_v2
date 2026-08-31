@@ -82,6 +82,22 @@ class SearchQueryMode(str, Enum):
     MIXED = "mixed"
 
 
+class SearchInteractionType(str, Enum):
+    """The user-visible operation that can receive one completed annotation review."""
+
+    VECTOR = "vector"
+    QUICK_SEARCH = "quick_search"
+
+
+class SearchAnnotationResultLabel(str, Enum):
+    """A reviewer judgement for one result visible in a search interaction."""
+
+    HIGH_SCORE_IRRELEVANT = "high_score_irrelevant"
+    LOW_SCORE_RELEVANT = "low_score_relevant"
+    NORMAL = "normal"
+    OTHER = "other"
+
+
 class Parent(Base):
     """Global parent identity. Its mutable business content belongs to revisions."""
 
@@ -680,11 +696,60 @@ class IndexJob(Base):
     )
 
 
+class SearchInteraction(Base):
+    """One user-visible vector or multi-query quick-search operation."""
+
+    __tablename__ = "search_interaction"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("user_account.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    interaction_type: Mapped[SearchInteractionType] = mapped_column(
+        SqlEnum(
+            SearchInteractionType,
+            name="search_interaction_type",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [value.value for value in enum_class],
+        ),
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    no_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    degraded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    degradation_reasons: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
 class SearchEvent(Base):
     """A persisted search context used for result tracing and feedback idempotency."""
 
     __tablename__ = "search_event"
     __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint(
+            "search_interaction_id",
+            "query_order",
+            name="uq_search_event_interaction_query_order",
+        ),
+        CheckConstraint(
+            "(search_interaction_id IS NULL AND query_order IS NULL) OR "
+            "(search_interaction_id IS NOT NULL AND query_order IS NOT NULL AND query_order >= 1)",
+            name="ck_search_event_interaction_query_order",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(
@@ -710,6 +775,13 @@ class SearchEvent(Base):
         nullable=False,
         default=SearchQueryMode.TEXT,
     )
+    search_interaction_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_interaction.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    query_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     knowledge_base_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
@@ -844,3 +916,84 @@ class HelpfulFeedbackEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
+
+
+class SearchAnnotationReview(Base):
+    """One completed, immutable review of a user-visible search interaction."""
+
+    __tablename__ = "search_annotation_review"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint(
+            "search_interaction_id",
+            name="uq_search_annotation_review_interaction",
+        ),
+        CheckConstraint(
+            "reviewed_result_count >= 0",
+            name="ck_search_annotation_review_result_count",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    submitted_by_user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("user_account.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    search_interaction_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_interaction.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    reviewed_result_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+
+
+class SearchAnnotationResultFeedback(Base):
+    """An immutable reviewer label for one result in a completed search review."""
+
+    __tablename__ = "search_annotation_result_feedback"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        UniqueConstraint(
+            "search_annotation_review_id",
+            "search_result_item_id",
+            name="uq_search_annotation_result_feedback_review_result",
+        ),
+        CheckConstraint(
+            "(feedback_type = 'other' AND other_note IS NOT NULL "
+            "AND length(trim(other_note)) BETWEEN 1 AND 4000) OR "
+            "(feedback_type IN ('high_score_irrelevant', 'low_score_relevant', 'normal') "
+            "AND other_note IS NULL)",
+            name="ck_search_annotation_result_feedback_other_note",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    search_annotation_review_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_annotation_review.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    search_result_item_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("search_result_item.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    feedback_type: Mapped[SearchAnnotationResultLabel] = mapped_column(
+        SqlEnum(
+            SearchAnnotationResultLabel,
+            name="search_annotation_result_label",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [value.value for value in enum_class],
+        ),
+        nullable=False,
+    )
+    other_note: Mapped[str | None] = mapped_column(Text, nullable=True)

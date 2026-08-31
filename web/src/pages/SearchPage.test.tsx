@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Modal } from "antd";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
@@ -17,7 +18,9 @@ vi.mock("../api/client", () => ({
     recognizeConversationImage: vi.fn(),
     search: vi.fn(),
     conversationSearch: vi.fn(),
-    submitHelpfulFeedback: vi.fn()
+    queryBatchSearch: vi.fn(),
+    submitHelpfulFeedback: vi.fn(),
+    submitSearchAnnotationReview: vi.fn()
   }
 }));
 
@@ -42,6 +45,7 @@ const recognition: OcrRecognition = {
 };
 
 const conversationWithQueriesResponse: ConversationSearchResponse = {
+  search_interaction_id: "interaction-conversation-1",
   queries: ["登录一直失败怎么办？", "如何重置密码？"],
   total_candidates: 2,
   no_query_guidance: null,
@@ -54,6 +58,7 @@ const conversationWithQueriesResponse: ConversationSearchResponse = {
 
 const noMatchResponse: SearchResponse = {
   search_event_id: "event-1",
+  search_interaction_id: "interaction-1",
   query_mode: "image",
   no_match: true,
   no_match_guidance: "未找到足够相关的知识，请转研发查询。",
@@ -64,6 +69,7 @@ const noMatchResponse: SearchResponse = {
 
 const matchedResponse: SearchResponse = {
   search_event_id: "event-2",
+  search_interaction_id: "interaction-2",
   query_mode: "text",
   no_match: false,
   no_match_guidance: null,
@@ -109,6 +115,7 @@ const matchedResponse: SearchResponse = {
 };
 
 const conversationNoQueryResponse: ConversationSearchResponse = {
+  search_interaction_id: null,
   queries: [],
   total_candidates: 0,
   no_query_guidance: "未发现待查询问题",
@@ -126,9 +133,24 @@ beforeEach(() => {
   mockedApi.recognizeConversationImage.mockResolvedValue(recognition);
   mockedApi.search.mockResolvedValue(noMatchResponse);
   mockedApi.conversationSearch.mockResolvedValue(conversationNoQueryResponse);
+  mockedApi.queryBatchSearch.mockResolvedValue(conversationWithQueriesResponse);
+  mockedApi.submitSearchAnnotationReview.mockResolvedValue({
+    accepted: true,
+    already_recorded: false,
+    reviewed_result_count: 1,
+    submitted_at: "2026-08-28T00:00:00Z",
+    result_feedbacks: [
+      {
+        search_result_item_id: "result-1",
+        feedback_type: "high_score_irrelevant",
+        other_note: null
+      }
+    ]
+  });
 });
 
 afterEach(() => {
+  Modal.destroyAll();
   cleanup();
 });
 
@@ -273,6 +295,104 @@ describe("SearchPage OCR", () => {
 
     fireEvent.change(queryInput, { target: { value: "登录一直失败怎么办？啊" } });
     expect(screen.getByDisplayValue("登录一直失败怎么办？啊")).toBe(queryInput);
+  });
+
+  it("uses one server-side batch request when edited quick-search queries are rerun", async () => {
+    mockedApi.conversationSearch.mockResolvedValue(conversationWithQueriesResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("tab", { name: /快速检索/ }));
+    fireEvent.paste(screen.getByRole("textbox", { name: "快速检索聊天内容" }), {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain"
+            ? "张客户 09:30\n登录一直失败怎么办？\n\n融航-李支持 09:31\n我需要先查询一下。"
+            : "",
+        items: [],
+        files: []
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /提取查询并检索/ }));
+    await screen.findByDisplayValue("登录一直失败怎么办？");
+
+    fireEvent.click(screen.getByRole("button", { name: "按当前查询重新检索" }));
+    await waitFor(() =>
+      expect(mockedApi.queryBatchSearch).toHaveBeenCalledWith(
+        ["登录一直失败怎么办？", "如何重置密码？"],
+        undefined
+      )
+    );
+  });
+
+  it("reviews each visible vector result before atomically submitting the immutable Review", async () => {
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+    expect(await screen.findByText("本次检索标注")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "开始逐条标注" }));
+    expect(await screen.findByText("第 1 / 1 条。选择标签后会进入下一条；可以返回修改已处理的结果。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "高分无关" }));
+    expect(await screen.findByText("已逐条完成标注")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "完成并提交" }));
+
+    await waitFor(() =>
+      expect(mockedApi.submitSearchAnnotationReview).toHaveBeenCalledWith(
+        "interaction-2",
+        [
+          {
+            search_result_item_id: "result-1",
+            feedback_type: "high_score_irrelevant"
+          }
+        ]
+      )
+    );
+    expect(await screen.findByText("已记录本次检索标注，提交后不可修改。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "开始逐条标注" })).not.toBeInTheDocument();
+  });
+
+  it("records skip as the normal per-result label", async () => {
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "开始逐条标注" }));
+    fireEvent.click(screen.getByRole("button", { name: "跳过（结果正常）" }));
+    fireEvent.click(await screen.findByRole("button", { name: "完成并提交" }));
+
+    await waitFor(() =>
+      expect(mockedApi.submitSearchAnnotationReview).toHaveBeenCalledWith(
+        "interaction-2",
+        [
+          {
+            search_result_item_id: "result-1",
+            feedback_type: "normal"
+          }
+        ]
+      )
+    );
+  });
+
+  it("does not show an annotation panel for field filtering", async () => {
+    mockedApi.search.mockResolvedValue({ ...matchedResponse, search_interaction_id: null });
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("tab", { name: "字段筛选" }));
+    fireEvent.click(screen.getByRole("button", { name: "筛选所有匹配条目" }));
+    await screen.findByText("如何找回密码？");
+    expect(screen.queryByText("本次检索反馈")).not.toBeInTheDocument();
   });
 
   it("OCRs an image manually attached to a forwarded chat card before assisted search", async () => {

@@ -220,17 +220,23 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     {
       title: "审核者",
       key: "reviewer",
+      width: 140,
+      onHeaderCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: () => "—"
     },
     {
       title: "实际审核时间",
       key: "reviewed_at",
+      width: 180,
+      onHeaderCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: () => "—"
     },
     {
       title: "状态",
       dataIndex: "target_status",
       key: "target_status",
+      width: 100,
+      onHeaderCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: ReviewTargetStatus) => targetStatus(value)
     },
     {
@@ -386,7 +392,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
                     loading={loading}
                     columns={queueColumns}
                     dataSource={queue}
-                    scroll={{ x: 1280 }}
+                    scroll={{ x: 1620 }}
                     expandable={{ expandedRowRender: expandedRow }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}
                     locale={{ emptyText: "当前没有待审核的上传内容" }}

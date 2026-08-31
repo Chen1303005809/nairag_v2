@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -11,11 +12,20 @@ from app.api.deps import (
     get_app_settings,
     require_csrf,
     require_fully_authenticated_session,
+    require_system_administrator,
 )
 from app.core.config import Settings
 from app.db.session import get_db_session
+from app.models.knowledge_content import SearchAnnotationResultLabel
 from app.schemas.knowledge_content import EvidenceAttachmentResponse, WebLinkInput
 from app.schemas.search import (
+    AnnotationFeedbackDetailResponse,
+    AnnotationFeedbackListItemResponse,
+    AnnotationFeedbackPageResponse,
+    AnnotationFeedbackQueryDetailResponse,
+    AnnotationFeedbackResultDetailResponse,
+    AnnotationFeedbackSummaryResponse,
+    AnnotationFeedbackUserResponse,
     ConversationSearchParentGroupResponse,
     ConversationSearchRequest,
     ConversationSearchResponse,
@@ -23,6 +33,10 @@ from app.schemas.search import (
     HelpfulFeedbackRequest,
     HelpfulFeedbackResponse,
     OcrRecognitionResponse,
+    QueryBatchRequest,
+    SearchAnnotationResultFeedbackResponse,
+    SearchAnnotationReviewRequest,
+    SearchAnnotationReviewResponse,
     SearchParentGroupResponse,
     SearchRequest,
     SearchResponse,
@@ -52,6 +66,21 @@ from app.services.search import (
     record_helpful_feedback,
     search_published_content,
 )
+from app.services.search_annotations import (
+    AnnotationFeedbackDetail,
+    AnnotationFeedbackListItem,
+    ResultFeedbackInput,
+    SearchAnnotationFilterError,
+    SearchAnnotationReviewConflictError,
+    SearchAnnotationReviewInputError,
+    SearchAnnotationReviewNotFoundError,
+    SearchAnnotationReviewUnavailableError,
+    get_annotation_feedback_detail,
+    get_annotation_feedback_summary,
+    list_annotation_feedback,
+    record_search_annotation_review,
+)
+from app.services.search_batch import execute_query_batch
 from app.services.users import record_audit_event
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -60,6 +89,7 @@ router = APIRouter(prefix="/search", tags=["search"])
 def as_search_response(details) -> SearchResponse:
     return SearchResponse(
         search_event_id=details.event.id,
+        search_interaction_id=(details.interaction.id if details.interaction is not None else None),
         query_mode=details.event.query_mode,
         no_match=details.event.no_match,
         no_match_guidance=details.no_match_guidance,
@@ -132,6 +162,9 @@ def as_conversation_search_response(
     details: ConversationSearchDetails,
 ) -> ConversationSearchResponse:
     return ConversationSearchResponse(
+        search_interaction_id=(
+            details.interaction.id if details.interaction is not None else None
+        ),
         queries=list(details.queries),
         total_candidates=details.total_candidates,
         no_query_guidance=details.no_query_guidance,
@@ -200,6 +233,70 @@ def as_conversation_search_response(
                 ],
             )
             for parent_revision, items in details.groups
+        ],
+    )
+
+
+def as_annotation_feedback_list_item(
+    item: AnnotationFeedbackListItem,
+) -> AnnotationFeedbackListItemResponse:
+    return AnnotationFeedbackListItemResponse(
+        id=item.id,
+        submitted_by=AnnotationFeedbackUserResponse(
+            id=item.submitted_by.id,
+            username=item.submitted_by.username,
+            display_name=item.submitted_by.display_name,
+        ),
+        interaction_type=item.interaction_type,
+        queries=list(item.queries),
+        target_knowledge_base_id=item.target_knowledge_base_id,
+        target_knowledge_base_name=item.target_knowledge_base_name,
+        high_score_irrelevant_count=item.high_score_irrelevant_count,
+        low_score_relevant_count=item.low_score_relevant_count,
+        normal_count=item.normal_count,
+        other_count=item.other_count,
+        searched_at=item.searched_at,
+        submitted_at=item.submitted_at,
+        result_count=item.result_count,
+    )
+
+
+def as_annotation_feedback_detail(
+    detail: AnnotationFeedbackDetail,
+) -> AnnotationFeedbackDetailResponse:
+    return AnnotationFeedbackDetailResponse(
+        **as_annotation_feedback_list_item(detail).model_dump(),
+        no_match=detail.no_match,
+        degraded=detail.degraded,
+        degradation_reasons=list(detail.degradation_reasons),
+        query_details=[
+            AnnotationFeedbackQueryDetailResponse(
+                search_event_id=query.search_event_id,
+                query_order=query.query_order,
+                query_text=query.query_text,
+                ocr_text=query.ocr_text,
+                no_match=query.no_match,
+                results=[
+                    AnnotationFeedbackResultDetailResponse(
+                        result_item_id=result.result_item_id,
+                        rank=result.rank,
+                        score=result.score,
+                        hybrid_score=result.hybrid_score,
+                        rerank_score=result.rerank_score,
+                        selection_stage=result.selection_stage,
+                        matched_field=result.matched_field,
+                        parent_name=result.parent_name,
+                        question=result.question,
+                        knowledge_base_id=result.knowledge_base_id,
+                        knowledge_base_name=result.knowledge_base_name,
+                        matched_queries=list(result.matched_queries),
+                        feedback_type=result.feedback_type,
+                        other_note=result.other_note,
+                    )
+                    for result in query.results
+                ],
+            )
+            for query in detail.query_details
         ],
     )
 
@@ -416,6 +513,43 @@ async def conversation_assisted_search_content(
     return as_conversation_search_response(details)
 
 
+@router.post("/query-batch", response_model=ConversationSearchResponse)
+async def query_batch_search_content(
+    body: QueryBatchRequest,
+    request: Request,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> ConversationSearchResponse:
+    """Run edited quick-search queries as one persisted user-visible interaction."""
+
+    llm_provider = getattr(request.app.state, "llm_provider", None)
+    try:
+        details = await execute_query_batch(
+            session,
+            user_id=user.user.id,
+            queries=body.queries,
+            knowledge_base_id=body.knowledge_base_id,
+            limit=body.limit,
+            settings=settings,
+            index_backend=request.app.state.search_index_backend,
+            reranker=getattr(request.app.state, "reranker_provider", None),
+            relevance_judge=(
+                llm_provider
+                if hasattr(llm_provider, "judge_search_relevance")
+                else None
+            ),
+        )
+    except SearchKnowledgeBaseUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="目标知识库不存在或未启用",
+        ) from exc
+    await session.commit()
+    return as_conversation_search_response(details)
+
+
 @router.post(
     "/events/{search_event_id}/feedback",
     response_model=HelpfulFeedbackResponse,
@@ -447,3 +581,148 @@ async def submit_helpful_feedback(
         already_recorded=already_recorded,
         helpful_count=helpful_count,
     )
+
+
+@router.post(
+    "/interactions/{interaction_id}/annotation-feedback",
+    response_model=SearchAnnotationReviewResponse,
+)
+async def submit_search_annotation_review(
+    interaction_id: UUID,
+    body: SearchAnnotationReviewRequest,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> SearchAnnotationReviewResponse:
+    try:
+        review, result_feedbacks, already_recorded = await record_search_annotation_review(
+            session,
+            user_id=user.user.id,
+            interaction_id=interaction_id,
+            result_feedbacks=[
+                ResultFeedbackInput(
+                    search_result_item_id=item.search_result_item_id,
+                    feedback_type=item.feedback_type,
+                    other_note=item.other_note,
+                )
+                for item in body.result_feedbacks
+            ],
+        )
+    except SearchAnnotationReviewUnavailableError as exc:
+        # The same response covers absent, non-owned, and non-annotatable IDs.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="检索记录不存在") from exc
+    except SearchAnnotationReviewInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except SearchAnnotationReviewConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该检索已完成过不同内容的标注 Review，标注不可修改",
+        ) from exc
+    await session.commit()
+    return SearchAnnotationReviewResponse(
+        accepted=True,
+        already_recorded=already_recorded,
+        reviewed_result_count=review.reviewed_result_count,
+        submitted_at=review.submitted_at,
+        result_feedbacks=[
+            SearchAnnotationResultFeedbackResponse(
+                search_result_item_id=feedback.search_result_item_id,
+                feedback_type=feedback.feedback_type,
+                other_note=feedback.other_note,
+            )
+            for feedback in result_feedbacks
+        ],
+    )
+
+
+@router.get(
+    "/admin/annotation-feedback/summary",
+    response_model=AnnotationFeedbackSummaryResponse,
+)
+async def get_search_annotation_feedback_summary(
+    _actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    annotated_from: datetime | None = None,
+    annotated_to: datetime | None = None,
+    knowledge_base_id: UUID | None = None,
+    query_keyword: str | None = Query(default=None, max_length=4_000),
+) -> AnnotationFeedbackSummaryResponse:
+    try:
+        summary = await get_annotation_feedback_summary(
+            session,
+            annotated_from=annotated_from,
+            annotated_to=annotated_to,
+            knowledge_base_id=knowledge_base_id,
+            query_keyword=query_keyword,
+        )
+    except SearchAnnotationFilterError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return AnnotationFeedbackSummaryResponse(
+        completed_review_count=summary.completed_review_count,
+        annotated_result_count=summary.annotated_result_count,
+        high_score_irrelevant_count=summary.high_score_irrelevant_count,
+        low_score_relevant_count=summary.low_score_relevant_count,
+        normal_count=summary.normal_count,
+        other_count=summary.other_count,
+    )
+
+
+@router.get(
+    "/admin/annotation-feedback",
+    response_model=AnnotationFeedbackPageResponse,
+)
+async def list_search_annotation_feedback(
+    _actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    feedback_type: SearchAnnotationResultLabel | None = None,
+    annotated_from: datetime | None = None,
+    annotated_to: datetime | None = None,
+    knowledge_base_id: UUID | None = None,
+    query_keyword: str | None = Query(default=None, max_length=4_000),
+) -> AnnotationFeedbackPageResponse:
+    try:
+        feedback_page = await list_annotation_feedback(
+            session,
+            page=page,
+            page_size=page_size,
+            feedback_type=feedback_type,
+            annotated_from=annotated_from,
+            annotated_to=annotated_to,
+            knowledge_base_id=knowledge_base_id,
+            query_keyword=query_keyword,
+        )
+    except SearchAnnotationFilterError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return AnnotationFeedbackPageResponse(
+        items=[as_annotation_feedback_list_item(item) for item in feedback_page.items],
+        total=feedback_page.total,
+        page=feedback_page.page,
+        page_size=feedback_page.page_size,
+    )
+
+
+@router.get(
+    "/admin/annotation-feedback/{feedback_id}",
+    response_model=AnnotationFeedbackDetailResponse,
+)
+async def get_search_annotation_feedback_detail(
+    feedback_id: UUID,
+    _actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AnnotationFeedbackDetailResponse:
+    try:
+        detail = await get_annotation_feedback_detail(session, feedback_id=feedback_id)
+    except SearchAnnotationReviewNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="标注记录不存在") from exc
+    return as_annotation_feedback_detail(detail)
