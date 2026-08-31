@@ -10,7 +10,7 @@
 ## 独立 Compose 与网络
 
 - 新增独立的 `lightrag/compose.yaml`，仅包含：
-  - 固定为 `lightrag-hku==1.5.6`、Python 3.12 的 LightRAG。
+  - 固定为 Python 3.12，按官方推荐通过 `uv tool install "lightrag-hku[api]==1.5.6"` 安装的 LightRAG。
   - 独立 `pgvector/pgvector:pg18` PostgreSQL 和持久卷。
   - LightRAG 工作目录、输入文件与日志卷。
 - 独立启动方式为 `docker compose -f lightrag/compose.yaml up -d`，停止或升级该 Compose 不重启平台。
