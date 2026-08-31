@@ -2,8 +2,10 @@
 
 该目录是全局补充资料的独立部署单元。它不共享 Nairag 的 PostgreSQL、Compose
 项目、启动依赖或健康检查；平台 API 只是通过一个持久 Docker 内部网络调用它。
-LightRAG 的 PostgreSQL 数据保存在项目根目录的
-`volumes/lightrag_postgres_data/`（已被 Git 忽略），而非 Docker 的系统管理卷中。
+LightRAG 的 PostgreSQL、工作目录、输入文件和日志都保存在项目根目录的
+`volumes/lightrag_postgres_data/`、`volumes/lightrag_work/`、
+`volumes/lightrag_input/` 和 `volumes/lightrag_logs/`（均已被 Git 忽略），
+而非 Docker 的系统管理卷中。
 
 首次部署先创建网络（只需一次）：
 

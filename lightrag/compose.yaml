@@ -42,9 +42,9 @@ services:
     expose:
       - "9621"
     volumes:
-      - lightrag-work:/var/lib/lightrag/work
-      - lightrag-input:/var/lib/lightrag/input
-      - lightrag-logs:/var/log/lightrag
+      - ../volumes/lightrag_work:/var/lib/lightrag/work
+      - ../volumes/lightrag_input:/var/lib/lightrag/input
+      - ../volumes/lightrag_logs:/var/log/lightrag
     networks:
       supplemental:
         aliases:
@@ -57,11 +57,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-
-volumes:
-  lightrag-work:
-  lightrag-input:
-  lightrag-logs:
 
 networks:
   # Pre-created once with: docker network create --internal nairag-supplemental
