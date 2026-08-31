@@ -12,8 +12,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Pin the independently deployed API surface used by the platform proxy.
-# The `api` extra provides the `lightrag-server` command used below.
-RUN uv tool install --python /usr/local/bin/python "lightrag-hku[api]==1.5.6"
+# The API extra does not include PostgreSQL storage dependencies. Install the
+# two adapters used by PGKV/PGDocStatus/PGGraph/PGVector in the same isolated
+# tool environment so startup never needs to download packages at runtime.
+RUN uv tool install \
+    --python /usr/local/bin/python \
+    --with "asyncpg>=0.31.0,<1.0.0" \
+    --with "pgvector>=0.4.2,<1.0.0" \
+    "lightrag-hku[api]==1.5.6"
 
 RUN mkdir -p /var/lib/lightrag/work /var/lib/lightrag/input /var/log/lightrag
 
