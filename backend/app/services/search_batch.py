@@ -11,6 +11,7 @@ from app.models.knowledge_content import (
     SearchInteraction,
     SearchInteractionType,
     SearchResultItem,
+    SearchResultKind,
 )
 from app.services.embedding import RerankerProvider
 from app.services.llm import RelevanceJudge
@@ -20,6 +21,7 @@ from app.services.search import (
     SearchPipelineOptions,
     search_published_content,
 )
+from app.services.supplemental_retrieval import SupplementalRetriever
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,17 @@ class MergedSearchItem:
 
     result_item: SearchResultItem
     candidate: SearchCandidate
+    matched_queries: list[str] = field(default_factory=list)
+    best_score: float = 0.0
+
+
+@dataclass(frozen=True)
+class MergedSupplementalSearchItem:
+    """One global material card after deduplicating query-level snapshots."""
+
+    result_item: SearchResultItem
+    title: str
+    content: str
     matched_queries: list[str] = field(default_factory=list)
     best_score: float = 0.0
 
@@ -45,6 +58,7 @@ class QueryBatchSearchDetails:
     groups: list[tuple[ParentRevision, list[MergedSearchItem]]]
     degraded: bool = False
     degradation_reasons: tuple[str, ...] = ()
+    supplemental_results: list[MergedSupplementalSearchItem] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -55,9 +69,12 @@ class PersistedQueryResult:
     query_order: int
     query_label: str
     result_item: SearchResultItem
-    parent_name: str
+    parent_name: str | None
     question: str
-    knowledge_base_name: str
+    knowledge_base_name: str | None
+    content: str = ""
+    source_hash: str | None = None
+    citation_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,7 +104,7 @@ def merge_persisted_query_results(
 ) -> list[MergedPersistedQueryResult]:
     """Rebuild the same visible deduplicated results from stored query events."""
 
-    merged_by_key: dict[tuple[UUID, UUID], MergedPersistedQueryResult] = {}
+    merged_by_key: dict[tuple[str, str], MergedPersistedQueryResult] = {}
     # Result UUIDs are unrelated to the order in which a quick-search batch
     # executed its queries. Rebuild the visible matched-query labels in the
     # persisted query order, rather than relying on a database row order.
@@ -99,10 +116,16 @@ def merge_persisted_query_results(
             str(item.result_item.id),
         ),
     ):
-        key = (
-            result.result_item.child_revision_id,
-            result.result_item.knowledge_base_id,
-        )
+        if result.result_item.result_kind is SearchResultKind.SUPPLEMENT:
+            key = (
+                "supplement",
+                result.result_item.supplement_source_hash or str(result.result_item.id),
+            )
+        else:
+            key = (
+                str(result.result_item.child_revision_id),
+                str(result.result_item.knowledge_base_id),
+            )
         existing = merged_by_key.get(key)
         if existing is None:
             merged_by_key[key] = MergedPersistedQueryResult(
@@ -148,6 +171,7 @@ def merge_query_search_details(
     """Apply the same de-duplication and ranking rules for every batch caller."""
 
     merged_by_key: dict[tuple[UUID, UUID], MergedSearchItem] = {}
+    merged_supplemental_by_hash: dict[str, MergedSupplementalSearchItem] = {}
     parent_revisions: dict[UUID, ParentRevision] = {}
     for query, details in details_by_query:
         for parent_revision, items in details.groups:
@@ -172,6 +196,29 @@ def merge_query_search_details(
                         matched_queries=existing.matched_queries,
                         best_score=result_item.score,
                     )
+        for supplemental in details.supplemental_results:
+            result_item = supplemental.result_item
+            source_hash = result_item.supplement_source_hash or str(result_item.id)
+            existing_supplemental = merged_supplemental_by_hash.get(source_hash)
+            if existing_supplemental is None:
+                merged_supplemental_by_hash[source_hash] = MergedSupplementalSearchItem(
+                    result_item=result_item,
+                    title=supplemental.title,
+                    content=supplemental.content,
+                    matched_queries=[query],
+                    best_score=result_item.score,
+                )
+                continue
+            if query not in existing_supplemental.matched_queries:
+                existing_supplemental.matched_queries.append(query)
+            if _result_is_better(result_item, existing_supplemental.result_item):
+                merged_supplemental_by_hash[source_hash] = MergedSupplementalSearchItem(
+                    result_item=result_item,
+                    title=supplemental.title,
+                    content=supplemental.content,
+                    matched_queries=existing_supplemental.matched_queries,
+                    best_score=result_item.score,
+                )
 
     merged_items = sorted(
         merged_by_key.values(),
@@ -198,7 +245,11 @@ def merge_query_search_details(
             for reason in details.degradation_reasons
         )
     )
-    no_match = not merged_items
+    supplemental_results = sorted(
+        merged_supplemental_by_hash.values(),
+        key=lambda item: _result_sort_key(item.result_item),
+    )
+    no_match = not merged_items and not supplemental_results
     return QueryBatchSearchDetails(
         interaction=interaction,
         queries=[query for query, _details in details_by_query],
@@ -209,6 +260,7 @@ def merge_query_search_details(
             details_by_query[0][1].no_match_guidance if no_match and details_by_query else None
         ),
         groups=groups,
+        supplemental_results=supplemental_results,
         degraded=bool(degradation_reasons),
         degradation_reasons=degradation_reasons,
     )
@@ -226,6 +278,7 @@ async def execute_query_batch(
     reranker: RerankerProvider | None = None,
     relevance_judge: RelevanceJudge | None = None,
     total_candidates: int | None = None,
+    supplemental_retriever: SupplementalRetriever | None = None,
 ) -> QueryBatchSearchDetails:
     """Persist and merge a complete quick-search interaction in query order."""
 
@@ -261,6 +314,7 @@ async def execute_query_batch(
             ),
             search_interaction=interaction,
             query_order=query_order,
+            supplemental_retriever=supplemental_retriever,
         )
         details_by_query.append((query, details))
 

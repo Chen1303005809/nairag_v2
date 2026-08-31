@@ -47,6 +47,11 @@ const AnnotationFeedbackDashboardPage = lazy(async () => {
   return { default: page.AnnotationFeedbackDashboardPage };
 });
 
+const GlobalMaterialsManagementPage = lazy(async () => {
+  const page = await import("./pages/GlobalMaterialsManagementPage");
+  return { default: page.GlobalMaterialsManagementPage };
+});
+
 function App(): JSX.Element {
   const [user, setUser] = useState<User>();
   const [loading, setLoading] = useState(true);
@@ -186,6 +191,15 @@ function App(): JSX.Element {
                   children: (
                     <Suspense fallback={<Spin />}>
                       <AnnotationFeedbackDashboardPage />
+                    </Suspense>
+                  )
+                },
+                {
+                  key: "global-materials",
+                  label: "全局资料",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <GlobalMaterialsManagementPage />
                     </Suspense>
                   )
                 },

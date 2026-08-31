@@ -20,6 +20,7 @@ from app.models.knowledge_content import (
     SearchInteraction,
     SearchInteractionType,
     SearchResultItem,
+    SearchResultKind,
 )
 from app.models.user_account import UserAccount
 from app.services.search_batch import PersistedQueryResult, merge_persisted_query_results
@@ -111,10 +112,14 @@ class AnnotationFeedbackResultDetail:
     rerank_score: float | None
     selection_stage: str
     matched_field: str | None
-    parent_name: str
+    result_kind: SearchResultKind
+    parent_name: str | None
     question: str
-    knowledge_base_id: UUID
-    knowledge_base_name: str
+    content: str
+    knowledge_base_id: UUID | None
+    knowledge_base_name: str | None
+    source_hash: str | None
+    citation_metadata: dict[str, object] | None
     matched_queries: list[str]
     feedback_type: SearchAnnotationResultLabel
     other_note: str | None
@@ -254,18 +259,24 @@ async def _queries_by_interaction(
 async def _label_counts_by_review(
     session: AsyncSession,
     review_ids: list[UUID],
+    *,
+    knowledge_base_id: UUID | None = None,
 ) -> dict[UUID, AnnotationResultLabelCounts]:
     if not review_ids:
         return {}
+    statement = select(
+        SearchAnnotationResultFeedback.search_annotation_review_id,
+        SearchAnnotationResultFeedback.feedback_type,
+        func.count(SearchAnnotationResultFeedback.id),
+    ).where(SearchAnnotationResultFeedback.search_annotation_review_id.in_(review_ids))
+    if knowledge_base_id is not None:
+        statement = statement.join(
+            SearchResultItem,
+            SearchResultItem.id == SearchAnnotationResultFeedback.search_result_item_id,
+        ).where(SearchResultItem.knowledge_base_id == knowledge_base_id)
     rows = (
         await session.execute(
-            select(
-                SearchAnnotationResultFeedback.search_annotation_review_id,
-                SearchAnnotationResultFeedback.feedback_type,
-                func.count(SearchAnnotationResultFeedback.id),
-            )
-            .where(SearchAnnotationResultFeedback.search_annotation_review_id.in_(review_ids))
-            .group_by(
+            statement.group_by(
                 SearchAnnotationResultFeedback.search_annotation_review_id,
                 SearchAnnotationResultFeedback.feedback_type,
             )
@@ -354,10 +365,22 @@ async def _events_and_persisted_results(
     event_ids = [event.id for event in events]
     if not event_ids:
         return events, []
-    rows = (
+    result_items = list(
+        (
+            await session.scalars(
+                select(SearchResultItem)
+                .where(SearchResultItem.search_event_id.in_(event_ids))
+                .order_by(SearchResultItem.search_event_id, SearchResultItem.rank)
+            )
+        ).all()
+    )
+    knowledge_item_ids = [
+        item.id for item in result_items if item.result_kind is SearchResultKind.KNOWLEDGE
+    ]
+    knowledge_rows = (
         await session.execute(
             select(
-                SearchResultItem,
+                SearchResultItem.id,
                 ParentRevision,
                 ChildRevision,
                 KnowledgeBase,
@@ -365,10 +388,15 @@ async def _events_and_persisted_results(
             .join(ParentRevision, ParentRevision.id == SearchResultItem.parent_revision_id)
             .join(ChildRevision, ChildRevision.id == SearchResultItem.child_revision_id)
             .join(KnowledgeBase, KnowledgeBase.id == SearchResultItem.knowledge_base_id)
-            .where(SearchResultItem.search_event_id.in_(event_ids))
-            .order_by(SearchResultItem.search_event_id, SearchResultItem.rank)
+            .where(SearchResultItem.id.in_(knowledge_item_ids))
         )
-    ).all()
+        if knowledge_item_ids
+        else []
+    )
+    knowledge_by_result_id = {
+        result_item_id: (parent_revision, child_revision, knowledge_base)
+        for result_item_id, parent_revision, child_revision, knowledge_base in knowledge_rows
+    }
     labels_by_event = {event.id: _event_query_label(event) for event in events}
     query_orders_by_event = {event.id: event.query_order or 1 for event in events}
     return (
@@ -379,11 +407,38 @@ async def _events_and_persisted_results(
                 query_order=query_orders_by_event[result_item.search_event_id],
                 query_label=labels_by_event[result_item.search_event_id],
                 result_item=result_item,
-                parent_name=parent_revision.name,
-                question=child_revision.question,
-                knowledge_base_name=knowledge_base.name,
+                parent_name=(
+                    knowledge_by_result_id[result_item.id][0].name
+                    if result_item.result_kind is SearchResultKind.KNOWLEDGE
+                    else None
+                ),
+                question=(
+                    knowledge_by_result_id[result_item.id][1].question
+                    if result_item.result_kind is SearchResultKind.KNOWLEDGE
+                    else result_item.supplement_title or "相关资料"
+                ),
+                content=(
+                    knowledge_by_result_id[result_item.id][1].response_content
+                    if result_item.result_kind is SearchResultKind.KNOWLEDGE
+                    else result_item.supplement_content or ""
+                ),
+                knowledge_base_name=(
+                    knowledge_by_result_id[result_item.id][2].name
+                    if result_item.result_kind is SearchResultKind.KNOWLEDGE
+                    else None
+                ),
+                source_hash=(
+                    result_item.supplement_source_hash
+                    if result_item.result_kind is SearchResultKind.SUPPLEMENT
+                    else None
+                ),
+                citation_metadata=(
+                    result_item.supplement_citation_metadata
+                    if result_item.result_kind is SearchResultKind.SUPPLEMENT
+                    else None
+                ),
             )
-            for result_item, parent_revision, child_revision, knowledge_base in rows
+            for result_item in result_items
         ],
     )
 
@@ -519,23 +574,30 @@ async def get_annotation_feedback_summary(
         )
         .where(*conditions)
     )
+    label_statement = (
+        select(
+            SearchAnnotationResultFeedback.feedback_type,
+            func.count(SearchAnnotationResultFeedback.id),
+        )
+        .join(
+            SearchAnnotationReview,
+            SearchAnnotationReview.id == SearchAnnotationResultFeedback.search_annotation_review_id,
+        )
+        .join(
+            SearchInteraction,
+            SearchInteraction.id == SearchAnnotationReview.search_interaction_id,
+        )
+    )
+    if knowledge_base_id is not None:
+        label_statement = label_statement.join(
+            SearchResultItem,
+            SearchResultItem.id == SearchAnnotationResultFeedback.search_result_item_id,
+        ).where(SearchResultItem.knowledge_base_id == knowledge_base_id)
     rows = (
         await session.execute(
-            select(
-                SearchAnnotationResultFeedback.feedback_type,
-                func.count(SearchAnnotationResultFeedback.id),
+            label_statement.where(*conditions).group_by(
+                SearchAnnotationResultFeedback.feedback_type
             )
-            .join(
-                SearchAnnotationReview,
-                SearchAnnotationReview.id
-                == SearchAnnotationResultFeedback.search_annotation_review_id,
-            )
-            .join(
-                SearchInteraction,
-                SearchInteraction.id == SearchAnnotationReview.search_interaction_id,
-            )
-            .where(*conditions)
-            .group_by(SearchAnnotationResultFeedback.feedback_type)
         )
     ).all()
     counts = _label_counts({feedback_type: int(count) for feedback_type, count in rows})
@@ -576,15 +638,17 @@ async def list_annotation_feedback(
         query_keyword=query_keyword,
     )
     if feedback_type is not None:
-        conditions.append(
-            exists(
-                select(SearchAnnotationResultFeedback.id).where(
-                    SearchAnnotationResultFeedback.search_annotation_review_id
-                    == SearchAnnotationReview.id,
-                    SearchAnnotationResultFeedback.feedback_type == feedback_type,
-                )
-            )
+        feedback_filter = select(SearchAnnotationResultFeedback.id).where(
+            SearchAnnotationResultFeedback.search_annotation_review_id
+            == SearchAnnotationReview.id,
+            SearchAnnotationResultFeedback.feedback_type == feedback_type,
         )
+        if knowledge_base_id is not None:
+            feedback_filter = feedback_filter.join(
+                SearchResultItem,
+                SearchResultItem.id == SearchAnnotationResultFeedback.search_result_item_id,
+            ).where(SearchResultItem.knowledge_base_id == knowledge_base_id)
+        conditions.append(exists(feedback_filter))
 
     target_knowledge_base = aliased(KnowledgeBase)
     total = await session.scalar(
@@ -624,7 +688,11 @@ async def list_annotation_feedback(
     interaction_ids = [interaction.id for _review, interaction, *_rest in rows]
     review_ids = [review.id for review, *_rest in rows]
     queries_by_interaction = await _queries_by_interaction(session, interaction_ids)
-    counts_by_review = await _label_counts_by_review(session, review_ids)
+    counts_by_review = await _label_counts_by_review(
+        session,
+        review_ids,
+        knowledge_base_id=knowledge_base_id,
+    )
     items = [
         _as_list_item(
             review,
@@ -701,10 +769,14 @@ async def get_annotation_feedback_detail(
                 rerank_score=result_item.rerank_score,
                 selection_stage=result_item.selection_stage,
                 matched_field=result_item.matched_field,
+                result_kind=result_item.result_kind,
                 parent_name=persisted.parent_name,
                 question=persisted.question,
+                content=persisted.content,
                 knowledge_base_id=result_item.knowledge_base_id,
                 knowledge_base_name=persisted.knowledge_base_name,
+                source_hash=persisted.source_hash,
+                citation_metadata=persisted.citation_metadata,
                 matched_queries=list(merged_result.matched_queries),
                 feedback_type=result_feedback.feedback_type,
                 other_note=result_feedback.other_note,

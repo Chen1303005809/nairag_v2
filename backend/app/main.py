@@ -15,6 +15,7 @@ from app.services.index_backend import MilvusHttpWriter
 from app.services.llm import create_llm_provider
 from app.services.ocr import create_ocr_provider
 from app.services.retrieval import create_search_index_backend
+from app.services.supplemental_retrieval import create_supplemental_retriever
 from app.services.users import bootstrap_initial_admin
 
 
@@ -32,7 +33,13 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.attachment_storage.initialize()
         await bootstrap_initial_admin(app.state.session_factory, app.state.settings)
-        yield
+        # This only starts a background monitor.  It does not wait for, or
+        # make a request to, the independently deployed LightRAG service.
+        await app.state.supplemental_retriever.start()
+        try:
+            yield
+        finally:
+            await app.state.supplemental_retriever.aclose()
 
     app = FastAPI(title=active_settings.app_name, version="0.1.0", lifespan=lifespan)
     app.state.settings = active_settings
@@ -52,6 +59,7 @@ def create_app(
     app.state.ocr_provider = create_ocr_provider(active_settings)
     app.state.llm_provider = create_llm_provider(active_settings)
     app.state.attachment_storage = create_attachment_storage(active_settings)
+    app.state.supplemental_retriever = create_supplemental_retriever(active_settings)
 
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:

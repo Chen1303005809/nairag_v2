@@ -15,6 +15,7 @@
 7. 知识子条目佐证材料：可上传 PNG/JPEG/WebP、PDF、DOCX、XLSX、PPTX 或 UTF-8 TXT 附件，并添加相关网页链接；两类材料均绑定不可变子条目修订、经过审核流程并在检索结果展示。开发/测试使用本地私有存储，生产环境使用与 Milvus 共用服务上的独立 MinIO Bucket 和独立账号。
 8. 快速上传与快速检索：可直接粘贴企业微信转发卡片，将客户与我方会话分别用于异步生成私有普通子条目草稿，或同步提取待查询问题并合并展示已有检索结果。卡片内图片会在提交前经本地 OCR 服务识别并替换 `[图片]` 占位符；若卡片复制未携带原图，可在轻量富文本框中为每个占位符单独粘贴或选择图片。能力使用可配置的 OpenAI 协议兼容 LLM，原始会话仅在快速上传任务处理期间短期保存，任务完成后立即删除。
 9. 检索 Review 与结果级标注反馈：每次向量检索或服务端批量快速检索都会形成可追溯的检索交互。用户在一个不可修改的 Review 中逐条标注实际展示的结果为高分无关、低分有关、结果正常（跳过）或其他；系统管理员可按时间、知识库和查询关键词查看 Review 汇总、结果标签分布、明细及用户实际看到的结果详情。标注与逐条“有用”反馈严格分离，不会改变既有检索排序。
+10. 可选 LightRAG 全局补充资料：独立 LightRAG 部署可在主知识库卡片后补充展示全局相关资料，并保存不含原始路径的结果快照。平台以连续健康探针门控该能力，失联时静默回退到主知识库检索；系统管理员只能通过平台代理上传、分页查看和单文件删除资料。
 
 后续实施请从 [实施交接](docs/实施交接.md) 继续，并以 [已确认实施基线](docs/已确认实施基线.md) 为准。
 
@@ -66,6 +67,8 @@ API 文档位于 `http://127.0.0.1:8000/docs`。登录前需先请求 `GET /api/
 Vite 会从根目录 `.env` 读取配置并把 `/api` 代理到本地 API，浏览器通过同源 Cookie 完成登录。Compose 容器运行时则由 `web` 服务中的 Nginx 托管构建产物，并将 `/api/` 反向代理到 `api` 服务。
 
 所有环境变量统一维护在根目录未跟踪的 `.env`，模板为 [.env.example](.env.example)。快速上传与快速检索需要在其中配置 `OPENAI_BASE_URL`、`OPENAI_KEY` 和可选的 `OPENAI_MODEL`。`CSRF_COOKIE_NAME`、`PRE_AUTH_CSRF_COOKIE_NAME`、`LLM_MAX_CONVERSATION_MESSAGES` 和 `LLM_MAX_CONVERSATION_CHARS` 会自动派生为浏览器构建配置，避免前后端上限或 Cookie 名称漂移；Compose 只向前端构建传递这些公开值，不会把 `OPENAI_KEY` 打入浏览器镜像。
+
+全局补充资料采用独立的 LightRAG Compose 项目，部署步骤见 [lightrag/README.md](lightrag/README.md)。平台 Compose 会将 API 加入持久的 `nairag-supplemental` 内部网络，因此首次运行平台前（即使暂不启用检索）先执行 `docker network create --internal nairag-supplemental`。之后可分别启动 LightRAG 和本平台；平台 API 不依赖 LightRAG 启动，`SUPPLEMENTAL_RETRIEVAL_ENABLED` 默认为 `false`。
 
 Compose 已内置本地 `PP-OCRv6_medium` 服务，API 默认通过内部地址 `http://ocr:9003` 调用它；OCR 容器不暴露宿主机端口。开发环境使用 CPU 容器，生产环境通过 `docker-compose.prod.yaml` 切换为 NVIDIA CUDA 容器，二者保持同一 HTTP 协议、模型版本与缓存位置。首次启动会下载固定的检测与识别模型到 Docker 命名卷 `ocr_model_cache`，后续启动复用该缓存。查询原图只在 API 和 OCR 服务的请求内存中处理，不会写入该卷或数据库。离线交付前应在受控网络中先启动一次 `ocr` 服务并备份/随交付物携带该模型缓存；模型权重不提交到仓库。
 

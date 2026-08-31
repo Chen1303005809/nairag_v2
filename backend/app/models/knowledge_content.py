@@ -89,6 +89,13 @@ class SearchInteractionType(str, Enum):
     QUICK_SEARCH = "quick_search"
 
 
+class SearchResultKind(str, Enum):
+    """A platform knowledge result or an immutable supplemental snapshot."""
+
+    KNOWLEDGE = "knowledge"
+    SUPPLEMENT = "supplement"
+
+
 class SearchAnnotationResultLabel(str, Enum):
     """A reviewer judgement for one result visible in a search interaction."""
 
@@ -791,6 +798,10 @@ class SearchEvent(Base):
     no_match: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     degraded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     degradation_reasons: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    supplemental_retrieval_status: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
@@ -811,6 +822,21 @@ class SearchResultItem(Base):
             name="uq_search_result_item_event_revision",
         ),
         CheckConstraint("rank >= 1", name="ck_search_result_item_rank_positive"),
+        CheckConstraint(
+            "(result_kind = 'knowledge' "
+            "AND child_id IS NOT NULL AND knowledge_base_id IS NOT NULL "
+            "AND child_revision_id IS NOT NULL AND parent_id IS NOT NULL "
+            "AND parent_revision_id IS NOT NULL "
+            "AND supplement_source_hash IS NULL AND supplement_title IS NULL "
+            "AND supplement_content IS NULL AND supplement_citation_metadata IS NULL) "
+            "OR (result_kind = 'supplement' "
+            "AND child_id IS NULL AND knowledge_base_id IS NULL "
+            "AND child_revision_id IS NULL AND parent_id IS NULL "
+            "AND parent_revision_id IS NULL "
+            "AND supplement_source_hash IS NOT NULL AND supplement_title IS NOT NULL "
+            "AND supplement_content IS NOT NULL)",
+            name="ck_search_result_item_kind_shape",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -828,33 +854,51 @@ class SearchResultItem(Base):
         String(40), nullable=False, default="legacy"
     )
     helpful_count_at_search: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    child_id: Mapped[UUID] = mapped_column(
+    result_kind: Mapped[SearchResultKind] = mapped_column(
+        SqlEnum(
+            SearchResultKind,
+            name="search_result_kind",
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda enum_class: [value.value for value in enum_class],
+        ),
+        nullable=False,
+        default=SearchResultKind.KNOWLEDGE,
+    )
+    child_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("child.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    knowledge_base_id: Mapped[UUID] = mapped_column(
+    knowledge_base_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("knowledge_base.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    child_revision_id: Mapped[UUID] = mapped_column(
+    child_revision_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("child_revision.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
-    parent_id: Mapped[UUID] = mapped_column(
+    parent_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("parent.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
-    parent_revision_id: Mapped[UUID] = mapped_column(
+    parent_revision_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("parent_revision.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
+    )
+    supplement_source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    supplement_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    supplement_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supplement_citation_metadata: Mapped[dict[str, object] | None] = mapped_column(
+        JSON,
+        nullable=True,
     )
     match_reason: Mapped[str] = mapped_column(String(80), nullable=False)
     matched_field: Mapped[str | None] = mapped_column(String(80), nullable=True)

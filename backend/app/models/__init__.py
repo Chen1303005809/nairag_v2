@@ -36,6 +36,7 @@ from app.models.knowledge_content import (
     SearchInteractionType,
     SearchQueryMode,
     SearchResultItem,
+    SearchResultKind,
     WebLink,
 )
 from app.models.user_account import UserAccount, UserRole
@@ -76,6 +77,7 @@ __all__ = [
     "SearchInteraction",
     "SearchInteractionType",
     "SearchQueryMode",
+    "SearchResultKind",
     "SearchResultItem",
     "UserAccount",
     "UserRole",

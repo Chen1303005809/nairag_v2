@@ -12,6 +12,7 @@ from app.services.conversation import (
 from app.services.embedding import RerankerProvider
 from app.services.llm import LlmProvider
 from app.services.search_batch import QueryBatchSearchDetails, execute_query_batch
+from app.services.supplemental_retrieval import SupplementalRetriever
 
 
 class FastSearchValidationError(ValueError):
@@ -36,6 +37,7 @@ async def conversation_assisted_search(
     index_backend,
     provider: LlmProvider,
     reranker: RerankerProvider | None = None,
+    supplemental_retriever: SupplementalRetriever | None = None,
 ) -> ConversationSearchDetails:
     try:
         conversation = validate_conversation(
@@ -57,6 +59,7 @@ async def conversation_assisted_search(
             no_match=False,
             no_match_guidance=None,
             groups=[],
+            supplemental_results=[],
             degraded=False,
             degradation_reasons=(),
         )
@@ -72,4 +75,5 @@ async def conversation_assisted_search(
         reranker=reranker,
         relevance_judge=provider if hasattr(provider, "judge_search_relevance") else None,
         total_candidates=extraction.total_candidates,
+        supplemental_retriever=supplemental_retriever,
     )

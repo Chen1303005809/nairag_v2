@@ -53,7 +53,8 @@ const conversationWithQueriesResponse: ConversationSearchResponse = {
   no_match_guidance: null,
   degraded: false,
   degradation_reasons: [],
-  groups: []
+  groups: [],
+  supplemental_results: []
 };
 
 const noMatchResponse: SearchResponse = {
@@ -64,7 +65,8 @@ const noMatchResponse: SearchResponse = {
   no_match_guidance: "未找到足够相关的知识，请转研发查询。",
   degraded: false,
   degradation_reasons: [],
-  groups: []
+  groups: [],
+  supplemental_results: []
 };
 
 const matchedResponse: SearchResponse = {
@@ -111,6 +113,29 @@ const matchedResponse: SearchResponse = {
         }
       ]
     }
+  ],
+  supplemental_results: []
+};
+
+const supplementalOnlyResponse: SearchResponse = {
+  search_event_id: "event-supplemental",
+  search_interaction_id: "interaction-supplemental",
+  query_mode: "text",
+  no_match: false,
+  no_match_guidance: null,
+  degraded: false,
+  degradation_reasons: [],
+  groups: [],
+  supplemental_results: [
+    {
+      result_item_id: "supplement-result-1",
+      rank: 1,
+      score: 0.72,
+      rerank_score: null,
+      title: "系统指南.pdf",
+      content: "这是来自全局资料的相关片段。",
+      selection_stage: "supplemental_source_fusion"
+    }
   ]
 };
 
@@ -123,7 +148,8 @@ const conversationNoQueryResponse: ConversationSearchResponse = {
   no_match_guidance: null,
   degraded: false,
   degradation_reasons: [],
-  groups: []
+  groups: [],
+  supplemental_results: []
 };
 
 beforeEach(() => {
@@ -212,6 +238,22 @@ describe("SearchPage OCR", () => {
     expect(screen.getByText("重排分：84.56%")).toBeInTheDocument();
     expect(screen.getByText("命中阶段：重排确认")).toBeInTheDocument();
     expect(screen.getByText("命中字段：同义问句")).toBeInTheDocument();
+  });
+
+  it("shows global supplemental material after knowledge results without a helpful action", async () => {
+    mockedApi.search.mockResolvedValue(supplementalOnlyResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "登录失败" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+
+    expect(await screen.findByText("相关资料")).toBeInTheDocument();
+    expect(screen.getByText("系统指南.pdf")).toBeInTheDocument();
+    expect(screen.getByText("这是来自全局资料的相关片段。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /有用/ })).not.toBeInTheDocument();
   });
 
   it("shows a visible warning when basic-score fallback was used", async () => {

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
 from uuid import UUID
 
@@ -30,6 +31,7 @@ from app.models.knowledge_content import (
     SearchInteractionType,
     SearchQueryMode,
     SearchResultItem,
+    SearchResultKind,
     WebLink,
 )
 from app.services.embedding import RerankerProvider
@@ -39,6 +41,13 @@ from app.services.retrieval import (
     IndexQuery,
     SearchIndexBackend,
     SearchIndexUnavailableError,
+)
+from app.services.supplemental_retrieval import (
+    SupplementalAvailability,
+    SupplementalDocument,
+    SupplementalRetriever,
+    SupplementalUnavailableError,
+    SupplementalUpstreamError,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -57,6 +66,10 @@ class SearchResultNotFoundError(Exception):
 
 
 class SearchResultStaleError(Exception):
+    pass
+
+
+class SearchResultNotHelpfulError(Exception):
     pass
 
 
@@ -136,12 +149,89 @@ class SearchDetails:
     no_match_guidance: str | None
     degraded: bool = False
     degradation_reasons: tuple[str, ...] = ()
+    supplemental_results: list[SupplementalSearchResult] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SupplementalSearchResult:
+    """A persisted, immutable supplemental material card for one search event."""
+
+    result_item: SearchResultItem
+    title: str
+    content: str
+
+
+@dataclass(frozen=True)
+class SelectedSupplementalDocument:
+    document: SupplementalDocument
+    score: float
+    rerank_score: float | None
+    selection_stage: str
 
 
 NO_MATCH_GUIDANCE = "未找到足够相关的知识，请转研发查询。"
 NO_FILTER_MATCH_GUIDANCE = "未找到符合字段条件的知识。"
 MAX_FALLBACK_PARENTS = 3
 HELPFUL_SCORE_CAP = 0.12
+
+
+async def _select_supplemental_documents(
+    documents: list[SupplementalDocument],
+    *,
+    query: str | None,
+    ocr_text: str | None,
+    reranker: RerankerProvider | None,
+) -> list[SelectedSupplementalDocument]:
+    """Use the platform reranker when possible, else stable channel fusion order.
+
+    The independent source controls retrieval only. Reusing the platform
+    reranker here keeps ranking semantics in one place and avoids exposing an
+    upstream reranker to the browser.
+    """
+
+    ordered = sorted(
+        documents,
+        key=lambda item: (-item.source_score, item.upstream_rank, item.source_hash),
+    )
+    if not ordered:
+        return []
+    ranking_query = "\n".join(value for value in (query, ocr_text) if value and value.strip())
+    if reranker is not None and ranking_query:
+        try:
+            scores = await reranker.rerank(ranking_query, [item.content for item in ordered])
+            if len(scores) != len(ordered) or not all(math.isfinite(score) for score in scores):
+                raise ValueError("reranker returned invalid supplemental scores")
+            selected = [
+                SelectedSupplementalDocument(
+                    document=document,
+                    score=score,
+                    rerank_score=score,
+                    selection_stage="supplemental_rerank",
+                )
+                for document, score in zip(ordered, scores, strict=True)
+            ]
+            return sorted(
+                selected,
+                key=lambda item: (
+                    -item.score,
+                    -item.document.source_score,
+                    item.document.upstream_rank,
+                    item.document.source_hash,
+                ),
+            )
+        except Exception:
+            # Supplemental material is optional. Its reranker failure is an
+            # internal fallback, not a user-visible degradation of core search.
+            LOGGER.warning("supplemental reranking failed; using source fusion", exc_info=True)
+    return [
+        SelectedSupplementalDocument(
+            document=document,
+            score=document.source_score,
+            rerank_score=None,
+            selection_stage="supplemental_source_fusion",
+        )
+        for document in ordered
+    ]
 
 
 def _normalize_text(value: str | None) -> str:
@@ -842,6 +932,7 @@ async def search_published_content(
     pipeline_options: SearchPipelineOptions | None = None,
     search_interaction: SearchInteraction | None = None,
     query_order: int | None = None,
+    supplemental_retriever: SupplementalRetriever | None = None,
 ) -> SearchDetails:
     if ocr_recognition is not None and ocr_recognition.text != ocr_text:
         raise ValueError("OCR recognition text must match ocr_text")
@@ -871,6 +962,24 @@ async def search_published_content(
         if ocr_text
         else SearchQueryMode.TEXT
     )
+    # Snapshot the optional service before creating a task. In particular, an
+    # unavailable/disabled/stale service must not receive a query or make this
+    # search wait; once dispatched it runs alongside platform retrieval.
+    supplemental_task: asyncio.Task[list[SupplementalDocument]] | None = None
+    supplemental_retrieval_status = "not_applicable"
+    if retrieval_mode == "vector" and supplemental_retriever is not None:
+        snapshot = supplemental_retriever.availability_snapshot()
+        if snapshot.is_available:
+            supplemental_task = asyncio.create_task(
+                supplemental_retriever.retrieve(query=query, ocr_text=ocr_text),
+                name="lightrag-supplemental-retrieval",
+            )
+        elif snapshot.state is SupplementalAvailability.DISABLED:
+            supplemental_retrieval_status = "skipped_disabled"
+        else:
+            supplemental_retrieval_status = "skipped_unavailable"
+    elif retrieval_mode == "vector":
+        supplemental_retrieval_status = "skipped_disabled"
     candidates = await _load_candidates(session, knowledge_base_id=knowledge_base_id)
     options = pipeline_options or SearchPipelineOptions()
     degradation_reasons: tuple[str, ...] = ()
@@ -981,6 +1090,24 @@ async def search_published_content(
         selected.extend(fallback_candidates)
         selected = _sort_selected_candidates(selected)[:limit]
 
+    supplemental_documents: list[SupplementalDocument] = []
+    if supplemental_task is not None:
+        try:
+            supplemental_documents = await supplemental_task
+            supplemental_retrieval_status = "success"
+        except (SupplementalUpstreamError, SupplementalUnavailableError):
+            # The retriever already closes its availability gate immediately.
+            # Never turn this optional failure into degraded core search output.
+            LOGGER.info("supplemental retrieval unavailable after dispatch")
+            supplemental_retrieval_status = "failed_after_dispatch"
+    selected_supplemental = await _select_supplemental_documents(
+        supplemental_documents,
+        query=query,
+        ocr_text=ocr_text,
+        reranker=reranker,
+    )
+    has_any_result = bool(selected or selected_supplemental)
+
     interaction = search_interaction
     effective_query_order: int | None = None
     if retrieval_mode == "vector":
@@ -989,7 +1116,7 @@ async def search_published_content(
                 user_id=user_id,
                 interaction_type=SearchInteractionType.VECTOR,
                 knowledge_base_id=knowledge_base_id,
-                no_match=not selected,
+                no_match=not has_any_result,
                 degraded=bool(degradation_reasons),
                 degradation_reasons=list(degradation_reasons) or None,
             )
@@ -1011,9 +1138,10 @@ async def search_published_content(
         search_interaction_id=interaction.id if interaction is not None else None,
         query_order=effective_query_order,
         knowledge_base_id=knowledge_base_id,
-        no_match=not selected,
+        no_match=not has_any_result,
         degraded=bool(degradation_reasons),
         degradation_reasons=list(degradation_reasons) or None,
+        supplemental_retrieval_status=supplemental_retrieval_status,
     )
     session.add(event)
     await session.flush()
@@ -1044,6 +1172,32 @@ async def search_published_content(
         grouped.setdefault(item.candidate.parent_revision.parent_id, []).append(
             (result, item.candidate)
         )
+    supplemental_results: list[SupplementalSearchResult] = []
+    for rank, item in enumerate(selected_supplemental, start=len(selected) + 1):
+        result = SearchResultItem(
+            search_event_id=event.id,
+            rank=rank,
+            score=item.score,
+            hybrid_score=item.document.source_score,
+            rerank_score=item.rerank_score,
+            selection_stage=item.selection_stage,
+            helpful_count_at_search=0,
+            result_kind=SearchResultKind.SUPPLEMENT,
+            supplement_source_hash=item.document.source_hash,
+            supplement_title=item.document.title,
+            supplement_content=item.document.content,
+            supplement_citation_metadata=item.document.citation_metadata,
+            match_reason="supplemental_global",
+            matched_field=None,
+        )
+        session.add(result)
+        supplemental_results.append(
+            SupplementalSearchResult(
+                result_item=result,
+                title=item.document.title,
+                content=item.document.content,
+            )
+        )
     await session.flush()
     groups = [(result_parent_revisions[parent_id], items) for parent_id, items in grouped.items()]
     groups.sort(
@@ -1058,9 +1212,10 @@ async def search_published_content(
         groups=groups,
         no_match_guidance=(
             (NO_FILTER_MATCH_GUIDANCE if retrieval_mode == "field_filter" else NO_MATCH_GUIDANCE)
-            if not selected
+            if not has_any_result
             else None
         ),
+        supplemental_results=supplemental_results,
         degraded=bool(degradation_reasons),
         degradation_reasons=degradation_reasons,
     )
@@ -1087,6 +1242,14 @@ async def record_helpful_feedback(
     if row is None:
         raise SearchResultNotFoundError(result_item_id)
     result_item, _event = row
+    if result_item.result_kind is not SearchResultKind.KNOWLEDGE:
+        raise SearchResultNotHelpfulError(result_item_id)
+    if (
+        result_item.child_id is None
+        or result_item.knowledge_base_id is None
+        or result_item.child_revision_id is None
+    ):
+        raise SearchResultNotHelpfulError(result_item_id)
     publication = await session.scalar(
         select(ChildKnowledgeBasePublication)
         .where(

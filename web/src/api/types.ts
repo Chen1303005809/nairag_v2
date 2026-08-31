@@ -283,6 +283,16 @@ export interface SearchGroup {
   children: SearchResult[];
 }
 
+export interface SupplementalSearchResult {
+  result_item_id: string;
+  rank: number;
+  score: number;
+  rerank_score: number | null;
+  title: string;
+  content: string;
+  selection_stage: "supplemental_rerank" | "supplemental_source_fusion";
+}
+
 export interface SearchResponse {
   search_event_id: string;
   search_interaction_id: string | null;
@@ -292,6 +302,7 @@ export interface SearchResponse {
   degraded: boolean;
   degradation_reasons: string[];
   groups: SearchGroup[];
+  supplemental_results: SupplementalSearchResult[];
 }
 
 export interface NormalizedMessageInput {
@@ -313,6 +324,11 @@ export interface ConversationSearchGroup {
   children: ConversationSearchResult[];
 }
 
+export interface ConversationSupplementalSearchResult extends SupplementalSearchResult {
+  search_event_id: string;
+  matched_queries: string[];
+}
+
 export interface ConversationSearchResponse {
   search_interaction_id: string | null;
   queries: string[];
@@ -323,6 +339,7 @@ export interface ConversationSearchResponse {
   degraded: boolean;
   degradation_reasons: string[];
   groups: ConversationSearchGroup[];
+  supplemental_results: ConversationSupplementalSearchResult[];
 }
 
 export type KnowledgeDraftSource = "manual_saved" | "intelligent_generated";
@@ -488,13 +505,41 @@ export interface AnnotationFeedbackResultDetail {
   rerank_score: number | null;
   selection_stage: string;
   matched_field: string | null;
-  parent_name: string;
+  result_kind: "knowledge" | "supplement";
+  parent_name: string | null;
   question: string;
-  knowledge_base_id: string;
-  knowledge_base_name: string;
+  content: string;
+  knowledge_base_id: string | null;
+  knowledge_base_name: string | null;
+  source_hash: string | null;
+  citation_metadata: Record<string, unknown> | null;
   matched_queries: string[];
   feedback_type: SearchAnnotationResultLabel;
   other_note: string | null;
+}
+
+export interface SupplementalMaterial {
+  document_id: string;
+  title: string;
+  status: string | null;
+  progress: number | null;
+  chunks_count: number | null;
+  track_id: string | null;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface SupplementalMaterialPage {
+  materials: SupplementalMaterial[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface SupplementalUploadResponse {
+  accepted: boolean;
+  track_id: string | null;
 }
 
 export interface AnnotationFeedbackQueryDetail {

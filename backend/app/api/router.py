@@ -7,6 +7,7 @@ from app.api.routes import (
     knowledge_bases,
     knowledge_content,
     search,
+    supplemental,
     users,
 )
 
@@ -18,3 +19,4 @@ api_router.include_router(knowledge_content.router)
 api_router.include_router(drafts.router)
 api_router.include_router(intelligent_ingestion.router)
 api_router.include_router(search.router)
+api_router.include_router(supplemental.router)

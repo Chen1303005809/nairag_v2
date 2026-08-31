@@ -30,6 +30,7 @@ from app.schemas.search import (
     ConversationSearchRequest,
     ConversationSearchResponse,
     ConversationSearchResultResponse,
+    ConversationSupplementalSearchResultResponse,
     HelpfulFeedbackRequest,
     HelpfulFeedbackResponse,
     OcrRecognitionResponse,
@@ -41,6 +42,7 @@ from app.schemas.search import (
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
+    SupplementalSearchResultResponse,
 )
 from app.services.fast_search import (
     ConversationSearchDetails,
@@ -62,6 +64,7 @@ from app.services.search import (
     SearchKnowledgeBaseUnavailableError,
     SearchPipelineOptions,
     SearchResultNotFoundError,
+    SearchResultNotHelpfulError,
     SearchResultStaleError,
     record_helpful_feedback,
     search_published_content,
@@ -155,6 +158,22 @@ def as_search_response(details) -> SearchResponse:
             )
             for parent_revision, items in details.groups
         ],
+        supplemental_results=[
+            SupplementalSearchResultResponse(
+                result_item_id=item.result_item.id,
+                rank=item.result_item.rank,
+                score=round(item.result_item.score, 6),
+                rerank_score=(
+                    round(item.result_item.rerank_score, 6)
+                    if item.result_item.rerank_score is not None
+                    else None
+                ),
+                title=item.title,
+                content=item.content,
+                selection_stage=item.result_item.selection_stage,
+            )
+            for item in details.supplemental_results
+        ],
     )
 
 
@@ -234,6 +253,24 @@ def as_conversation_search_response(
             )
             for parent_revision, items in details.groups
         ],
+        supplemental_results=[
+            ConversationSupplementalSearchResultResponse(
+                result_item_id=item.result_item.id,
+                search_event_id=item.result_item.search_event_id,
+                rank=item.result_item.rank,
+                score=round(item.best_score, 6),
+                rerank_score=(
+                    round(item.result_item.rerank_score, 6)
+                    if item.result_item.rerank_score is not None
+                    else None
+                ),
+                title=item.title,
+                content=item.content,
+                selection_stage=item.result_item.selection_stage,
+                matched_queries=list(item.matched_queries),
+            )
+            for item in details.supplemental_results
+        ],
     )
 
 
@@ -285,10 +322,14 @@ def as_annotation_feedback_detail(
                         rerank_score=result.rerank_score,
                         selection_stage=result.selection_stage,
                         matched_field=result.matched_field,
+                        result_kind=result.result_kind,
                         parent_name=result.parent_name,
                         question=result.question,
+                        content=result.content,
                         knowledge_base_id=result.knowledge_base_id,
                         knowledge_base_name=result.knowledge_base_name,
+                        source_hash=result.source_hash,
+                        citation_metadata=result.citation_metadata,
                         matched_queries=list(result.matched_queries),
                         feedback_type=result.feedback_type,
                         other_note=result.other_note,
@@ -445,6 +486,7 @@ async def search_content(
                 fallback_threshold=settings.search_fallback_threshold,
                 candidate_pool_size=settings.search_candidate_pool_size,
             ),
+            supplemental_retriever=getattr(request.app.state, "supplemental_retriever", None),
         )
     except SearchKnowledgeBaseUnavailableError as exc:
         raise HTTPException(
@@ -483,6 +525,7 @@ async def conversation_assisted_search_content(
             index_backend=request.app.state.search_index_backend,
             provider=provider,
             reranker=getattr(request.app.state, "reranker_provider", None),
+            supplemental_retriever=getattr(request.app.state, "supplemental_retriever", None),
         )
     except FastSearchValidationError as exc:
         raise HTTPException(
@@ -540,6 +583,7 @@ async def query_batch_search_content(
                 if hasattr(llm_provider, "judge_search_relevance")
                 else None
             ),
+            supplemental_retriever=getattr(request.app.state, "supplemental_retriever", None),
         )
     except SearchKnowledgeBaseUnavailableError as exc:
         raise HTTPException(
@@ -570,6 +614,11 @@ async def submit_helpful_feedback(
         )
     except SearchResultNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="检索结果不存在") from exc
+    except SearchResultNotHelpfulError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="补充资料不支持点赞反馈",
+        ) from exc
     except SearchResultStaleError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

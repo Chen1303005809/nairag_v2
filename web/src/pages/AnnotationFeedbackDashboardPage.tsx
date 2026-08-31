@@ -90,17 +90,32 @@ function DetailResults({ detail }: { detail: AnnotationFeedbackDetail }): JSX.El
   const columns: ColumnsType<AnnotationFeedbackDetail["query_details"][number]["results"][number]> = [
     { title: "排名", dataIndex: "rank", width: 72 },
     {
-      title: "父类 / 问题",
+      title: "结果",
       key: "knowledge",
       width: 350,
-      render: (_, result) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text type="secondary">{result.parent_name}</Typography.Text>
-          <Typography.Text>{result.question}</Typography.Text>
-        </Space>
-      )
+      render: (_, result) =>
+        result.result_kind === "supplement" ? (
+          <Space direction="vertical" size={2}>
+            <Tag color="cyan">全局补充资料</Tag>
+            <Typography.Text>{result.question}</Typography.Text>
+            <Typography.Paragraph ellipsis={{ rows: 2, expandable: "collapsible" }}>
+              {result.content}
+            </Typography.Paragraph>
+          </Space>
+        ) : (
+          <Space direction="vertical" size={0}>
+            <Typography.Text type="secondary">{result.parent_name}</Typography.Text>
+            <Typography.Text>{result.question}</Typography.Text>
+          </Space>
+        )
     },
-    { title: "知识库", dataIndex: "knowledge_base_name", width: 160 },
+    {
+      title: "知识库",
+      dataIndex: "knowledge_base_name",
+      width: 160,
+      render: (value: string | null, result) =>
+        result.result_kind === "supplement" ? "全局资料" : value ?? "—"
+    },
     {
       title: "综合分",
       dataIndex: "score",

@@ -75,6 +75,9 @@ services:
       - postgres_password
       - jwt_signing_key
       - initial_admin_password
+    networks:
+      - default
+      - supplemental
 
   web:
     build:
@@ -119,6 +122,14 @@ services:
 
 volumes:
   ocr_model_cache:
+
+networks:
+  # This persistent internal network is intentionally created outside either
+  # Compose project. LightRAG owns its own Compose stack and database; only
+  # the platform API receives this one additional network attachment.
+  supplemental:
+    name: nairag-supplemental
+    external: true
 
 secrets:
   postgres_password:

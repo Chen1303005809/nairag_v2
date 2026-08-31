@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     search_rerank_threshold: float = 0.5
     search_fallback_threshold: float = 0.22
     search_candidate_pool_size: int = 24
+    # Optional, independently deployed global-material retrieval.  It is
+    # intentionally disabled by default and never participates in platform
+    # startup or the platform /health endpoint.
+    supplemental_retrieval_enabled: bool = False
+    lightrag_base_url: str = "http://lightrag:9621"
+    lightrag_health_interval_seconds: float = 5.0
+    lightrag_health_timeout_seconds: float = 1.0
+    lightrag_health_ttl_seconds: float = 10.0
+    lightrag_retrieval_timeout_seconds: float = 15.0
     ocr_service_url: str | None = None
     ocr_service_api_key_file: Path | None = None
     ocr_model: str = "PP-OCRv6_medium"
@@ -202,6 +211,18 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.search_candidate_pool_size <= 200:
             raise ValueError("SEARCH_CANDIDATE_POOL_SIZE must be between 1 and 200")
+        if not self.lightrag_base_url.rstrip("/"):
+            raise ValueError("LIGHTRAG_BASE_URL must not be empty")
+        if not self.lightrag_base_url.startswith(("http://", "https://")):
+            raise ValueError("LIGHTRAG_BASE_URL must use http or https")
+        for value, setting_name in (
+            (self.lightrag_health_interval_seconds, "LIGHTRAG_HEALTH_INTERVAL_SECONDS"),
+            (self.lightrag_health_timeout_seconds, "LIGHTRAG_HEALTH_TIMEOUT_SECONDS"),
+            (self.lightrag_health_ttl_seconds, "LIGHTRAG_HEALTH_TTL_SECONDS"),
+            (self.lightrag_retrieval_timeout_seconds, "LIGHTRAG_RETRIEVAL_TIMEOUT_SECONDS"),
+        ):
+            if value <= 0:
+                raise ValueError(f"{setting_name} must be positive")
         if self.ocr_model != "PP-OCRv6_medium":
             raise ValueError("OCR_MODEL must be exactly PP-OCRv6_medium")
         if self.ocr_timeout_seconds <= 0:

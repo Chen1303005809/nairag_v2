@@ -1,0 +1,74 @@
+services:
+  lightrag-postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_DB: lightrag
+      POSTGRES_USER: lightrag
+      POSTGRES_PASSWORD: ${LIGHTRAG_POSTGRES_PASSWORD:?Set LIGHTRAG_POSTGRES_PASSWORD in lightrag/.env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightrag -d lightrag"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - lightrag-postgres-data:/var/lib/postgresql/data
+    networks:
+      - lightrag-data
+
+  lightrag:
+    build:
+      context: .
+    env_file:
+      - ./.env
+    environment:
+      POSTGRES_HOST: lightrag-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: lightrag
+      POSTGRES_DATABASE: lightrag
+      POSTGRES_PASSWORD: ${LIGHTRAG_POSTGRES_PASSWORD:?Set LIGHTRAG_POSTGRES_PASSWORD in lightrag/.env}
+      LIGHTRAG_KV_STORAGE: PGKVStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
+      LIGHTRAG_GRAPH_STORAGE: PGGraphStorage
+      LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
+      LIGHTRAG_WORKING_DIR: /var/lib/lightrag/work
+      LIGHTRAG_INPUT_DIR: /var/lib/lightrag/input
+      LIGHTRAG_LOG_DIR: /var/log/lightrag
+    depends_on:
+      lightrag-postgres:
+        condition: service_healthy
+    expose:
+      - "9621"
+    volumes:
+      - lightrag-work:/var/lib/lightrag/work
+      - lightrag-input:/var/lib/lightrag/input
+      - lightrag-logs:/var/log/lightrag
+    networks:
+      supplemental:
+        aliases:
+          - lightrag
+      lightrag-data: {}
+      lightrag-egress: {}
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9621/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  lightrag-postgres-data:
+  lightrag-work:
+  lightrag-input:
+  lightrag-logs:
+
+networks:
+  # Pre-created once with: docker network create --internal nairag-supplemental
+  # No host port is published; the platform API accesses this service by its
+  # `lightrag` alias only over this internal network.
+  supplemental:
+    name: nairag-supplemental
+    external: true
+  lightrag-data:
+    internal: true
+  # Only the LightRAG process receives egress, for configured model providers.
+  lightrag-egress: {}

@@ -36,7 +36,9 @@ import type {
   SearchAnnotationReviewResponse,
   SearchResponse,
   SearchResult,
-  SearchRetrievalMode
+  SearchRetrievalMode,
+  SupplementalSearchResult,
+  ConversationSupplementalSearchResult
 } from "../api/types";
 import {
   businessObjectOptions,
@@ -57,6 +59,11 @@ import type { ConversationEditorHandle } from "../components/ConversationEditor"
 interface RenderableResult extends SearchResult {
   matched_queries?: string[];
 }
+
+type RenderableSupplementalResult =
+  | SupplementalSearchResult
+  | ConversationSupplementalSearchResult;
+type AnnotationRenderableResult = RenderableResult | RenderableSupplementalResult;
 
 interface ResultAnnotationDraft {
   feedbackType?: SearchAnnotationResultLabel;
@@ -102,6 +109,10 @@ function selectionStageColor(stage: SearchResult["selection_stage"]): string {
 
 function matchedFieldLabel(field: string | null): string {
   return field ? matchedFieldLabels[field] ?? field : "未记录";
+}
+
+function isKnowledgeResult(item: AnnotationRenderableResult): item is RenderableResult {
+  return "knowledge_base_name" in item;
 }
 
 function ResultItemView({
@@ -278,13 +289,69 @@ function ResultsGroupsView({
   );
 }
 
+function SupplementalResultItemView({
+  item
+}: {
+  item: RenderableSupplementalResult;
+}): JSX.Element {
+  const matchedQueries = "matched_queries" in item ? item.matched_queries : [];
+  return (
+    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+      <Space wrap>
+        <Tag color="cyan">全局补充资料</Tag>
+        <Tag color="geekblue">相关度：{(item.score * 100).toFixed(2)}%</Tag>
+        <Tag color={item.selection_stage === "supplemental_rerank" ? "volcano" : "gold"}>
+          {item.selection_stage === "supplemental_rerank" ? "平台重排" : "来源融合"}
+        </Tag>
+        {item.rerank_score !== null ? (
+          <Tag color="volcano">重排分：{(item.rerank_score * 100).toFixed(2)}%</Tag>
+        ) : null}
+        {matchedQueries.map((query) => (
+          <Tag key={query} color="magenta">命中查询：{query}</Tag>
+        ))}
+      </Space>
+      <Descriptions bordered size="small" column={1}>
+        <Descriptions.Item label="资料名称">
+          <Typography.Text strong>{item.title}</Typography.Text>
+        </Descriptions.Item>
+        <Descriptions.Item label="相关片段">
+          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+            {item.content}
+          </Typography.Paragraph>
+        </Descriptions.Item>
+      </Descriptions>
+    </Space>
+  );
+}
+
+function SupplementalResultsView({
+  results
+}: {
+  results: RenderableSupplementalResult[];
+}): JSX.Element | null {
+  if (results.length === 0) {
+    return null;
+  }
+  return (
+    <Card title="相关资料" style={{ marginBottom: 12 }}>
+      {results.map((item, index) => (
+        <div key={item.result_item_id}>
+          {index > 0 ? <Divider /> : null}
+          <SupplementalResultItemView item={item} />
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 function visibleResultsForAnnotation(
   groups: Array<{
     children: RenderableResult[];
-  }>
-): RenderableResult[] {
+  }>,
+  supplementalResults: RenderableSupplementalResult[]
+): AnnotationRenderableResult[] {
   const resultIds = new Set<string>();
-  return groups.flatMap((group) =>
+  const knowledgeResults = groups.flatMap((group) =>
     group.children.filter((item) => {
       if (resultIds.has(item.result_item_id)) {
         return false;
@@ -293,6 +360,16 @@ function visibleResultsForAnnotation(
       return true;
     })
   );
+  return [
+    ...knowledgeResults,
+    ...supplementalResults.filter((item) => {
+      if (resultIds.has(item.result_item_id)) {
+        return false;
+      }
+      resultIds.add(item.result_item_id);
+      return true;
+    })
+  ];
 }
 
 function SearchAnnotationReviewPanel({
@@ -301,7 +378,7 @@ function SearchAnnotationReviewPanel({
   onSubmit
 }: {
   interactionId: string | null;
-  results: RenderableResult[];
+  results: AnnotationRenderableResult[];
   onSubmit: (
     feedbacks: SearchAnnotationResultFeedbackInput[]
   ) => Promise<SearchAnnotationReviewResponse>;
@@ -438,12 +515,16 @@ function SearchAnnotationReviewPanel({
             <Typography.Text type="secondary">
               第 {currentIndex + 1} / {results.length} 条。选择标签后会进入下一条；可以返回修改已处理的结果。
             </Typography.Text>
-            <ResultItemView
-              item={currentResult}
-              feedbackGiven={false}
-              onFeedback={() => undefined}
-              showHelpfulFeedback={false}
-            />
+            {isKnowledgeResult(currentResult) ? (
+              <ResultItemView
+                item={currentResult}
+                feedbackGiven={false}
+                onFeedback={() => undefined}
+                showHelpfulFeedback={false}
+              />
+            ) : (
+              <SupplementalResultItemView item={currentResult} />
+            )}
             <Card size="small" title="为这条结果选择标签">
               <Space wrap>
                 <Button
@@ -1036,16 +1117,19 @@ export function SearchPage(): JSX.Element {
           {result.no_match ? (
             <Alert type="info" showIcon message="无匹配" description={result.no_match_guidance} />
           ) : (
-            <ResultsGroupsView
-              groups={result.groups}
-              feedbackIds={feedbackIds}
-              onFeedback={(item) => void markHelpful(item)}
-            />
+            <>
+              <ResultsGroupsView
+                groups={result.groups}
+                feedbackIds={feedbackIds}
+                onFeedback={(item) => void markHelpful(item)}
+              />
+              <SupplementalResultsView results={result.supplemental_results} />
+            </>
           )}
           <SearchAnnotationReviewPanel
             key={result.search_interaction_id ?? "missing-search-interaction"}
             interactionId={result.search_interaction_id}
-            results={visibleResultsForAnnotation(result.groups)}
+            results={visibleResultsForAnnotation(result.groups, result.supplemental_results)}
             onSubmit={(resultFeedbacks) =>
               api.submitSearchAnnotationReview(
                 result.search_interaction_id ?? "",
@@ -1081,17 +1165,23 @@ export function SearchPage(): JSX.Element {
               description={conversationResult.no_match_guidance}
             />
           ) : (
-            <ResultsGroupsView
-              groups={conversationResult.groups}
-              feedbackIds={feedbackIds}
-              onFeedback={(item) => void markConversationHelpful(item)}
-            />
+            <>
+              <ResultsGroupsView
+                groups={conversationResult.groups}
+                feedbackIds={feedbackIds}
+                onFeedback={(item) => void markConversationHelpful(item)}
+              />
+              <SupplementalResultsView results={conversationResult.supplemental_results} />
+            </>
           )}
           {!conversationResult.no_query_guidance ? (
             <SearchAnnotationReviewPanel
               key={conversationResult.search_interaction_id ?? "missing-conversation-interaction"}
               interactionId={conversationResult.search_interaction_id}
-              results={visibleResultsForAnnotation(conversationResult.groups)}
+              results={visibleResultsForAnnotation(
+                conversationResult.groups,
+                conversationResult.supplemental_results
+              )}
               onSubmit={(resultFeedbacks) =>
                 api.submitSearchAnnotationReview(
                   conversationResult.search_interaction_id ?? "",

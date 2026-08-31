@@ -10,6 +10,7 @@ from app.models.knowledge_content import (
     SearchAnnotationResultLabel,
     SearchInteractionType,
     SearchQueryMode,
+    SearchResultKind,
 )
 from app.schemas.knowledge_content import EvidenceAttachmentResponse, WebLinkInput
 from app.services.conversation import NormalizedConversationMessage
@@ -116,6 +117,16 @@ class SearchParentGroupResponse(BaseModel):
     children: list[SearchResultResponse]
 
 
+class SupplementalSearchResultResponse(BaseModel):
+    result_item_id: UUID
+    rank: int
+    score: float
+    rerank_score: float | None
+    title: str
+    content: str
+    selection_stage: str
+
+
 class SearchResponse(BaseModel):
     search_event_id: UUID
     search_interaction_id: UUID | None
@@ -125,6 +136,7 @@ class SearchResponse(BaseModel):
     degraded: bool
     degradation_reasons: list[str]
     groups: list[SearchParentGroupResponse]
+    supplemental_results: list[SupplementalSearchResultResponse] = Field(default_factory=list)
 
 
 class HelpfulFeedbackRequest(BaseModel):
@@ -198,6 +210,11 @@ class ConversationSearchResultResponse(SearchResultResponse):
     matched_queries: list[str]
 
 
+class ConversationSupplementalSearchResultResponse(SupplementalSearchResultResponse):
+    search_event_id: UUID
+    matched_queries: list[str]
+
+
 class ConversationSearchParentGroupResponse(BaseModel):
     parent_id: UUID
     parent_name: str
@@ -215,6 +232,9 @@ class ConversationSearchResponse(BaseModel):
     degraded: bool
     degradation_reasons: list[str]
     groups: list[ConversationSearchParentGroupResponse]
+    supplemental_results: list[ConversationSupplementalSearchResultResponse] = Field(
+        default_factory=list
+    )
 
 
 class QueryBatchRequest(BaseModel):
@@ -282,10 +302,14 @@ class AnnotationFeedbackResultDetailResponse(BaseModel):
     rerank_score: float | None
     selection_stage: str
     matched_field: str | None
-    parent_name: str
+    result_kind: SearchResultKind
+    parent_name: str | None
     question: str
-    knowledge_base_id: UUID
-    knowledge_base_name: str
+    content: str
+    knowledge_base_id: UUID | None
+    knowledge_base_name: str | None
+    source_hash: str | None
+    citation_metadata: dict[str, object] | None
     matched_queries: list[str]
     feedback_type: SearchAnnotationResultLabel
     other_note: str | None

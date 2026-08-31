@@ -30,6 +30,8 @@ import type {
   SearchAnnotationResultFeedbackInput,
   SearchRetrievalMode,
   SearchResponse,
+  SupplementalMaterialPage,
+  SupplementalUploadResponse,
   HelpfulFeedbackResponse,
   TemporaryPasswordResponse,
   User,
@@ -453,5 +455,30 @@ export const api = {
     sessionMutation<void>(
       "DELETE",
       `/knowledge-content/admin/knowledge/${childId}/knowledge-bases/${knowledgeBaseId}`
+    ),
+
+  listSupplementalSupportedFileTypes: (): Promise<{ extensions: string[] }> =>
+    request<{ extensions: string[] }>("/supplemental-materials/supported-file-types"),
+
+  listSupplementalMaterials: (
+    page = 1,
+    pageSize = 20,
+    statuses: string[] = []
+  ): Promise<SupplementalMaterialPage> => {
+    const parameters = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    statuses.forEach((value) => parameters.append("status", value));
+    return request<SupplementalMaterialPage>(`/supplemental-materials?${parameters.toString()}`);
+  },
+
+  uploadSupplementalMaterial: (file: File): Promise<SupplementalUploadResponse> => {
+    const form = new FormData();
+    form.append("file", file);
+    return sessionFormMutation<SupplementalUploadResponse>("POST", "/supplemental-materials", form);
+  },
+
+  deleteSupplementalMaterial: (documentId: string): Promise<{ accepted: boolean }> =>
+    sessionMutation<{ accepted: boolean }>(
+      "DELETE",
+      `/supplemental-materials/${encodeURIComponent(documentId)}`
     )
 };

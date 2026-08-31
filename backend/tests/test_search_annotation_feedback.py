@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.core.security import create_session_token
 from app.db.base import Base
 from app.main import create_app
+from app.models.audit_event import AuditEvent
 from app.models.knowledge_base import KnowledgeBase
 from app.models.knowledge_content import (
     Child,
@@ -31,11 +32,17 @@ from app.models.knowledge_content import (
     SearchEvent,
     SearchInteractionType,
     SearchQueryMode,
+    SearchResultKind,
 )
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.search import SearchAnnotationReviewRequest
 from app.services.ocr import OcrRecognition
-from app.services.search import SearchDetails, search_published_content
+from app.services.search import (
+    SearchDetails,
+    SearchResultNotHelpfulError,
+    record_helpful_feedback,
+    search_published_content,
+)
 from app.services.search_annotations import (
     ResultFeedbackInput,
     SearchAnnotationReviewConflictError,
@@ -47,6 +54,11 @@ from app.services.search_annotations import (
     record_search_annotation_review,
 )
 from app.services.search_batch import QueryBatchSearchDetails, execute_query_batch
+from app.services.supplemental_retrieval import (
+    InMemorySupplementalRetriever,
+    SupplementalAvailability,
+    SupplementalDocument,
+)
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -223,6 +235,172 @@ def test_annotation_review_request_normalizes_and_validates_result_labels() -> N
                 {"search_result_item_id": result_item_id, "feedback_type": "normal"},
             ]
         )
+
+
+@pytest.mark.asyncio
+async def test_supplemental_snapshot_is_visible_annotatable_and_not_helpful(
+    tmp_path: Path,
+) -> None:
+    factory, engine, _settings = await build_db(tmp_path)
+    try:
+        async with factory() as session:
+            user = await create_user(session)
+            document = SupplementalDocument(
+                source_hash="a" * 64,
+                title="全局系统指南.pdf",
+                content="登录失败时先检查账号状态。",
+                citation_metadata={"chunk_count": 1, "reference_ids": ["chunk-1"]},
+                source_score=0.88,
+                upstream_rank=1,
+            )
+            unavailable = InMemorySupplementalRetriever(
+                [document],
+                state=SupplementalAvailability.UNAVAILABLE,
+            )
+            unavailable_search = await search_published_content(
+                session,
+                user_id=user.id,
+                query="登录失败怎么办",
+                ocr_text=None,
+                knowledge_base_id=None,
+                retrieval_mode="vector",
+                limit=10,
+                supplemental_retriever=unavailable,
+            )
+            assert unavailable.retrieve_calls == 0
+            assert unavailable_search.supplemental_results == []
+            assert unavailable_search.event.no_match is True
+            assert unavailable_search.event.supplemental_retrieval_status == "skipped_unavailable"
+
+            available = InMemorySupplementalRetriever([document])
+            search = await search_published_content(
+                session,
+                user_id=user.id,
+                query="登录失败怎么办",
+                ocr_text=None,
+                knowledge_base_id=None,
+                retrieval_mode="vector",
+                limit=10,
+                supplemental_retriever=available,
+            )
+            assert available.retrieve_calls == 1
+            assert search.event.no_match is False
+            assert search.event.supplemental_retrieval_status == "success"
+            assert search.groups == []
+            assert len(search.supplemental_results) == 1
+            result_item = search.supplemental_results[0].result_item
+            assert result_item.result_kind is SearchResultKind.SUPPLEMENT
+            assert result_item.child_id is None
+            assert result_item.knowledge_base_id is None
+            assert result_item.supplement_content == document.content
+
+            with pytest.raises(SearchResultNotHelpfulError):
+                await record_helpful_feedback(
+                    session,
+                    user_id=user.id,
+                    search_event_id=search.event.id,
+                    result_item_id=result_item.id,
+                )
+
+            assert search.interaction is not None
+            review, _feedbacks, _ = await record_search_annotation_review(
+                session,
+                user_id=user.id,
+                interaction_id=search.interaction.id,
+                result_feedbacks=[
+                    ResultFeedbackInput(
+                        search_result_item_id=result_item.id,
+                        feedback_type=SearchAnnotationResultLabel.NORMAL,
+                        other_note=None,
+                    )
+                ],
+            )
+            detail = await get_annotation_feedback_detail(session, feedback_id=review.id)
+            detail_result = detail.query_details[0].results[0]
+            assert detail_result.result_kind is SearchResultKind.SUPPLEMENT
+            assert detail_result.question == "全局系统指南.pdf"
+            assert detail_result.content == document.content
+            assert detail_result.knowledge_base_id is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_global_materials_proxy_is_admin_csrf_and_availability_gated(tmp_path: Path) -> None:
+    factory, engine, settings = await build_db(tmp_path)
+    try:
+        async with factory() as session:
+            admin = await create_user(session, role=UserRole.SYSTEM_ADMIN)
+            await session.commit()
+
+        app = create_app(settings=settings, db_session_factory=factory)
+        retriever = InMemorySupplementalRetriever()
+        app.state.supplemental_retriever = retriever
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="https://testserver") as client:
+                csrf_token = "supplemental-csrf"
+                client.cookies.set(
+                    settings.session_cookie_name,
+                    create_session_token(admin, csrf_token, settings),
+                )
+                client.cookies.set(settings.csrf_cookie_name, csrf_token)
+
+                supported = await client.get("/api/v1/supplemental-materials/supported-file-types")
+                assert supported.status_code == 200
+                assert supported.json()["extensions"] == ["pdf", "docx", "txt", "md"]
+
+                missing_csrf = await client.post(
+                    "/api/v1/supplemental-materials",
+                    files={"file": ("guide.txt", b"global guide", "text/plain")},
+                )
+                assert missing_csrf.status_code == 403
+
+                uploaded = await client.post(
+                    "/api/v1/supplemental-materials",
+                    headers={"X-CSRF-Token": csrf_token},
+                    files={"file": ("guide.txt", b"global guide", "text/plain")},
+                )
+                assert uploaded.status_code == 202
+                assert uploaded.json()["accepted"] is True
+
+                listed = await client.get(
+                    "/api/v1/supplemental-materials?page=1&page_size=20&status=pending"
+                )
+                assert listed.status_code == 200
+                document_id = listed.json()["materials"][0]["document_id"]
+
+                deleted = await client.delete(
+                    f"/api/v1/supplemental-materials/{document_id}",
+                    headers={"X-CSRF-Token": csrf_token},
+                )
+                assert deleted.status_code == 200
+
+                retriever.state = SupplementalAvailability.UNAVAILABLE
+                unavailable = await client.get("/api/v1/supplemental-materials")
+                assert unavailable.status_code == 503
+
+        async with factory() as session:
+            audit_events = list(
+                (
+                    await session.scalars(
+                        select(AuditEvent).where(
+                            AuditEvent.event_type.in_(
+                                [
+                                    "supplemental_material.uploaded",
+                                    "supplemental_material.deleted",
+                                ]
+                            )
+                        )
+                    )
+                ).all()
+            )
+            assert {event.event_type for event in audit_events} == {
+                "supplemental_material.uploaded",
+                "supplemental_material.deleted",
+            }
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
