@@ -328,18 +328,23 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
       title: "上传时间",
       dataIndex: "uploaded_at",
       key: "uploaded_at",
+      width: 180,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
       title: "实际嵌入时间",
       dataIndex: "embedded_at",
       key: "embedded_at",
+      width: 180,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string | null) => formatDateTime(value)
     },
     {
       title: "状态",
       dataIndex: "status",
       key: "status",
+      width: 130,
       render: (value: ManagedKnowledgeEntry["status"]) => {
         if (value === "published") {
           return <Tag color="green">已发布</Tag>;

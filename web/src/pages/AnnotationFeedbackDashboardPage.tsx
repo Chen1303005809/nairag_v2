@@ -335,12 +335,14 @@ export function AnnotationFeedbackDashboardPage(): JSX.Element {
       title: "检索时间",
       dataIndex: "searched_at",
       width: 170,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
       title: "标注时间",
       dataIndex: "submitted_at",
       width: 170,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     { title: "展示结果数", dataIndex: "result_count", width: 110 }

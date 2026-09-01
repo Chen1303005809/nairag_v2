@@ -42,7 +42,6 @@ interface AttachmentImportFormValues {
   primary_child_id: string;
   children: AttachmentImportCandidate[];
   knowledge_base_ids?: string[];
-  attachment_visibility_confirmed?: boolean;
 }
 
 function nullable(value: string | null | undefined): string | null {
@@ -107,8 +106,7 @@ function attachmentImportFormValues(detail: AttachmentImportBatchDetail): Attach
     },
     primary_child_id: detail.proposal.recommended_primary_child_id,
     children: detail.proposal.children.map((candidate) => ({ ...candidate })),
-    knowledge_base_ids: [],
-    attachment_visibility_confirmed: false
+    knowledge_base_ids: []
   };
 }
 
@@ -356,8 +354,7 @@ export function AttachmentImportTab({
         existing_parent_id: target === "existing" ? values.existing_parent_id ?? null : null,
         primary_child_id: values.primary_child_id,
         children: values.children.map(toCandidate),
-        knowledge_base_ids: target === "new" ? values.knowledge_base_ids ?? [] : [],
-        attachment_visibility_confirmed: Boolean(values.attachment_visibility_confirmed)
+        knowledge_base_ids: target === "new" ? values.knowledge_base_ids ?? [] : []
       });
       message.success(
         `已提交主小类审核${response.created_draft_ids.length ? `，并生成 ${response.created_draft_ids.length} 条普通小类草稿` : ""}`
@@ -374,18 +371,22 @@ export function AttachmentImportTab({
     {
       title: "原附件",
       key: "attachment",
+      width: 260,
       render: (_value, batch) => batch.attachment.name
     },
     {
       title: "状态",
       dataIndex: "status",
       key: "status",
+      width: 130,
       render: (value: AttachmentImportBatch["status"]) => statusTag(value)
     },
     {
       title: "发起时间",
       dataIndex: "created_at",
       key: "created_at",
+      width: 180,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
@@ -599,20 +600,6 @@ export function AttachmentImportTab({
                       <Checkbox.Group className="knowledge-base-options" options={knowledgeBaseOptions} />
                     </Form.Item>
                   ) : null}
-                  <Form.Item
-                    name="attachment_visibility_confirmed"
-                    valuePropName="checked"
-                    rules={[
-                      {
-                        validator: (_rule, value) =>
-                          value
-                            ? Promise.resolve()
-                            : Promise.reject(new Error("请确认原附件的可见范围"))
-                      }
-                    ]}
-                  >
-                    <Checkbox>我确认原附件将按知识发布范围对登录用户可见</Checkbox>
-                  </Form.Item>
                   <Button
                     type="primary"
                     htmlType="submit"

@@ -330,8 +330,10 @@ describe("ContentSubmissionPage", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
     const timestampCell = await screen.findByRole("cell", { name: "2026/01/01 08:00:00" });
+    const statusColumn = document.querySelectorAll(".ant-table colgroup col")[3];
 
     expect(timestampCell).toHaveStyle({ whiteSpace: "nowrap" });
+    expect(statusColumn?.getAttribute("style")).toContain("width: 100px");
   });
 
   it("shows uploaded attachments immediately with a download link or image preview", async () => {

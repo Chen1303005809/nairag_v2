@@ -480,7 +480,6 @@ async def test_attachment_import_api_upload_worker_and_confirm_flow(tmp_path: Pa
                         "primary_child_id": parsed_child["id"],
                         "children": [parsed_child],
                         "knowledge_base_ids": [knowledge_base_id],
-                        "attachment_visibility_confirmed": True,
                     },
                 )
                 assert confirmed.status_code == 200
@@ -526,7 +525,6 @@ async def test_confirm_new_attachment_import_binds_only_primary_and_is_idempoten
             primary_child_id="main",
             children=proposal_value.children,
             knowledge_base_ids=[knowledge_base_id],
-            attachment_visibility_confirmed=True,
         )
         async with factory() as session:
             confirmation = await confirm_attachment_import(
@@ -722,7 +720,6 @@ async def test_confirm_existing_import_preserves_primary_content_and_attachments
             primary_child_id="candidate-a",
             children=proposal_value.children,
             knowledge_base_ids=[],
-            attachment_visibility_confirmed=True,
         )
         async with factory() as session:
             confirmation = await confirm_attachment_import(

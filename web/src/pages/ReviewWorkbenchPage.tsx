@@ -215,6 +215,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       key: "submitted_at",
       width: 200,
       ellipsis: true,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
@@ -229,6 +230,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       key: "reviewed_at",
       width: 180,
       onHeaderCell: () => ({ style: { whiteSpace: "nowrap" } }),
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: () => "—"
     },
     {
@@ -289,6 +291,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       key: "submitted_at",
       width: 200,
       ellipsis: true,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
@@ -305,6 +308,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       key: "reviewed_at",
       width: 200,
       ellipsis: true,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string | null) => formatDateTime(value)
     },
     {

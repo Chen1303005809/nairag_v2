@@ -499,7 +499,6 @@ export interface AttachmentImportConfirmRequest {
   primary_child_id: string;
   children: AttachmentImportCandidate[];
   knowledge_base_ids: string[];
-  attachment_visibility_confirmed: boolean;
 }
 
 export interface AttachmentImportConfirmResponse {

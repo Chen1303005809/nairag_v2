@@ -1113,6 +1113,7 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "状态",
       dataIndex: "status",
       key: "status",
+      width: 100,
       render: (value: ReviewSubmissionStatus) => submissionStatus(value)
     },
     {
@@ -1295,6 +1296,7 @@ export function ContentSubmissionPage(): JSX.Element {
       dataIndex: "updated_at",
       key: "updated_at",
       width: 180,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
@@ -1332,11 +1334,13 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "状态",
       dataIndex: "status",
       key: "status",
+      width: 100,
       render: (status: IngestionBatch["status"]) => ingestionStatusTag(status)
     },
     {
       title: "生成 / 未生成",
       key: "counts",
+      width: 130,
       render: (_value: unknown, batch: IngestionBatch) =>
         `${batch.generated_count} / ${batch.rejected_count}`
     },
@@ -1344,6 +1348,8 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "发起时间",
       dataIndex: "created_at",
       key: "created_at",
+      width: 180,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {

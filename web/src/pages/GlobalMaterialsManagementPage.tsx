@@ -16,6 +16,7 @@ import { DeleteOutlined, ReloadOutlined, UploadOutlined } from "@ant-design/icon
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiError, api } from "../api/client";
+import { formatDateTime } from "../dateTime";
 import type { SupplementalMaterial } from "../api/types";
 
 const pageSize = 20;
@@ -206,7 +207,8 @@ export function GlobalMaterialsManagementPage(): JSX.Element {
                 title: "更新时间",
                 dataIndex: "updated_at",
                 width: 180,
-                render: (value: string | null) => value ?? "-"
+                onCell: () => ({ style: { whiteSpace: "nowrap" } }),
+                render: (value: string | null) => formatDateTime(value)
               },
               {
                 title: "处理信息",

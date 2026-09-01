@@ -167,7 +167,6 @@ class ConfirmAttachmentImportRequest(BaseModel):
     primary_child_id: str = Field(min_length=1, max_length=64)
     children: list[AttachmentImportCandidate] = Field(min_length=1, max_length=50)
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)
-    attachment_visibility_confirmed: bool = False
 
     @field_validator("primary_child_id")
     @classmethod
@@ -191,8 +190,6 @@ class ConfirmAttachmentImportRequest(BaseModel):
             raise ValueError("小类 ID 不能重复")
         if self.primary_child_id not in set(child_ids):
             raise ValueError("主小类必须属于小类列表")
-        if not self.attachment_visibility_confirmed:
-            raise ValueError("必须确认原附件会按知识发布范围对登录用户可见")
         if self.target == "new":
             if self.parent is None:
                 raise ValueError("新建问题大类时必须填写大类信息")
