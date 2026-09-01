@@ -1,6 +1,9 @@
 services:
   lightrag-postgres:
-    image: pgvector/pgvector:pg18
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: nairag-lightrag-postgres:pg18-age-pgvector
     environment:
       POSTGRES_DB: lightrag
       POSTGRES_USER: lightrag

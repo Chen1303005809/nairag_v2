@@ -1,0 +1,45 @@
+# Build PostgreSQL 18 with both pgvector and Apache AGE for PGGraphStorage.
+# AGE 1.7.0 is pinned because the LightRAG PG18 deployment uses this release.
+FROM pgvector/pgvector:pg18-trixie AS age-build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --no-install-suggests \
+        ca-certificates \
+        git \
+        bison \
+        build-essential \
+        flex \
+        postgresql-server-dev-18 \
+    && git clone --depth 1 --branch release/PG18/1.7.0 \
+        https://github.com/apache/age.git /usr/src/age \
+    && cd /usr/src/age \
+    && make \
+    && make install \
+    && rm -rf /var/lib/apt/lists/* /usr/src/age
+
+FROM pgvector/pgvector:pg18-trixie
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --no-install-suggests locales \
+    && echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen \
+    && locale-gen \
+    && update-locale LANG=en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8 \
+    LC_COLLATE=en_US.UTF-8 \
+    LC_CTYPE=en_US.UTF-8
+
+COPY --from=age-build /usr/lib/postgresql/18/lib/age.so /usr/lib/postgresql/18/lib/
+COPY --from=age-build /usr/share/postgresql/18/extension/age--1.7.0.sql /usr/share/postgresql/18/extension/
+COPY --from=age-build /usr/share/postgresql/18/extension/age.control /usr/share/postgresql/18/extension/
+
+# Create the extensions for newly initialized databases. LightRAG also runs
+# CREATE EXTENSION IF NOT EXISTS AGE for existing databases at startup.
+RUN printf '%s\n' \
+    'CREATE EXTENSION IF NOT EXISTS vector;' \
+    'CREATE EXTENSION IF NOT EXISTS age CASCADE;' \
+    > /docker-entrypoint-initdb.d/00-create-extensions.sql
+
+# Apache AGE must be preloaded before the database accepts connections.
+CMD ["postgres", "-c", "shared_preload_libraries=age"]

@@ -13,13 +13,18 @@ LightRAG 的 PostgreSQL、工作目录、输入文件和日志都保存在项目
 docker network create --internal nairag-supplemental
 ```
 
-然后准备 LightRAG 自己的配置并启动：
+然后准备 LightRAG 自己的配置并启动。首次构建会在 PostgreSQL 18 上编译
+Apache AGE 1.7.0，因此远端服务器需要能够访问 GitHub，并需要一定的构建时间：
 
 ```bash
 cp lightrag/.env.example lightrag/.env
 # 编辑 lightrag/.env，填写数据库密码和 LightRAG 的模型服务配置
 docker compose -f lightrag/compose.yaml up -d --build
 ```
+
+PostgreSQL 镜像同时包含 `pgvector` 和 Apache AGE，分别对应
+`PGVectorStorage` 与 `PGGraphStorage`。已有的 PostgreSQL 持久卷无需删除；LightRAG
+启动时会为已有数据库执行幂等的 AGE 扩展创建。
 
 服务不发布宿主机端口；`lightrag` 仅以 `lightrag:9621` 的别名存在于
 `nairag-supplemental` 网络中。LightRAG 的 PostgreSQL 也只在其专用的内部
