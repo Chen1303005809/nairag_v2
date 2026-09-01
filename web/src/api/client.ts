@@ -5,6 +5,10 @@ import type {
   AnnotationFeedbackPage,
   AnnotationFeedbackSummary,
   AvailableParent,
+  AttachmentImportBatch,
+  AttachmentImportBatchDetail,
+  AttachmentImportConfirmRequest,
+  AttachmentImportConfirmResponse,
   ChildContentInput,
   ConversationSearchResponse,
   EditableContentEntry,
@@ -14,6 +18,7 @@ import type {
   KnowledgeBase,
   KnowledgeDraft,
   KnowledgeDraftInput,
+  KnowledgeContentTaxonomy,
   LoginResponse,
   ManagedKnowledgeBase,
   ManagedKnowledgeEntry,
@@ -227,6 +232,9 @@ export const api = {
   listAvailableParents: (): Promise<AvailableParent[]> =>
     request<AvailableParent[]>("/knowledge-content/parents/available"),
 
+  getKnowledgeContentTaxonomy: (): Promise<KnowledgeContentTaxonomy> =>
+    request<KnowledgeContentTaxonomy>("/knowledge-content/taxonomy"),
+
   uploadKnowledgeAttachment: (file: File): Promise<EvidenceAttachment> => {
     const form = new FormData();
     form.append("attachment_file", file);
@@ -319,6 +327,34 @@ export const api = {
 
   getIngestionBatch: (batchId: string): Promise<IngestionBatchDetail> =>
     request<IngestionBatchDetail>(`/intelligent-ingestion/batches/${batchId}`),
+
+  createAttachmentImportBatch: (file: File): Promise<AttachmentImportBatch> => {
+    const form = new FormData();
+    form.append("attachment_file", file);
+    return sessionFormMutation<AttachmentImportBatch>("POST", "/attachment-ingestion/batches", form);
+  },
+
+  listAttachmentImportBatches: (): Promise<AttachmentImportBatch[]> =>
+    request<AttachmentImportBatch[]>("/attachment-ingestion/batches"),
+
+  getAttachmentImportBatch: (batchId: string): Promise<AttachmentImportBatchDetail> =>
+    request<AttachmentImportBatchDetail>(`/attachment-ingestion/batches/${batchId}`),
+
+  retryAttachmentImportBatch: (batchId: string): Promise<AttachmentImportBatch> =>
+    sessionMutation<AttachmentImportBatch>("POST", `/attachment-ingestion/batches/${batchId}/retry`),
+
+  confirmAttachmentImportBatch: (
+    batchId: string,
+    input: AttachmentImportConfirmRequest
+  ): Promise<AttachmentImportConfirmResponse> =>
+    sessionMutation<AttachmentImportConfirmResponse>(
+      "POST",
+      `/attachment-ingestion/batches/${batchId}/confirm`,
+      input
+    ),
+
+  deleteAttachmentImportBatch: (batchId: string): Promise<void> =>
+    sessionMutation<void>("DELETE", `/attachment-ingestion/batches/${batchId}`),
 
   listKnowledgeDrafts: (): Promise<KnowledgeDraft[]> =>
     request<KnowledgeDraft[]>("/knowledge-content/drafts"),

@@ -5,6 +5,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -16,6 +17,7 @@ from app.api.deps import (
 )
 from app.core.config import Settings
 from app.db.session import get_db_session
+from app.models.attachment_ingestion import AttachmentIngestionBatch
 from app.models.knowledge_content import (
     ChildRevision,
     ChildRevisionQuestionVariant,
@@ -25,6 +27,7 @@ from app.models.knowledge_content import (
     WebLink,
 )
 from app.models.user_account import UserAccount, UserRole
+from app.schemas.attachment_ingestion import TaxonomyOptionsResponse
 from app.schemas.knowledge_content import (
     AvailableKnowledgeBaseResponse,
     AvailableParentResponse,
@@ -95,9 +98,19 @@ from app.services.knowledge_content import (
     submit_new_parent_aggregate,
     submit_parent_aggregate_revision,
 )
+from app.services.taxonomy import taxonomy_options
 from app.services.users import record_audit_event
 
 router = APIRouter(prefix="/knowledge-content", tags=["knowledge content"])
+
+
+@router.get("/taxonomy", response_model=TaxonomyOptionsResponse)
+async def get_knowledge_content_taxonomy(
+    _user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+) -> TaxonomyOptionsResponse:
+    """Expose the fixed form choices from the same source as import validation."""
+
+    return TaxonomyOptionsResponse(**taxonomy_options())
 
 
 def as_available_parent_response(details: AvailableParentDetails) -> AvailableParentResponse:
@@ -428,7 +441,7 @@ def as_editable_content_response(details: EditableContentDetails) -> EditableCon
 async def upload_evidence_attachment(
     attachment_file: Annotated[
         UploadFile,
-        File(description="PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX 或 UTF-8 TXT 附件"),
+        File(description="PNG、JPEG、WebP、PDF、DOC、DOCX、XLSX、PPTX 或 UTF-8 TXT 附件"),
     ],
     request: Request,
     user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
@@ -514,6 +527,16 @@ async def delete_unbound_evidence_attachment(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="已关联到知识修订的附件不能删除",
+        )
+    attached_batch = await session.scalar(
+        select(AttachmentIngestionBatch.id).where(
+            AttachmentIngestionBatch.attachment_id == attachment.id
+        )
+    )
+    if attached_batch is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="附件正在用于解析批次，请从附件解析页取消该批次",
         )
 
     storage: AttachmentStorage = request.app.state.attachment_storage

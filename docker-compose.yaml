@@ -102,6 +102,7 @@ services:
   worker:
     build:
       context: ./backend
+      target: worker
     command: python worker.py
     env_file: *backend-env-file
     environment:
@@ -109,6 +110,7 @@ services:
       DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
       JWT_SECRET_FILE: /run/secrets/jwt_signing_key
       INDEX_ARTIFACT_DIR: /var/lib/nairag/index-artifacts
+      ATTACHMENT_STORAGE_DIR: /var/lib/nairag/attachments
     depends_on:
       postgres:
         condition: service_healthy
@@ -116,6 +118,7 @@ services:
         condition: service_healthy
     volumes:
       - ./volumes/index_artifacts:/var/lib/nairag/index-artifacts
+      - ./volumes/attachments:/var/lib/nairag/attachments
     secrets:
       - postgres_password
       - jwt_signing_key

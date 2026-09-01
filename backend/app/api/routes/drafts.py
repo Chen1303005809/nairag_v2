@@ -15,6 +15,7 @@ from app.api.deps import (
 from app.api.routes.intelligent_ingestion import (
     as_knowledge_draft_response,
     resolve_draft_attachments,
+    resolve_draft_parent_metadata,
 )
 from app.api.routes.knowledge_content import as_submission_response
 from app.db.session import get_db_session
@@ -50,8 +51,10 @@ async def list_my_knowledge_drafts(
 ) -> list[KnowledgeDraftResponse]:
     drafts = await list_drafts(session, owner_user_id=user.user.id)
     attachments_by_id = await resolve_draft_attachments(session, drafts)
+    parent_metadata_by_id = await resolve_draft_parent_metadata(session, drafts)
     return [
-        as_knowledge_draft_response(draft, attachments_by_id) for draft in drafts
+        as_knowledge_draft_response(draft, attachments_by_id, parent_metadata_by_id)
+        for draft in drafts
     ]
 
 
@@ -64,6 +67,7 @@ async def create_knowledge_draft(
 ) -> KnowledgeDraftResponse:
     draft = await create_manual_draft(session, owner_user_id=user.user.id, content=body)
     attachments_by_id = await resolve_draft_attachments(session, [draft])
+    parent_metadata_by_id = await resolve_draft_parent_metadata(session, [draft])
     record_audit_event(
         session,
         event_type="knowledge_draft.created",
@@ -73,7 +77,7 @@ async def create_knowledge_draft(
         payload={"source": draft.source.value},
     )
     await session.commit()
-    return as_knowledge_draft_response(draft, attachments_by_id)
+    return as_knowledge_draft_response(draft, attachments_by_id, parent_metadata_by_id)
 
 
 @router.patch("/drafts/{draft_id}", response_model=KnowledgeDraftResponse)
@@ -94,8 +98,9 @@ async def update_knowledge_draft(
     except DraftNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="草稿不存在") from exc
     attachments_by_id = await resolve_draft_attachments(session, [draft])
+    parent_metadata_by_id = await resolve_draft_parent_metadata(session, [draft])
     await session.commit()
-    return as_knowledge_draft_response(draft, attachments_by_id)
+    return as_knowledge_draft_response(draft, attachments_by_id, parent_metadata_by_id)
 
 
 @router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)

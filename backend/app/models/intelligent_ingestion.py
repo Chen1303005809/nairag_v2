@@ -25,6 +25,7 @@ from app.db.base import Base
 class KnowledgeDraftSource(str, Enum):
     MANUAL_SAVED = "manual_saved"
     INTELLIGENT_GENERATED = "intelligent_generated"
+    ATTACHMENT_GENERATED = "attachment_generated"
 
 
 class IntelligentIngestionBatchStatus(str, Enum):
@@ -137,6 +138,11 @@ class KnowledgeDraft(Base):
             "candidate_fingerprint",
             name="uq_knowledge_draft_ingestion_candidate",
         ),
+        UniqueConstraint(
+            "attachment_ingestion_batch_id",
+            "candidate_fingerprint",
+            name="uq_knowledge_draft_attachment_candidate",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -165,6 +171,12 @@ class KnowledgeDraft(Base):
     ingestion_batch_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("intelligent_ingestion_batch.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    attachment_ingestion_batch_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("attachment_ingestion_batch.id", ondelete="RESTRICT"),
         nullable=True,
         index=True,
     )

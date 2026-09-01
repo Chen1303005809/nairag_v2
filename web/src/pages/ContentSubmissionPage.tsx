@@ -30,6 +30,7 @@ import {
 } from "../conversation";
 import { ConversationEditor } from "../components/ConversationEditor";
 import type { ConversationEditorHandle } from "../components/ConversationEditor";
+import { AttachmentImportTab } from "../components/AttachmentImportTab";
 import { KnowledgeDetailModal } from "../components/KnowledgeDetailModal";
 import { TableActionBar } from "../components/TableActionBar";
 import { uniqueTableFilterOptions } from "../tableFilters";
@@ -43,6 +44,7 @@ import type {
   KnowledgeBase,
   KnowledgeDraft,
   KnowledgeDraftInput,
+  KnowledgeContentTaxonomy,
   ParentContentInput,
   ReviewChildRevision,
   ReviewParentRevision,
@@ -61,6 +63,17 @@ import {
 
 const PARENT_CATEGORY_LABEL = "问题大类";
 const CHILD_CATEGORY_LABEL = "问题小类";
+const fallbackTaxonomy: KnowledgeContentTaxonomy = {
+  parent_types: parentTypeOptions.map((option) => option.value),
+  question_types: questionTypeOptions.map((option) => option.value),
+  business_objects: businessObjectOptions.map((option) => option.value),
+  purposes: purposeOptions.map((option) => option.value),
+  customer_types: customerTypeOptions.map((option) => option.value)
+};
+
+function taxonomySelectOptions(values: string[]): Array<{ label: string; value: string }> {
+  return values.map((value) => ({ label: value, value }));
+}
 
 interface ChildContentFormValues {
   question: string;
@@ -246,6 +259,8 @@ function draftHasBusinessContent(input: KnowledgeDraftInput): boolean {
 function draftSourceTag(source: KnowledgeDraft["source"]): JSX.Element {
   return source === "intelligent_generated" ? (
     <Tag color="purple">智能生成</Tag>
+  ) : source === "attachment_generated" ? (
+    <Tag color="geekblue">附件解析</Tag>
   ) : (
     <Tag color="cyan">手动保存</Tag>
   );
@@ -440,7 +455,7 @@ function AttachmentListInput({
         </Space>
       ))}
       <Upload
-        accept=".png,.jpg,.jpeg,.webp,.pdf,.docx,.xlsx,.pptx,.txt"
+        accept=".png,.jpg,.jpeg,.webp,.pdf,.doc,.docx,.xlsx,.pptx,.txt"
         beforeUpload={(file) => {
           void upload(file);
           return Upload.LIST_IGNORE;
@@ -453,13 +468,19 @@ function AttachmentListInput({
         </Button>
       </Upload>
       <Typography.Text type="secondary">
-        支持 PNG、JPEG、WebP、PDF、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。图片附件可直接预览，其他类型点击文件名可下载查看。
+        支持 PNG、JPEG、WebP、PDF、DOC、DOCX、XLSX、PPTX、UTF-8 TXT；单个文件不超过 20 MB。图片附件可直接预览，其他类型点击文件名可下载查看。
       </Typography.Text>
     </Space>
   );
 }
 
-function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.Element {
+function ChildContentFields({
+  root,
+  taxonomy
+}: {
+  root: "primary_child" | "child";
+  taxonomy: KnowledgeContentTaxonomy;
+}): JSX.Element {
   return (
     <>
       <Form.Item
@@ -488,28 +509,28 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
           label="问题类型"
           rules={[{ required: true, message: "请选择问题类型" }]}
         >
-          <Select placeholder="--请选择--" options={questionTypeOptions} />
+          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.question_types)} />
         </Form.Item>
         <Form.Item
           name={[root, "business_object"]}
           label="具体功能与模块"
           rules={[{ required: true, message: "请选择具体功能与模块" }]}
         >
-          <Select placeholder="--请选择--" options={businessObjectOptions} />
+          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.business_objects)} />
         </Form.Item>
         <Form.Item
           name={[root, "purpose"]}
           label="应用场景"
           rules={[{ required: true, message: "请选择应用场景" }]}
         >
-          <Select placeholder="--请选择--" options={purposeOptions} />
+          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.purposes)} />
         </Form.Item>
         <Form.Item
           name={[root, "customer_type"]}
           label="客户类型"
           rules={[{ required: true, message: "请选择客户类型" }]}
         >
-          <Select placeholder="--请选择--" options={customerTypeOptions} />
+          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.customer_types)} />
         </Form.Item>
       </div>
       <ChildAttachmentField root={root} />
@@ -543,7 +564,7 @@ function ChildContentFields({ root }: { root: "primary_child" | "child" }): JSX.
   );
 }
 
-function ParentContentFields(): JSX.Element {
+function ParentContentFields({ taxonomy }: { taxonomy: KnowledgeContentTaxonomy }): JSX.Element {
   return (
     <>
       <div className="content-form-grid">
@@ -552,7 +573,10 @@ function ParentContentFields(): JSX.Element {
           label={PARENT_CATEGORY_LABEL}
           rules={[{ required: true, message: `请选择${PARENT_CATEGORY_LABEL}` }]}
         >
-          <Select placeholder={`请选择${PARENT_CATEGORY_LABEL}`} options={parentTypeOptions} />
+          <Select
+            placeholder={`请选择${PARENT_CATEGORY_LABEL}`}
+            options={taxonomySelectOptions(taxonomy.parent_types)}
+          />
         </Form.Item>
         <Form.Item
           name={["parent", "canonical_keyword"]}
@@ -600,6 +624,7 @@ export function ContentSubmissionPage(): JSX.Element {
   const [resubmissionForm] = Form.useForm<ResubmissionFormValues>();
   const [publishedRevisionForm] = Form.useForm<PublishedRevisionFormValues>();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [taxonomy, setTaxonomy] = useState<KnowledgeContentTaxonomy>(fallbackTaxonomy);
   const [availableParents, setAvailableParents] = useState<AvailableParent[]>([]);
   const [submissions, setSubmissions] = useState<ReviewSubmission[]>([]);
   const [editableEntries, setEditableEntries] = useState<EditableContentEntry[]>([]);
@@ -659,6 +684,21 @@ export function ContentSubmissionPage(): JSX.Element {
 
   useEffect(() => {
     void refresh();
+  }, []);
+
+  useEffect(() => {
+    // The guard keeps this screen compatible with an API deployed just before
+    // the taxonomy endpoint during a rolling upgrade.
+    if (typeof api.getKnowledgeContentTaxonomy !== "function") {
+      return;
+    }
+    void api
+      .getKnowledgeContentTaxonomy()
+      .then(setTaxonomy)
+      .catch(() => {
+        // Existing values remain editable from the conservative startup list;
+        // refresh will use the server value once it becomes available.
+      });
   }, []);
 
   useEffect(() => {
@@ -1219,9 +1259,15 @@ export function ContentSubmissionPage(): JSX.Element {
       key: "parent_id",
       width: 260,
       ellipsis: true,
-      render: (parentId: string | null) => {
+      render: (parentId: string | null, draft: KnowledgeDraft) => {
         const parent = availableParents.find((item) => item.id === parentId);
-        return parent ? `${parent.canonical_keyword}（${parent.name}）` : "未选择";
+        if (parent) {
+          return `${parent.canonical_keyword}（${parent.name}）`;
+        }
+        if (draft.parent_name) {
+          return `${draft.parent_canonical_keyword ?? draft.parent_name}（${draft.parent_name}）${draft.parent_is_available ? "" : "，待发布"}`;
+        }
+        return parentId ? "关联大类待加载" : "未选择";
       }
     },
     {
@@ -1359,9 +1405,9 @@ export function ContentSubmissionPage(): JSX.Element {
                     requiredMark
                   >
                     <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
-                    <ParentContentFields />
+                    <ParentContentFields taxonomy={taxonomy} />
                     <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
-                    <ChildContentFields root="primary_child" />
+                    <ChildContentFields root="primary_child" taxonomy={taxonomy} />
                     <Form.Item
                       name="knowledge_base_ids"
                       label="目标知识库"
@@ -1469,6 +1515,18 @@ export function ContentSubmissionPage(): JSX.Element {
             )
           },
           {
+            key: "attachment-import",
+            label: "附件解析",
+            children: (
+              <AttachmentImportTab
+                taxonomy={taxonomy}
+                knowledgeBases={knowledgeBases}
+                availableParents={availableParents}
+                onConfirmed={refresh}
+              />
+            )
+          },
+          {
             key: "child",
             label: `新建${CHILD_CATEGORY_LABEL}`,
             children: (
@@ -1509,7 +1567,7 @@ export function ContentSubmissionPage(): JSX.Element {
                       }))}
                     />
                   </Form.Item>
-                  <ChildContentFields root="child" />
+                  <ChildContentFields root="child" taxonomy={taxonomy} />
                   <Form.Item
                     name="knowledge_base_ids"
                     label="目标知识库"
@@ -1644,9 +1702,9 @@ export function ContentSubmissionPage(): JSX.Element {
               {editingSubmission.submission_kind === "parent_with_primary" && (
                 <>
                   <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
-                  <ParentContentFields />
+                  <ParentContentFields taxonomy={taxonomy} />
                   <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
-                  <ChildContentFields root="primary_child" />
+                  <ChildContentFields root="primary_child" taxonomy={taxonomy} />
                 </>
               )}
               {editingSubmission.submission_kind === "child" && (
@@ -1654,7 +1712,7 @@ export function ContentSubmissionPage(): JSX.Element {
                   <Typography.Text type="secondary">
                     当前问题：{editingSubmission.title}
                   </Typography.Text>
-                  <ChildContentFields root="child" />
+                  <ChildContentFields root="child" taxonomy={taxonomy} />
                 </>
               )}
               <Form.Item label="重新提交目标">
@@ -1707,9 +1765,9 @@ export function ContentSubmissionPage(): JSX.Element {
               {editingPublishedEntry.is_primary ? (
                 <>
                   <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
-                  <ParentContentFields />
+                  <ParentContentFields taxonomy={taxonomy} />
                   <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
-                  <ChildContentFields root="primary_child" />
+                  <ChildContentFields root="primary_child" taxonomy={taxonomy} />
                   <Form.Item label="重新审核知识库">
                     <Space size={[4, 4]} wrap>
                       {editingPublishedEntry.knowledge_bases.map((knowledgeBase) => (
@@ -1723,7 +1781,7 @@ export function ContentSubmissionPage(): JSX.Element {
                   <Typography.Text type="secondary">
                     {PARENT_CATEGORY_LABEL}：{editingPublishedEntry.parent_name}
                   </Typography.Text>
-                  <ChildContentFields root="child" />
+                  <ChildContentFields root="child" taxonomy={taxonomy} />
                   <Form.Item
                     name="knowledge_base_ids"
                     label="重新审核知识库"

@@ -11,9 +11,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 # In the source checkout the shared configuration lives one level above
 # ``backend``. The production image contains only the backend under /app, so
 # use that directory as its configuration root and rely on Compose env_file.
-PROJECT_ROOT = (
-    BACKEND_ROOT.parent if (BACKEND_ROOT.parent / ".git").exists() else BACKEND_ROOT
-)
+PROJECT_ROOT = BACKEND_ROOT.parent if (BACKEND_ROOT.parent / ".git").exists() else BACKEND_ROOT
 SHARED_ENV_FILE = PROJECT_ROOT / ".env"
 
 
@@ -80,6 +78,12 @@ class Settings(BaseSettings):
     attachment_minio_secret_key_file: Path | None = None
     attachment_minio_bucket: str = "nairag-attachments"
     attachment_minio_secure: bool = False
+    attachment_import_soffice_path: str = "soffice"
+    attachment_import_timeout_seconds: float = 60.0
+    attachment_import_max_text_chars: int = 30_000
+    attachment_import_retention_days: int = 7
+    attachment_import_match_threshold: int = 80
+    attachment_import_match_limit: int = 5
     milvus_url: str | None = None
     milvus_token_file: Path | None = None
     worker_id: str | None = None
@@ -119,7 +123,11 @@ class Settings(BaseSettings):
     @classmethod
     def resolve_project_relative_paths(cls, value: object) -> object:
         """Make relative paths in the shared root .env independent of the launch cwd."""
-        if value is None or not isinstance(value, str | Path):
+        if value is None:
+            return value
+        if isinstance(value, str) and not value.strip():
+            return None
+        if not isinstance(value, str | Path):
             return value
         path = Path(value)
         return path if path.is_absolute() else PROJECT_ROOT / path
@@ -206,8 +214,7 @@ class Settings(BaseSettings):
                 raise ValueError(f"{setting_name} must be between 0 and 1")
         if self.search_fallback_threshold > self.search_high_confidence_threshold:
             raise ValueError(
-                "SEARCH_FALLBACK_THRESHOLD must not exceed "
-                "SEARCH_HIGH_CONFIDENCE_THRESHOLD"
+                "SEARCH_FALLBACK_THRESHOLD must not exceed SEARCH_HIGH_CONFIDENCE_THRESHOLD"
             )
         if not 1 <= self.search_candidate_pool_size <= 200:
             raise ValueError("SEARCH_CANDIDATE_POOL_SIZE must be between 1 and 200")
@@ -237,6 +244,18 @@ class Settings(BaseSettings):
             raise ValueError("ATTACHMENT_STORAGE_BACKEND must be local or minio")
         if not 1 <= self.attachment_max_file_bytes <= 20 * 1024 * 1024:
             raise ValueError("ATTACHMENT_MAX_FILE_BYTES must be between 1 and 20971520")
+        if not self.attachment_import_soffice_path.strip():
+            raise ValueError("ATTACHMENT_IMPORT_SOFFICE_PATH must not be empty")
+        if self.attachment_import_timeout_seconds <= 0:
+            raise ValueError("ATTACHMENT_IMPORT_TIMEOUT_SECONDS must be positive")
+        if not 1_000 <= self.attachment_import_max_text_chars <= 200_000:
+            raise ValueError("ATTACHMENT_IMPORT_MAX_TEXT_CHARS must be between 1000 and 200000")
+        if not 1 <= self.attachment_import_retention_days <= 30:
+            raise ValueError("ATTACHMENT_IMPORT_RETENTION_DAYS must be between 1 and 30")
+        if not 0 <= self.attachment_import_match_threshold <= 100:
+            raise ValueError("ATTACHMENT_IMPORT_MATCH_THRESHOLD must be between 0 and 100")
+        if not 1 <= self.attachment_import_match_limit <= 5:
+            raise ValueError("ATTACHMENT_IMPORT_MATCH_LIMIT must be between 1 and 5")
         if self.app_environment == "production" and self.attachment_storage_backend != "minio":
             raise ValueError("ATTACHMENT_STORAGE_BACKEND must be minio in production")
         if self.attachment_storage_backend == "minio":

@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    attachment_ingestion,
     auth,
     drafts,
     intelligent_ingestion,
@@ -16,6 +17,7 @@ api_router.include_router(auth.router)
 api_router.include_router(users.router)
 api_router.include_router(knowledge_bases.router)
 api_router.include_router(knowledge_content.router)
+api_router.include_router(attachment_ingestion.router)
 api_router.include_router(drafts.router)
 api_router.include_router(intelligent_ingestion.router)
 api_router.include_router(search.router)

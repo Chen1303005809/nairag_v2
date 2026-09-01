@@ -167,6 +167,8 @@ async def submit_draft(
 def draft_source_label(draft: KnowledgeDraft) -> str:
     if draft.source == KnowledgeDraftSource.INTELLIGENT_GENERATED:
         return "智能生成"
+    if draft.source == KnowledgeDraftSource.ATTACHMENT_GENERATED:
+        return "附件解析生成"
     return "手动保存"
 
 

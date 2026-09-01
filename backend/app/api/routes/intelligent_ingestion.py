@@ -53,6 +53,58 @@ async def resolve_draft_attachments(
     return {attachment.id: attachment for attachment in attachments}
 
 
+async def resolve_draft_parent_metadata(
+    session: AsyncSession,
+    drafts: list,
+) -> dict[UUID, tuple[str, str, bool]]:
+    """Resolve names for draft rows without leaking unavailable parent UUIDs.
+
+    Attachment-generated ordinary-child drafts commonly wait for their newly
+    created parent to be published.  Returning this metadata lets the client
+    explain that state instead of rendering a bare identifier.
+    """
+
+    from app.services.knowledge_content import list_available_parents
+
+    parent_ids = {draft.parent_id for draft in drafts if draft.parent_id is not None}
+    if not parent_ids:
+        return {}
+
+    available = {
+        details.parent.id: (
+            details.parent_revision.name,
+            details.parent_revision.canonical_keyword,
+            True,
+        )
+        for details in await list_available_parents(session)
+        if details.parent.id in parent_ids
+    }
+    # An unavailable parent still needs its display name.  Import lazily to
+    # avoid a broad route-level model dependency for the common no-parent case.
+    from sqlalchemy import select
+
+    from app.models.knowledge_content import ParentRevision
+
+    unresolved_ids = parent_ids - set(available)
+    if not unresolved_ids:
+        return available
+    revisions = list(
+        (
+            await session.scalars(
+                select(ParentRevision)
+                .where(ParentRevision.parent_id.in_(unresolved_ids))
+                .order_by(ParentRevision.parent_id, ParentRevision.revision_number.desc())
+            )
+        ).all()
+    )
+    for revision in revisions:
+        available.setdefault(
+            revision.parent_id,
+            (revision.name, revision.canonical_keyword, False),
+        )
+    return available
+
+
 def _batch_created_at(batch) -> str:
     return batch.created_at.isoformat()
 
@@ -80,8 +132,10 @@ def as_ingestion_batch_response(batch) -> IngestionBatchResponse:
 def as_knowledge_draft_response(
     draft,
     attachments_by_id: dict[UUID, EvidenceAttachment] | None = None,
+    parent_metadata_by_id: dict[UUID, tuple[str, str, bool]] | None = None,
 ) -> KnowledgeDraftResponse:
     resolved_attachments = attachments_by_id or {}
+    parent_metadata = (parent_metadata_by_id or {}).get(draft.parent_id)
     draft_attachments = [
         resolved_attachments.get(UUID(value)) for value in draft.attachments
     ]
@@ -90,6 +144,10 @@ def as_knowledge_draft_response(
         source=draft.source.value,
         parent_id=draft.parent_id,
         ingestion_batch_id=draft.ingestion_batch_id,
+        attachment_ingestion_batch_id=draft.attachment_ingestion_batch_id,
+        parent_name=parent_metadata[0] if parent_metadata is not None else None,
+        parent_canonical_keyword=parent_metadata[1] if parent_metadata is not None else None,
+        parent_is_available=parent_metadata[2] if parent_metadata is not None else False,
         question=draft.question,
         response_content=draft.response_content,
         question_variants=list(draft.question_variants),
@@ -187,11 +245,16 @@ async def get_my_ingestion_batch(
     except IngestionBatchNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="批次不存在") from exc
     attachments_by_id = await resolve_draft_attachments(session, details.drafts)
+    parent_metadata_by_id = await resolve_draft_parent_metadata(session, details.drafts)
     response = as_ingestion_batch_response(details.batch)
     return IngestionBatchDetailResponse(
         **response.model_dump(),
         drafts=[
-            as_knowledge_draft_response(draft, attachments_by_id)
+            as_knowledge_draft_response(
+                draft,
+                attachments_by_id,
+                parent_metadata_by_id,
+            )
             for draft in details.drafts
         ],
     )

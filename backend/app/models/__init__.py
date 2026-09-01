@@ -1,3 +1,7 @@
+from app.models.attachment_ingestion import (
+    AttachmentIngestionBatch,
+    AttachmentIngestionBatchStatus,
+)
 from app.models.audit_event import AuditEvent
 from app.models.intelligent_ingestion import (
     IntelligentIngestionBatch,
@@ -43,6 +47,8 @@ from app.models.user_account import UserAccount, UserRole
 
 __all__ = [
     "AuditEvent",
+    "AttachmentIngestionBatch",
+    "AttachmentIngestionBatchStatus",
     "Child",
     "ChildKnowledgeBasePublication",
     "ChildPublicationStatus",

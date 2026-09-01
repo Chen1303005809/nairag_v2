@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.12.13-slim-bookworm
+FROM python:3.12.13-slim-bookworm AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -35,3 +35,13 @@ COPY worker.py ./worker.py
 RUN python -m pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple --no-deps --no-build-isolation .
 
 EXPOSE 8000
+
+# Only the durable Worker opens untrusted legacy Word files.  Keep
+# LibreOffice out of the API image so the public request process stays small.
+FROM runtime AS worker
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libreoffice-writer \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM runtime AS api

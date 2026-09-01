@@ -122,6 +122,14 @@ export interface AvailableParent {
   available_knowledge_bases: AvailableKnowledgeBase[];
 }
 
+export interface KnowledgeContentTaxonomy {
+  parent_types: string[];
+  question_types: string[];
+  business_objects: string[];
+  purposes: string[];
+  customer_types: string[];
+}
+
 export interface ReviewActor {
   id: string;
   username: string;
@@ -342,13 +350,17 @@ export interface ConversationSearchResponse {
   supplemental_results: ConversationSupplementalSearchResult[];
 }
 
-export type KnowledgeDraftSource = "manual_saved" | "intelligent_generated";
+export type KnowledgeDraftSource = "manual_saved" | "intelligent_generated" | "attachment_generated";
 
 export interface KnowledgeDraft {
   id: string;
   source: KnowledgeDraftSource;
   parent_id: string | null;
   ingestion_batch_id: string | null;
+  attachment_ingestion_batch_id?: string | null;
+  parent_name?: string | null;
+  parent_canonical_keyword?: string | null;
+  parent_is_available?: boolean;
   question: string | null;
   response_content: string | null;
   question_variants: string[];
@@ -410,6 +422,90 @@ export interface IngestionBatch {
 
 export interface IngestionBatchDetail extends IngestionBatch {
   drafts: KnowledgeDraft[];
+}
+
+export type AttachmentImportBatchStatus =
+  | "processing"
+  | "ready"
+  | "ready_with_warnings"
+  | "failed"
+  | "submitted";
+
+export interface AttachmentImportCandidate {
+  id: string;
+  question: string;
+  response_content: string;
+  question_variants: string[];
+  follow_up_guidance: string | null;
+  question_type: string | null;
+  business_object: string | null;
+  purpose: string | null;
+  customer_type: string | null;
+  feature_explanation: string | null;
+  example: string | null;
+  internal_notes: string | null;
+}
+
+export interface AttachmentImportParentProposal {
+  name: string;
+  canonical_keyword: string;
+  aliases: string[];
+}
+
+export interface AttachmentImportSimilarParent {
+  id: string;
+  name: string;
+  canonical_keyword: string;
+  score: number;
+  matched_keyword: string;
+  available_knowledge_bases: string[];
+}
+
+export interface AttachmentImportProposal {
+  parent: AttachmentImportParentProposal;
+  children: AttachmentImportCandidate[];
+  recommended_primary_child_id: string;
+  warnings: string[];
+  image_count: number;
+  similar_parents: AttachmentImportSimilarParent[];
+}
+
+export interface AttachmentImportBatch {
+  id: string;
+  status: AttachmentImportBatchStatus;
+  attachment: EvidenceAttachment;
+  warnings: string[];
+  image_count: number;
+  extracted_char_count: number;
+  model_version: string | null;
+  attempt_count: number;
+  last_error: string | null;
+  expires_at: string;
+  created_at: string;
+  completed_at: string | null;
+  submitted_at: string | null;
+  final_submission_id: string | null;
+  final_parent_id: string | null;
+}
+
+export interface AttachmentImportBatchDetail extends AttachmentImportBatch {
+  proposal: AttachmentImportProposal | null;
+}
+
+export interface AttachmentImportConfirmRequest {
+  target: "new" | "existing";
+  parent: ParentContentInput | null;
+  existing_parent_id: string | null;
+  primary_child_id: string;
+  children: AttachmentImportCandidate[];
+  knowledge_base_ids: string[];
+  attachment_visibility_confirmed: boolean;
+}
+
+export interface AttachmentImportConfirmResponse {
+  submission: ReviewSubmission;
+  parent_id: string;
+  created_draft_ids: string[];
 }
 
 export interface HelpfulFeedbackResponse {

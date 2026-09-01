@@ -7,11 +7,17 @@ import os
 import signal
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
 from app.db.session import create_session_factory
+from app.services.attachment_import import (
+    AttachmentImportWorkerResult,
+    run_attachment_import_worker_once,
+)
+from app.services.attachment_storage import AttachmentStorage, create_attachment_storage
 from app.services.embedding import QwenEmbeddingProvider
 from app.services.index_backend import (
     LocalArtifactIndexBackend,
@@ -20,7 +26,7 @@ from app.services.index_backend import (
 )
 from app.services.index_jobs import IndexBackend, IndexWorkerResult, run_index_worker_once
 from app.services.intelligent_ingestion import run_ingestion_worker_once
-from app.services.llm import LlmProvider, create_llm_provider
+from app.services.llm import AttachmentProposalProvider, LlmProvider, create_llm_provider
 
 logger = logging.getLogger("nairag.index-worker")
 
@@ -57,6 +63,12 @@ def resolve_worker_id(settings: Settings) -> str:
     return f"{hostname}:{os.getpid()}"[:120]
 
 
+def attachment_provider_for(provider: LlmProvider | None) -> AttachmentProposalProvider | None:
+    if provider is not None and callable(getattr(provider, "extract_attachment_proposal", None)):
+        return cast(AttachmentProposalProvider, provider)
+    return None
+
+
 async def wait_for_stop(stop_event: asyncio.Event, timeout: float) -> bool:
     """Wait for shutdown, returning whether the event was set."""
 
@@ -80,6 +92,7 @@ async def run_worker(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     backend: IndexBackend | None = None,
     llm_provider: LlmProvider | None = None,
+    attachment_storage: AttachmentStorage | None = None,
     stop_event: asyncio.Event | None = None,
     on_result: Callable[[IndexWorkerResult], Awaitable[None] | None] | None = None,
 ) -> None:
@@ -97,6 +110,8 @@ async def run_worker(
     )
     active_backend = backend or create_index_backend(active_settings)
     active_llm_provider = llm_provider or create_llm_provider(active_settings)
+    active_attachment_storage = attachment_storage or create_attachment_storage(active_settings)
+    await active_attachment_storage.initialize()
     active_stop_event = stop_event or asyncio.Event()
     if stop_event is None:
         _install_signal_handlers(active_stop_event)
@@ -160,7 +175,30 @@ async def run_worker(
                     ingestion_result.generated_count,
                     ingestion_result.error,
                 )
-            if result is not None or ingestion_result is not None:
+            attachment_result: AttachmentImportWorkerResult | None = None
+            try:
+                attachment_result = await run_attachment_import_worker_once(
+                    active_factory,
+                    storage=active_attachment_storage,
+                    provider=attachment_provider_for(active_llm_provider),
+                    settings=active_settings,
+                    worker_id=worker_id,
+                    lease_seconds=active_settings.worker_lease_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The lower layer intentionally never logs raw attachment text
+                # or full model output.  Keep that guarantee at the worker edge.
+                logger.error("attachment ingestion worker iteration failed")
+            if attachment_result is not None:
+                logger.info(
+                    "attachment ingestion batch finished batch_id=%s status=%s error=%s",
+                    attachment_result.batch_id,
+                    attachment_result.status.value,
+                    attachment_result.error,
+                )
+            if result is not None or ingestion_result is not None or attachment_result is not None:
                 continue
 
             await wait_for_stop(active_stop_event, active_settings.worker_poll_interval_seconds)
@@ -184,6 +222,9 @@ def _parse_args() -> argparse.Namespace:
 
 async def _run_once(settings: Settings) -> None:
     factory = create_session_factory(settings.database_url_with_password)
+    attachment_storage = create_attachment_storage(settings)
+    await attachment_storage.initialize()
+    provider = create_llm_provider(settings)
     try:
         result = await run_index_worker_once(
             factory,
@@ -209,7 +250,7 @@ async def _run_once(settings: Settings) -> None:
         else:
             ingestion_result = await run_ingestion_worker_once(
                 factory,
-                provider=create_llm_provider(settings),
+                provider=provider,
                 worker_id=resolve_worker_id(settings),
                 lease_seconds=settings.worker_lease_seconds,
             )
@@ -221,6 +262,14 @@ async def _run_once(settings: Settings) -> None:
                     ingestion_result.generated_count,
                     ingestion_result.error,
                 )
+            await run_attachment_import_worker_once(
+                factory,
+                storage=attachment_storage,
+                provider=attachment_provider_for(provider),
+                settings=settings,
+                worker_id=resolve_worker_id(settings),
+                lease_seconds=settings.worker_lease_seconds,
+            )
     finally:
         bind = factory.kw.get("bind")
         if isinstance(bind, AsyncEngine):

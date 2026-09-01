@@ -106,6 +106,10 @@ class KnowledgeDraftResponse(BaseModel):
     source: str
     parent_id: UUID | None
     ingestion_batch_id: UUID | None
+    attachment_ingestion_batch_id: UUID | None
+    parent_name: str | None = None
+    parent_canonical_keyword: str | None = None
+    parent_is_available: bool = False
     question: str | None
     response_content: str | None
     question_variants: list[str]
