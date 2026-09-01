@@ -325,6 +325,15 @@ describe("ContentSubmissionPage", () => {
     expect(screen.queryByRole("columnheader", { name: "操作" })).not.toBeInTheDocument();
   });
 
+  it("keeps upload timestamps readable in a single line", async () => {
+    render(<ContentSubmissionPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
+    const timestampCell = await screen.findByRole("cell", { name: "2026/01/01 08:00:00" });
+
+    expect(timestampCell).toHaveStyle({ whiteSpace: "nowrap" });
+  });
+
   it("shows uploaded attachments immediately with a download link or image preview", async () => {
     mockedApi.uploadKnowledgeAttachment
       .mockResolvedValueOnce({

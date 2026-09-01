@@ -1119,6 +1119,8 @@ export function ContentSubmissionPage(): JSX.Element {
       title: "上传时间",
       dataIndex: "submitted_at",
       key: "submitted_at",
+      width: 180,
+      onCell: () => ({ style: { whiteSpace: "nowrap" } }),
       render: (value: string) => formatDateTime(value)
     },
     {
