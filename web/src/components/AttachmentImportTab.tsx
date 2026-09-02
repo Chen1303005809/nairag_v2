@@ -17,7 +17,7 @@ import {
   message
 } from "antd";
 import type { TableProps } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import type {
@@ -238,8 +238,10 @@ export function AttachmentImportTab({
   const [batches, setBatches] = useState<AttachmentImportBatch[]>([]);
   const [selected, setSelected] = useState<AttachmentImportBatchDetail | null>(null);
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [activeUploads, setActiveUploads] = useState(0);
   const [confirming, setConfirming] = useState(false);
+  const selectedBatchIdRef = useRef<string | null>(null);
+  const uploading = activeUploads > 0;
   const selectedTarget = Form.useWatch("target", form);
   const selectedExistingParentId = Form.useWatch("existing_parent_id", form);
   const formChildren = Form.useWatch("children", form) ?? [];
@@ -268,29 +270,48 @@ export function AttachmentImportTab({
     void refresh();
   }, []);
 
-  const showDetail = async (batchId: string): Promise<AttachmentImportBatchDetail | null> => {
+  const getDetail = async (batchId: string): Promise<AttachmentImportBatchDetail | null> => {
     if (!isAvailable()) {
       return null;
     }
     try {
-      const detail = await api.getAttachmentImportBatch(batchId);
-      setSelected(detail);
-      const values = attachmentImportFormValues(detail);
-      if (values) {
-        form.setFieldsValue(values);
-      }
-      return detail;
+      return await api.getAttachmentImportBatch(batchId);
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "无法读取附件解析方案");
       return null;
     }
   };
 
+  const applySelectedDetail = (detail: AttachmentImportBatchDetail): void => {
+    setSelected(detail);
+    const values = attachmentImportFormValues(detail);
+    if (values) {
+      form.setFieldsValue(values);
+    } else {
+      form.resetFields();
+    }
+  };
+
+  const showDetail = async (batchId: string): Promise<AttachmentImportBatchDetail | null> => {
+    selectedBatchIdRef.current = batchId;
+    const detail = await getDetail(batchId);
+    if (detail && selectedBatchIdRef.current === batchId) {
+      applySelectedDetail(detail);
+    }
+    return detail;
+  };
+
   const poll = async (batchId: string): Promise<void> => {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      const detail = await showDetail(batchId);
-      if (!detail || detail.status !== "processing") {
+      const detail = await getDetail(batchId);
+      if (!detail) {
+        return;
+      }
+      if (selectedBatchIdRef.current === batchId) {
+        applySelectedDetail(detail);
+      }
+      if (detail.status !== "processing") {
         await refresh();
         return;
       }
@@ -303,16 +324,18 @@ export function AttachmentImportTab({
       message.error("当前 API 尚未提供附件解析功能");
       return;
     }
-    setUploading(true);
+    setActiveUploads((current) => current + 1);
     try {
       const batch = await api.createAttachmentImportBatch(file);
       setBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)]);
-      await showDetail(batch.id);
-      await poll(batch.id);
+      const detail = await showDetail(batch.id);
+      if (detail?.status === "processing") {
+        void poll(batch.id);
+      }
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "附件解析发起失败");
     } finally {
-      setUploading(false);
+      setActiveUploads((current) => Math.max(0, current - 1));
     }
   };
 
@@ -320,8 +343,10 @@ export function AttachmentImportTab({
     try {
       const batch = await api.retryAttachmentImportBatch(batchId);
       setBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)]);
-      await showDetail(batch.id);
-      void poll(batch.id);
+      const detail = await showDetail(batch.id);
+      if (detail?.status === "processing") {
+        void poll(batch.id);
+      }
     } catch (reason) {
       message.error(reason instanceof Error ? reason.message : "重试附件解析失败");
     }
@@ -332,6 +357,7 @@ export function AttachmentImportTab({
       await api.deleteAttachmentImportBatch(batchId);
       setBatches((current) => current.filter((item) => item.id !== batchId));
       if (selected?.id === batchId) {
+        selectedBatchIdRef.current = null;
         setSelected(null);
         form.resetFields();
       }
@@ -441,11 +467,12 @@ export function AttachmentImportTab({
         <Alert
           type="info"
           showIcon
-          message="从一个 DOC 或 DOCX 附件生成可编辑的知识方案"
-          description="系统只处理正文，不执行附件内的指令，也不会 OCR 内嵌图片。确认前请检查生成内容和固定分类；原文件会随主小类按知识发布范围对登录用户可见。"
+          message="从 DOC 或 DOCX 附件生成可编辑的知识方案"
+          description="可一次选择多个文件；每个文件会单独创建解析批次并独立处理。系统只处理正文，不执行附件内的指令，也不会 OCR 内嵌图片。确认前请检查生成内容和固定分类；原文件会随主小类按知识发布范围对登录用户可见。"
         />
         <Upload
           accept=".doc,.docx"
+          multiple
           beforeUpload={(file) => {
             void upload(file);
             return Upload.LIST_IGNORE;
@@ -457,7 +484,9 @@ export function AttachmentImportTab({
             上传并解析附件
           </Button>
         </Upload>
-        <Typography.Text type="secondary">一次只能上传一个 DOC 或 DOCX，单文件不超过 20 MB。</Typography.Text>
+        <Typography.Text type="secondary">
+          可一次选择多个 DOC 或 DOCX；每个文件单独创建解析批次并行处理，单文件不超过 20 MB。
+        </Typography.Text>
 
         {selected ? (
           <Card
