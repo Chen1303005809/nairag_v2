@@ -1114,6 +1114,14 @@ export function ContentSubmissionPage(): JSX.Element {
       dataIndex: "status",
       key: "status",
       width: 100,
+      filters: [
+        { text: "待审核", value: "pending_review" },
+        { text: "索引中", value: "indexing" },
+        { text: "已发布", value: "published" },
+        { text: "已驳回", value: "rejected" },
+        { text: "索引失败", value: "index_failed" }
+      ],
+      onFilter: (value, submission) => submission.status === String(value),
       render: (value: ReviewSubmissionStatus) => submissionStatus(value)
     },
     {
@@ -1335,6 +1343,13 @@ export function ContentSubmissionPage(): JSX.Element {
       dataIndex: "status",
       key: "status",
       width: 100,
+      filters: [
+        { text: "处理中", value: "processing" },
+        { text: "已完成", value: "completed" },
+        { text: "已完成，有警告", value: "completed_with_warnings" },
+        { text: "失败", value: "failed" }
+      ],
+      onFilter: (value, batch) => batch.status === String(value),
       render: (status: IngestionBatch["status"]) => ingestionStatusTag(status)
     },
     {

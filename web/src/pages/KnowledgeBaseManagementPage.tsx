@@ -256,6 +256,11 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
       title: "状态",
       dataIndex: "is_active",
       width: 100,
+      filters: [
+        { text: "启用", value: "true" },
+        { text: "停用", value: "false" }
+      ],
+      onFilter: (value, knowledgeBase) => knowledgeBase.is_active === (String(value) === "true"),
       render: (isActive: boolean) => <Tag color={isActive ? "green" : "red"}>{isActive ? "启用" : "停用"}</Tag>
     },
     {
@@ -345,6 +350,12 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
       dataIndex: "status",
       key: "status",
       width: 130,
+      filters: [
+        { text: "已发布", value: "published" },
+        { text: "已删除（已归档）", value: "archived" },
+        { text: "待处理", value: "pending" }
+      ],
+      onFilter: (value, entry) => entry.status === String(value),
       render: (value: ManagedKnowledgeEntry["status"]) => {
         if (value === "published") {
           return <Tag color="green">已发布</Tag>;
@@ -537,6 +548,11 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
               title: "状态",
               key: "status",
               width: 100,
+              filters: [
+                { text: "启用", value: "true" },
+                { text: "停用", value: "false" }
+              ],
+              onFilter: (value, assignment) => assignment.reviewer.is_active === (String(value) === "true"),
               render: (_, assignment) => (
                 <Tag color={assignment.reviewer.is_active ? "green" : "red"}>
                   {assignment.reviewer.is_active ? "启用" : "停用"}

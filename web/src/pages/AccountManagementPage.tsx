@@ -129,6 +129,11 @@ export function AccountManagementPage(): JSX.Element {
       title: "状态",
       dataIndex: "is_active",
       width: 110,
+      filters: [
+        { text: "启用", value: "true" },
+        { text: "停用", value: "false" }
+      ],
+      onFilter: (value, user) => user.is_active === (String(value) === "true"),
       render: (isActive: boolean) => <Tag color={isActive ? "green" : "red"}>{isActive ? "启用" : "停用"}</Tag>
     },
     {

@@ -239,6 +239,15 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       key: "target_status",
       width: 100,
       onHeaderCell: () => ({ style: { whiteSpace: "nowrap" } }),
+      filters: [
+        { text: "待审核", value: "pending_review" },
+        { text: "待索引", value: "approved" },
+        { text: "已驳回", value: "rejected" },
+        { text: "索引中", value: "indexing" },
+        { text: "已发布", value: "published" },
+        { text: "索引失败", value: "index_failed" }
+      ],
+      onFilter: (value, item) => item.target_status === String(value),
       render: (value: ReviewTargetStatus) => targetStatus(value)
     },
     {
@@ -315,6 +324,12 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       title: "审核结果",
       dataIndex: "review_decision",
       key: "review_decision",
+      width: 110,
+      filters: [
+        { text: "通过", value: "approved" },
+        { text: "驳回", value: "rejected" }
+      ],
+      onFilter: (value, item) => item.review_decision === String(value),
       render: (value: ReviewDecisionKind | null) =>
         value === "approved" ? <Tag color="green">通过</Tag> : <Tag color="red">驳回</Tag>
     },

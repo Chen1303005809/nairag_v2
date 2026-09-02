@@ -379,6 +379,14 @@ export function AttachmentImportTab({
       dataIndex: "status",
       key: "status",
       width: 130,
+      filters: [
+        { text: "处理中", value: "processing" },
+        { text: "待确认", value: "ready" },
+        { text: "待确认，有警告", value: "ready_with_warnings" },
+        { text: "失败", value: "failed" },
+        { text: "已提交", value: "submitted" }
+      ],
+      onFilter: (value, batch) => batch.status === String(value),
       render: (value: AttachmentImportBatch["status"]) => statusTag(value)
     },
     {

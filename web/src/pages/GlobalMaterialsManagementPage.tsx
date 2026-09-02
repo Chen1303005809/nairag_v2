@@ -188,6 +188,8 @@ export function GlobalMaterialsManagementPage(): JSX.Element {
                 title: "状态",
                 dataIndex: "status",
                 width: 130,
+                filters: statusOptions.map((value) => ({ text: value, value })),
+                onFilter: (value, record) => record.status === String(value),
                 render: (value: string | null) => <Tag color={statusColor(value)}>{value ?? "未知"}</Tag>
               },
               {
