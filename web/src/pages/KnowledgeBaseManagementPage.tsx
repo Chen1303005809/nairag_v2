@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { KnowledgeDetailModal } from "../components/KnowledgeDetailModal";
+import { TaxonomyOptionsManagementPanel } from "../components/TaxonomyOptionsManagementPanel";
 import { formatDateTime } from "../dateTime";
 import type { ManagedKnowledgeBase, ManagedKnowledgeEntry, ReviewerAssignment, User } from "../api/types";
 import { uniqueTableFilterOptions } from "../tableFilters";
@@ -439,6 +440,11 @@ export function KnowledgeBaseManagementPage(): JSX.Element {
                 locale={{ emptyText: "尚无已发布或已删除知识" }}
               />
             )
+          },
+          {
+            key: "taxonomy",
+            label: "字段选项",
+            children: <TaxonomyOptionsManagementPanel />
           }
         ]}
       />

@@ -122,12 +122,26 @@ export interface AvailableParent {
   available_knowledge_bases: AvailableKnowledgeBase[];
 }
 
+export type KnowledgeTaxonomyField =
+  | "question_types"
+  | "business_objects"
+  | "purposes"
+  | "customer_types";
+
+export interface KnowledgeTaxonomySearchFilters {
+  question_types: string[];
+  business_objects: string[];
+  purposes: string[];
+  customer_types: string[];
+}
+
 export interface KnowledgeContentTaxonomy {
   parent_types: string[];
   question_types: string[];
   business_objects: string[];
   purposes: string[];
   customer_types: string[];
+  search_filters?: KnowledgeTaxonomySearchFilters;
 }
 
 export interface ReviewActor {

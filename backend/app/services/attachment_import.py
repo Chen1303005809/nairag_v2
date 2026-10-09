@@ -68,7 +68,11 @@ from app.services.llm import (
     LlmOutputError,
     LlmProviderError,
 )
-from app.services.taxonomy import is_allowed_parent_type, is_allowed_taxonomy_value
+from app.services.taxonomy import (
+    is_allowed_parent_type,
+    is_allowed_taxonomy_value,
+    taxonomy_options,
+)
 
 TRANSIENT_ATTACHMENT_IMPORT_ERROR = "附件解析暂时不可用，请稍后自动重试"
 INVALID_ATTACHMENT_IMPORT_ERROR = "附件解析结果无效，已生成可人工编辑的兜底方案"
@@ -188,6 +192,7 @@ def _candidate_from_llm(
     candidate,
     warnings: list[str],
     position: int,
+    taxonomy: dict[str, object],
 ) -> AttachmentImportCandidate:
     values: dict[str, object] = {
         "question": candidate.question,
@@ -236,9 +241,9 @@ def _candidate_from_llm(
         ("customer_type", "客户类型"),
     ):
         value = values[field_name]
-        if isinstance(value, str) and not is_allowed_taxonomy_value(field_name, value):
+        if isinstance(value, str) and not is_allowed_taxonomy_value(field_name, value, taxonomy):
             values[field_name] = None
-            warnings.append(f"第 {position} 条候选的{label}不在固定选项中，已清空，请人工选择。")
+            warnings.append(f"第 {position} 条候选的{label}不在当前选项中，已清空，请人工选择。")
     if redacted_any:
         warnings.append("已自动清理模型建议中的个人信息或客户标识。")
     return AttachmentImportCandidate.model_validate(values)
@@ -518,6 +523,7 @@ async def process_attachment_import_batch(
         )
 
     warnings: list[str] = []
+    active_taxonomy = await taxonomy_options(session)
     if extracted.image_count:
         warnings.append(
             f"文档含 {extracted.image_count} 张内嵌图片；首版不会识别图中文字，请查看原附件。"
@@ -530,7 +536,18 @@ async def process_attachment_import_batch(
         warnings.append("智能处理服务未配置，已按文件名生成可人工编辑的兜底问题。")
     else:
         try:
-            extraction = await provider.extract_attachment_proposal(extracted.text)
+            extraction = await provider.extract_attachment_proposal(
+                extracted.text,
+                taxonomy={
+                    field_key: list(active_taxonomy[field_key])
+                    for field_key in (
+                        "question_types",
+                        "business_objects",
+                        "purposes",
+                        "customer_types",
+                    )
+                },
+            )
         except (LlmOutputError, LlmConfigurationError):
             warnings.append("模型未生成有效知识，已按文件名生成可人工编辑的兜底问题。")
         else:
@@ -542,7 +559,12 @@ async def process_attachment_import_batch(
         proposal = _fallback_proposal(attachment.name, warnings)
     else:
         children = [
-            _candidate_from_llm(candidate=candidate, warnings=warnings, position=index + 1)
+            _candidate_from_llm(
+                candidate=candidate,
+                warnings=warnings,
+                position=index + 1,
+                taxonomy=active_taxonomy,
+            )
             for index, candidate in enumerate(extraction.candidates)
         ]
         parent_name, parent_changed = _redact_text(
@@ -737,7 +759,10 @@ def _as_child_content(
     )
 
 
-def _assert_complete_taxonomy(candidate: AttachmentImportCandidate) -> None:
+def _assert_complete_taxonomy(
+    candidate: AttachmentImportCandidate,
+    taxonomy: dict[str, object],
+) -> None:
     for field_name, label in (
         ("question_type", "问题类型"),
         ("business_object", "具体功能与模块"),
@@ -745,21 +770,22 @@ def _assert_complete_taxonomy(candidate: AttachmentImportCandidate) -> None:
         ("customer_type", "客户类型"),
     ):
         value = getattr(candidate, field_name)
-        if not is_allowed_taxonomy_value(field_name, value):
+        if not is_allowed_taxonomy_value(field_name, value, taxonomy):
             raise AttachmentImportConfirmationError(
-                f"小类“{candidate.question}”必须选择有效的{label}"
+                f"小类“{candidate.question}”必须选择当前有效的{label}"
             )
 
 
 def _assert_edited_children_match_proposal(
     request: ConfirmAttachmentImportRequest,
     proposal: AttachmentImportProposal,
+    taxonomy: dict[str, object],
 ) -> None:
     proposal_ids = {candidate.id for candidate in proposal.children}
     if any(candidate.id not in proposal_ids for candidate in request.children):
         raise AttachmentImportConfirmationError("确认方案包含不属于该解析批次的小类")
     for candidate in request.children:
-        _assert_complete_taxonomy(candidate)
+        _assert_complete_taxonomy(candidate, taxonomy)
 
 
 async def _current_primary_content(
@@ -960,7 +986,8 @@ async def confirm_attachment_import(
     if batch.proposal is None:
         raise AttachmentImportStateError("附件解析方案不存在，请重试解析")
     proposal = AttachmentImportProposal.model_validate(batch.proposal)
-    _assert_edited_children_match_proposal(request, proposal)
+    active_taxonomy = await taxonomy_options(session)
+    _assert_edited_children_match_proposal(request, proposal, active_taxonomy)
     selected = next(
         candidate for candidate in request.children if candidate.id == request.primary_child_id
     )

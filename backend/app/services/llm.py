@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -8,7 +9,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.core.config import Settings
-from app.services.taxonomy import taxonomy_options
+from app.services.taxonomy import PARENT_TYPE_OPTIONS, default_taxonomy_options
 
 
 class LlmConfigurationError(RuntimeError):
@@ -256,8 +257,10 @@ question_type、business_object、purpose、customer_type、feature_explanation�
 "non_candidates":[{"topic":"...","reason":"..."}]}"""
 
 
-def _attachment_extraction_system_prompt() -> str:
-    options = taxonomy_options()
+def _attachment_extraction_system_prompt(
+    options: Mapping[str, list[str]] | None = None,
+) -> str:
+    current_options = options or default_taxonomy_options()
     return f"""你是知识库附件解析器。输入是 DOC/DOCX 附件的纯正文，
 只能根据该正文生成一组可编辑的知识库建议。
 必须遵守：
@@ -287,12 +290,12 @@ def _attachment_extraction_system_prompt() -> str:
 8. 只输出可复用知识；正文没有足够事实时返回空 candidates，不能编造。
 9. parent 仅是新问题大类建议，包含 name、canonical_keyword 和 aliases；
    不得推荐已有大类、知识库、附件或网页链接。
-10. parent.name 和四个固定分类只能从以下选项中选择；不确定时必须返回 null：
-   - parent.name: {json.dumps(options["parent_types"], ensure_ascii=False)}
-   - question_type: {json.dumps(options["question_types"], ensure_ascii=False)}
-   - business_object: {json.dumps(options["business_objects"], ensure_ascii=False)}
-   - purpose: {json.dumps(options["purposes"], ensure_ascii=False)}
-   - customer_type: {json.dumps(options["customer_types"], ensure_ascii=False)}
+10. parent.name 和四个分类值只能从以下当前选项中选择；不确定时必须返回 null：
+   - parent.name: {json.dumps(PARENT_TYPE_OPTIONS, ensure_ascii=False)}
+   - question_type: {json.dumps(current_options["question_types"], ensure_ascii=False)}
+   - business_object: {json.dumps(current_options["business_objects"], ensure_ascii=False)}
+   - purpose: {json.dumps(current_options["purposes"], ensure_ascii=False)}
+   - customer_type: {json.dumps(current_options["customer_types"], ensure_ascii=False)}
 11. 严格输出 JSON，不能输出 Markdown：
 {{"parent":{{"name":"...","canonical_keyword":"...","aliases":["..."]}},
 "candidates":[{{"question":"...","response_content":"...","question_variants":["..."],
@@ -336,6 +339,7 @@ class AttachmentProposalProvider(Protocol):
     async def extract_attachment_proposal(
         self,
         document_text: str,
+        taxonomy: Mapping[str, list[str]] | None = None,
     ) -> AttachmentKnowledgeExtraction: ...
 
 
@@ -485,11 +489,12 @@ class OpenAiCompatibleLlmProvider:
     async def extract_attachment_proposal(
         self,
         document_text: str,
+        taxonomy: Mapping[str, list[str]] | None = None,
     ) -> AttachmentKnowledgeExtraction:
         """Extract a document proposal behind an explicit data-only boundary."""
 
         payload = await self._chat_json(
-            system_prompt=_attachment_extraction_system_prompt(),
+            system_prompt=_attachment_extraction_system_prompt(taxonomy),
             user_prompt=json.dumps({"attachment_text": document_text}, ensure_ascii=False),
         )
         try:

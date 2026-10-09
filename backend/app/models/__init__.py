@@ -43,6 +43,7 @@ from app.models.knowledge_content import (
     SearchResultKind,
     WebLink,
 )
+from app.models.taxonomy import KnowledgeTaxonomyOption
 from app.models.user_account import UserAccount, UserRole
 
 __all__ = [
@@ -64,6 +65,7 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeDraft",
     "KnowledgeDraftSource",
+    "KnowledgeTaxonomyOption",
     "Parent",
     "ParentLexicalRule",
     "ParentLexicalRuleType",

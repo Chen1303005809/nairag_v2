@@ -31,7 +31,13 @@ const taxonomy: KnowledgeContentTaxonomy = {
   question_types: ["功能故障类"],
   business_objects: ["平台使用说明"],
   purposes: ["企业微信咨询"],
-  customer_types: ["个人客户"]
+  customer_types: ["个人客户"],
+  search_filters: {
+    question_types: ["功能故障类"],
+    business_objects: ["平台使用说明"],
+    purposes: ["企业微信咨询"],
+    customer_types: ["个人客户"]
+  }
 };
 
 const knowledgeBase: KnowledgeBase = {

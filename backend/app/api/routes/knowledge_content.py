@@ -27,7 +27,12 @@ from app.models.knowledge_content import (
     WebLink,
 )
 from app.models.user_account import UserAccount, UserRole
-from app.schemas.attachment_ingestion import TaxonomyOptionsResponse
+from app.schemas.attachment_ingestion import (
+    TaxonomyField,
+    TaxonomyOptionCreateRequest,
+    TaxonomyOptionRenameRequest,
+    TaxonomyOptionsResponse,
+)
 from app.schemas.knowledge_content import (
     AvailableKnowledgeBaseResponse,
     AvailableParentResponse,
@@ -98,7 +103,13 @@ from app.services.knowledge_content import (
     submit_new_parent_aggregate,
     submit_parent_aggregate_revision,
 )
-from app.services.taxonomy import taxonomy_options
+from app.services.taxonomy import (
+    TaxonomyOptionAlreadyExistsError,
+    TaxonomyOptionNotFoundError,
+    add_taxonomy_option,
+    rename_taxonomy_option,
+    taxonomy_options,
+)
 from app.services.users import record_audit_event
 
 router = APIRouter(prefix="/knowledge-content", tags=["knowledge content"])
@@ -107,10 +118,70 @@ router = APIRouter(prefix="/knowledge-content", tags=["knowledge content"])
 @router.get("/taxonomy", response_model=TaxonomyOptionsResponse)
 async def get_knowledge_content_taxonomy(
     _user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> TaxonomyOptionsResponse:
-    """Expose the fixed form choices from the same source as import validation."""
+    """Expose active form choices and historical values retained for search filters."""
 
-    return TaxonomyOptionsResponse(**taxonomy_options())
+    return TaxonomyOptionsResponse(**await taxonomy_options(session))
+
+
+@router.post(
+    "/taxonomy/{field_key}",
+    response_model=TaxonomyOptionsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_knowledge_taxonomy_option(
+    field_key: TaxonomyField,
+    body: TaxonomyOptionCreateRequest,
+    user: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> TaxonomyOptionsResponse:
+    try:
+        option = await add_taxonomy_option(session, field_key=field_key, value=body.value)
+    except TaxonomyOptionAlreadyExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该选项已存在") from exc
+    record_audit_event(
+        session,
+        event_type="knowledge_taxonomy.option_added",
+        actor_user_id=user.user.id,
+        target_type="knowledge_taxonomy_option",
+        target_id=option.id,
+        payload={"field_key": field_key, "value": option.value},
+    )
+    await session.commit()
+    return TaxonomyOptionsResponse(**await taxonomy_options(session))
+
+
+@router.patch("/taxonomy/{field_key}", response_model=TaxonomyOptionsResponse)
+async def rename_knowledge_taxonomy_option_route(
+    field_key: TaxonomyField,
+    body: TaxonomyOptionRenameRequest,
+    user: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> TaxonomyOptionsResponse:
+    try:
+        option = await rename_taxonomy_option(
+            session,
+            field_key=field_key,
+            old_value=body.old_value,
+            new_value=body.value,
+        )
+    except TaxonomyOptionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="原选项不存在") from exc
+    except TaxonomyOptionAlreadyExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该选项已存在") from exc
+    record_audit_event(
+        session,
+        event_type="knowledge_taxonomy.option_renamed",
+        actor_user_id=user.user.id,
+        target_type="knowledge_taxonomy_option",
+        target_id=option.id,
+        payload={"field_key": field_key, "old_value": body.old_value, "value": option.value},
+    )
+    await session.commit()
+    return TaxonomyOptionsResponse(**await taxonomy_options(session))
 
 
 def as_available_parent_response(details: AvailableParentDetails) -> AvailableParentResponse:

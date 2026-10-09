@@ -8,6 +8,7 @@ import type {
   IngestionBatch,
   KnowledgeBase,
   KnowledgeDraft,
+  KnowledgeContentTaxonomy,
   OcrRecognition,
   ReviewSubmission
 } from "../api/types";
@@ -19,6 +20,7 @@ vi.mock("../api/client", () => ({
     listAvailableParents: vi.fn(),
     listMyContentSubmissions: vi.fn(),
     listEditableContentEntries: vi.fn(),
+    getKnowledgeContentTaxonomy: vi.fn(),
     listKnowledgeDrafts: vi.fn(),
     listIngestionBatches: vi.fn(),
     createKnowledgeDraft: vi.fn(),
@@ -177,6 +179,19 @@ beforeEach(() => {
   mockedApi.listAvailableParents.mockResolvedValue([]);
   mockedApi.listMyContentSubmissions.mockResolvedValue([rejectedSubmission]);
   mockedApi.listEditableContentEntries.mockResolvedValue([]);
+  mockedApi.getKnowledgeContentTaxonomy.mockResolvedValue({
+    parent_types: ["问题反馈"],
+    question_types: ["功能故障类"],
+    business_objects: ["基础知识与算法"],
+    purposes: ["内部培训"],
+    customer_types: ["个人客户"],
+    search_filters: {
+      question_types: ["功能故障类"],
+      business_objects: ["基础知识与算法"],
+      purposes: ["内部培训"],
+      customer_types: ["个人客户"]
+    }
+  } satisfies KnowledgeContentTaxonomy);
   mockedApi.listKnowledgeDrafts.mockResolvedValue([]);
   mockedApi.listIngestionBatches.mockResolvedValue([]);
   mockedApi.createKnowledgeDraft.mockResolvedValue(draft);
@@ -250,6 +265,94 @@ describe("ContentSubmissionPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("preserves renamed taxonomy values while editing existing content", async () => {
+    const historicalValues = {
+      question_type: "已改名的问题类型",
+      business_object: "已改名的功能模块",
+      purpose: "已改名的应用场景",
+      customer_type: "已改名的客户类型"
+    };
+    const historicalSubmission = {
+      ...rejectedSubmission,
+      child_revision: {
+        ...rejectedSubmission.child_revision!,
+        ...historicalValues
+      }
+    };
+    mockedApi.listMyContentSubmissions.mockResolvedValue([historicalSubmission]);
+    mockedApi.getKnowledgeContentTaxonomy.mockResolvedValue({
+      parent_types: ["问题反馈"],
+      question_types: ["新问题类型"],
+      business_objects: ["新功能模块"],
+      purposes: ["新应用场景"],
+      customer_types: ["新客户类型"],
+      search_filters: {
+        question_types: ["新问题类型", historicalValues.question_type],
+        business_objects: ["新功能模块", historicalValues.business_object],
+        purposes: ["新应用场景", historicalValues.purpose],
+        customer_types: ["新客户类型", historicalValues.customer_type]
+      }
+    });
+
+    render(<ContentSubmissionPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
+    fireEvent.click(await screen.findByRole("button", { name: "编辑重提" }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "问题类型" }));
+    expect(await screen.findByRole("option", { name: historicalValues.question_type })).toBeInTheDocument();
+    fireEvent.keyDown(within(dialog).getByRole("combobox", { name: "问题类型" }), {
+      key: "Escape"
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "重新提交审核" }));
+
+    await waitFor(() =>
+      expect(mockedApi.resubmitRejectedChild).toHaveBeenCalledWith(
+        "submission-1",
+        expect.objectContaining(historicalValues),
+        ["knowledge-base-1"]
+      )
+    );
+  });
+
+  it("opens the full details for an uploaded child revision without another request", async () => {
+    render(<ContentSubmissionPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看细则" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("提交内容全貌")).toBeInTheDocument();
+    expect(within(dialog).getByText("如何找回密码？")).toBeInTheDocument();
+    expect(within(dialog).getByText("请联系管理员。")).toBeInTheDocument();
+    expect(mockedApi.listMyContentSubmissions).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows parent and child details for an uploaded parent aggregate", async () => {
+    mockedApi.listMyContentSubmissions.mockResolvedValue([
+      {
+        ...rejectedSubmission,
+        submission_kind: "parent_with_primary",
+        parent_revision_id: "parent-revision-1",
+        parent_revision: {
+          id: "parent-revision-1",
+          revision_number: 1,
+          name: "问题反馈",
+          canonical_keyword: "账号登录",
+          lexical_rules: [{ rule_type: "alias", rule_value: "登录问题" }]
+        }
+      }
+    ]);
+    render(<ContentSubmissionPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看细则" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("问题大类关键词")).toBeInTheDocument();
+    expect(within(dialog).getByText("账号登录")).toBeInTheDocument();
+    expect(within(dialog).getByText("[alias] 登录问题")).toBeInTheDocument();
+    expect(within(dialog).getByText("如何找回密码？")).toBeInTheDocument();
+  });
+
   it("submits a revision for a published ordinary child entry", async () => {
     mockedApi.listEditableContentEntries.mockResolvedValue([editableEntry]);
     render(<ContentSubmissionPage />);
@@ -309,7 +412,7 @@ describe("ContentSubmissionPage", () => {
     await waitFor(() => expect(mockedApi.getIngestionBatch).toHaveBeenCalledWith("batch-1"));
   });
 
-  it("does not show an empty action column for uploads without resubmission actions", async () => {
+  it("keeps the detail action for uploads without resubmission actions", async () => {
     mockedApi.listMyContentSubmissions.mockResolvedValue([
       {
         ...rejectedSubmission,
@@ -322,7 +425,8 @@ describe("ContentSubmissionPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "我的上传" }));
     await screen.findByText("账号登录");
 
-    expect(screen.queryByRole("columnheader", { name: "操作" })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "操作" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看细则" })).toBeInTheDocument();
   });
 
   it("keeps upload timestamps readable in a single line", async () => {

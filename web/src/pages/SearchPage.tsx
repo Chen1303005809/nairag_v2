@@ -30,6 +30,7 @@ import type {
   ConversationSearchResult,
   ConversationSearchResponse,
   KnowledgeBase,
+  KnowledgeContentTaxonomy,
   OcrRecognition,
   SearchAnnotationResultFeedbackInput,
   SearchAnnotationResultLabel,
@@ -69,6 +70,20 @@ interface ResultAnnotationDraft {
   feedbackType?: SearchAnnotationResultLabel;
   otherNote: string;
 }
+
+const fallbackSearchTaxonomy: KnowledgeContentTaxonomy = {
+  parent_types: parentTypeOptions.map((option) => option.value),
+  question_types: questionTypeOptions.map((option) => option.value),
+  business_objects: businessObjectOptions.map((option) => option.value),
+  purposes: purposeOptions.map((option) => option.value),
+  customer_types: customerTypeOptions.map((option) => option.value),
+  search_filters: {
+    question_types: questionTypeOptions.map((option) => option.value),
+    business_objects: businessObjectOptions.map((option) => option.value),
+    purposes: purposeOptions.map((option) => option.value),
+    customer_types: customerTypeOptions.map((option) => option.value)
+  }
+};
 
 const annotationFeedbackLabels: Record<SearchAnnotationResultLabel, string> = {
   high_score_irrelevant: "分数高但是无关",
@@ -612,6 +627,7 @@ type SearchTabKey = SearchRetrievalMode | "conversation";
 
 export function SearchPage(): JSX.Element {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [taxonomy, setTaxonomy] = useState<KnowledgeContentTaxonomy>(fallbackSearchTaxonomy);
   const [knowledgeBaseId, setKnowledgeBaseId] = useState<string>();
   const [activeTab, setActiveTab] = useState<SearchTabKey>("vector");
   const [retrievalMode, setRetrievalMode] = useState<SearchRetrievalMode>("vector");
@@ -632,6 +648,12 @@ export function SearchPage(): JSX.Element {
   const [retrievingQueries, setRetrievingQueries] = useState(false);
   const [conversationResult, setConversationResult] = useState<ConversationSearchResponse>();
   const [editableQueries, setEditableQueries] = useState<string[]>([]);
+  const searchFilterOptions = taxonomy.search_filters ?? {
+    question_types: taxonomy.question_types,
+    business_objects: taxonomy.business_objects,
+    purposes: taxonomy.purposes,
+    customer_types: taxonomy.customer_types
+  };
 
   useEffect(() => {
     void api
@@ -640,6 +662,10 @@ export function SearchPage(): JSX.Element {
       .catch((reason) => {
         message.error(reason instanceof Error ? reason.message : "无法加载知识库");
       });
+  }, []);
+
+  useEffect(() => {
+    void api.getKnowledgeContentTaxonomy().then(setTaxonomy).catch(() => undefined);
   }, []);
 
   const submitFeedback = async (
@@ -873,6 +899,7 @@ export function SearchPage(): JSX.Element {
                     />
                     <Select
                       allowClear
+                      aria-label="知识库"
                       value={knowledgeBaseId}
                       onChange={setKnowledgeBaseId}
                       placeholder="全部知识库"
@@ -955,6 +982,7 @@ export function SearchPage(): JSX.Element {
                     />
                     <Select
                       allowClear
+                      aria-label="类型"
                       value={parentType}
                       onChange={setParentType}
                       placeholder="类型"
@@ -963,34 +991,38 @@ export function SearchPage(): JSX.Element {
                     />
                     <Select
                       allowClear
+                      aria-label="问题类型"
                       value={questionType}
                       onChange={setQuestionType}
                       placeholder="问题类型"
-                      options={questionTypeOptions}
+                      options={searchFilterOptions.question_types.map((value) => ({ label: value, value }))}
                       style={{ minWidth: 220 }}
                     />
                     <Select
                       allowClear
+                      aria-label="具体功能与模块"
                       value={businessObject}
                       onChange={setBusinessObject}
                       placeholder="具体功能与模块"
-                      options={businessObjectOptions}
+                      options={searchFilterOptions.business_objects.map((value) => ({ label: value, value }))}
                       style={{ minWidth: 220 }}
                     />
                     <Select
                       allowClear
+                      aria-label="应用场景"
                       value={purpose}
                       onChange={setPurpose}
                       placeholder="应用场景"
-                      options={purposeOptions}
+                      options={searchFilterOptions.purposes.map((value) => ({ label: value, value }))}
                       style={{ minWidth: 180 }}
                     />
                     <Select
                       allowClear
+                      aria-label="客户类型"
                       value={customerType}
                       onChange={setCustomerType}
                       placeholder="客户类型"
-                      options={customerTypeOptions}
+                      options={searchFilterOptions.customer_types.map((value) => ({ label: value, value }))}
                       style={{ minWidth: 160 }}
                     />
                   </Space>

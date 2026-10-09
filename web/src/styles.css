@@ -177,6 +177,17 @@ body {
   margin-inline-start: 0;
 }
 
+.taxonomy-options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+}
+
+.taxonomy-option-row {
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
 .conversation-rich-editor {
   min-height: 168px;
   overflow: auto;

@@ -15,6 +15,15 @@ from app.schemas.knowledge_content import (
     normalize_required_content,
 )
 
+TaxonomyField = Literal["question_types", "business_objects", "purposes", "customer_types"]
+
+
+class TaxonomySearchFiltersResponse(BaseModel):
+    question_types: list[str]
+    business_objects: list[str]
+    purposes: list[str]
+    customer_types: list[str]
+
 
 class TaxonomyOptionsResponse(BaseModel):
     parent_types: list[str]
@@ -22,6 +31,32 @@ class TaxonomyOptionsResponse(BaseModel):
     business_objects: list[str]
     purposes: list[str]
     customer_types: list[str]
+    search_filters: TaxonomySearchFiltersResponse
+
+
+class TaxonomyOptionCreateRequest(BaseModel):
+    value: str = Field(max_length=255)
+
+    @field_validator("value")
+    @classmethod
+    def normalize_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("选项内容不能为空")
+        return normalized
+
+
+class TaxonomyOptionRenameRequest(BaseModel):
+    old_value: str = Field(max_length=255)
+    value: str = Field(max_length=255)
+
+    @field_validator("old_value", "value")
+    @classmethod
+    def normalize_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("选项内容不能为空")
+        return normalized
 
 
 class AttachmentImportParentProposal(BaseModel):

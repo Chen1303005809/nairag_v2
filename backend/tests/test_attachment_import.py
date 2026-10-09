@@ -58,6 +58,7 @@ from app.services.llm import (
     KnowledgeCandidate,
     OpenAiCompatibleLlmProvider,
 )
+from app.services.taxonomy import add_taxonomy_option
 
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -315,9 +316,11 @@ async def test_attachment_worker_sanitizes_proposal_and_counts_images(tmp_path: 
         model = "attachment-test-model"
 
         async def extract_attachment_proposal(
-            self, document_text: str
+            self, document_text: str, taxonomy: dict[str, list[str]] | None = None
         ) -> AttachmentKnowledgeExtraction:
             assert "登录" in document_text
+            assert taxonomy is not None
+            assert "新增的问题类型" in taxonomy["question_types"]
             return AttachmentKnowledgeExtraction(
                 parent=AttachmentParentSuggestion(
                     name="模型杜撰的大类",
@@ -330,8 +333,8 @@ async def test_attachment_worker_sanitizes_proposal_and_counts_images(tmp_path: 
                         response_content=(
                             "手机号：13800138000；邮箱 test@example.com；请检查账号状态。"
                         ),
-                        question_type="模型自造分类",
-                        business_object="对应平台使用说明书",
+                        question_type="新增的问题类型",
+                        business_object="模型自造模块",
                         purpose="企业微信咨询",
                         customer_type="个人客户",
                     )
@@ -345,6 +348,11 @@ async def test_attachment_worker_sanitizes_proposal_and_counts_images(tmp_path: 
     try:
         async with factory() as session:
             user = await create_user(session)
+            await add_taxonomy_option(
+                session,
+                field_key="question_types",
+                value="新增的问题类型",
+            )
             content = word_document([("登录失败时检查账号状态。", True)], include_image=True)
             upload = validate_attachment_upload(
                 filename="登录说明.docx",
@@ -384,11 +392,12 @@ async def test_attachment_worker_sanitizes_proposal_and_counts_images(tmp_path: 
             parsed_candidate = parsed.children[0]
             assert parsed.parent.name == "问题反馈"
             assert parsed.image_count == 1
-            assert parsed_candidate.question_type is None
+            assert parsed_candidate.question_type == "新增的问题类型"
+            assert parsed_candidate.business_object is None
             assert "张三" not in parsed_candidate.question
             assert "13800138000" not in parsed_candidate.response_content
             assert "test@example.com" not in parsed_candidate.response_content
-            assert any("固定选项" in warning for warning in parsed.warnings)
+            assert any("当前选项" in warning for warning in parsed.warnings)
     finally:
         await engine.dispose()
 

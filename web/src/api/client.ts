@@ -19,6 +19,7 @@ import type {
   KnowledgeDraft,
   KnowledgeDraftInput,
   KnowledgeContentTaxonomy,
+  KnowledgeTaxonomyField,
   LoginResponse,
   ManagedKnowledgeBase,
   ManagedKnowledgeEntry,
@@ -234,6 +235,26 @@ export const api = {
 
   getKnowledgeContentTaxonomy: (): Promise<KnowledgeContentTaxonomy> =>
     request<KnowledgeContentTaxonomy>("/knowledge-content/taxonomy"),
+
+  createKnowledgeTaxonomyOption: (
+    field: KnowledgeTaxonomyField,
+    value: string
+  ): Promise<KnowledgeContentTaxonomy> =>
+    sessionMutation<KnowledgeContentTaxonomy>(
+      "POST",
+      `/knowledge-content/taxonomy/${field}`,
+      { value }
+    ),
+
+  renameKnowledgeTaxonomyOption: (
+    field: KnowledgeTaxonomyField,
+    oldValue: string,
+    value: string
+  ): Promise<KnowledgeContentTaxonomy> =>
+    sessionMutation<KnowledgeContentTaxonomy>("PATCH", `/knowledge-content/taxonomy/${field}`, {
+      old_value: oldValue,
+      value
+    }),
 
   uploadKnowledgeAttachment: (file: File): Promise<EvidenceAttachment> => {
     const form = new FormData();

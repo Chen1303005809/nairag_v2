@@ -14,6 +14,7 @@ import { SearchPage } from "./SearchPage";
 vi.mock("../api/client", () => ({
   api: {
     listKnowledgeBases: vi.fn(),
+    getKnowledgeContentTaxonomy: vi.fn(),
     recognizeSearchImage: vi.fn(),
     recognizeConversationImage: vi.fn(),
     search: vi.fn(),
@@ -155,6 +156,19 @@ const conversationNoQueryResponse: ConversationSearchResponse = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listKnowledgeBases.mockResolvedValue([knowledgeBase]);
+  mockedApi.getKnowledgeContentTaxonomy.mockResolvedValue({
+    parent_types: ["问题反馈", "需求提交", "配置项咨询"],
+    question_types: ["功能故障类"],
+    business_objects: ["对应平台使用说明书"],
+    purposes: ["企业微信咨询"],
+    customer_types: ["个人客户"],
+    search_filters: {
+      question_types: ["功能故障类", "旧问题类型"],
+      business_objects: ["对应平台使用说明书"],
+      purposes: ["企业微信咨询"],
+      customer_types: ["个人客户"]
+    }
+  });
   mockedApi.recognizeSearchImage.mockResolvedValue(recognition);
   mockedApi.recognizeConversationImage.mockResolvedValue(recognition);
   mockedApi.search.mockResolvedValue(noMatchResponse);
@@ -435,6 +449,15 @@ describe("SearchPage OCR", () => {
     fireEvent.click(screen.getByRole("button", { name: "筛选所有匹配条目" }));
     await screen.findByText("如何找回密码？");
     expect(screen.queryByText("本次检索反馈")).not.toBeInTheDocument();
+  });
+
+  it("includes historical taxonomy values in search filters", async () => {
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.getKnowledgeContentTaxonomy).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("tab", { name: "字段筛选" }));
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "问题类型" }));
+
+    expect(await screen.findByRole("option", { name: "旧问题类型" })).toBeInTheDocument();
   });
 
   it("OCRs an image manually attached to a forwarded chat card before assisted search", async () => {

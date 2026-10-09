@@ -68,11 +68,22 @@ const fallbackTaxonomy: KnowledgeContentTaxonomy = {
   question_types: questionTypeOptions.map((option) => option.value),
   business_objects: businessObjectOptions.map((option) => option.value),
   purposes: purposeOptions.map((option) => option.value),
-  customer_types: customerTypeOptions.map((option) => option.value)
+  customer_types: customerTypeOptions.map((option) => option.value),
+  search_filters: {
+    question_types: questionTypeOptions.map((option) => option.value),
+    business_objects: businessObjectOptions.map((option) => option.value),
+    purposes: purposeOptions.map((option) => option.value),
+    customer_types: customerTypeOptions.map((option) => option.value)
+  }
 };
 
-function taxonomySelectOptions(values: string[]): Array<{ label: string; value: string }> {
-  return values.map((value) => ({ label: value, value }));
+function taxonomySelectOptions(
+  values: string[],
+  preservedValue?: string | null
+): Array<{ label: string; value: string }> {
+  const options =
+    preservedValue && !values.includes(preservedValue) ? [...values, preservedValue] : values;
+  return options.map((value) => ({ label: value, value }));
 }
 
 interface ChildContentFormValues {
@@ -476,10 +487,15 @@ function AttachmentListInput({
 
 function ChildContentFields({
   root,
-  taxonomy
+  taxonomy,
+  preservedValues
 }: {
   root: "primary_child" | "child";
   taxonomy: KnowledgeContentTaxonomy;
+  preservedValues?: Pick<
+    ChildContentInput,
+    "question_type" | "business_object" | "purpose" | "customer_type"
+  >;
 }): JSX.Element {
   return (
     <>
@@ -509,28 +525,43 @@ function ChildContentFields({
           label="问题类型"
           rules={[{ required: true, message: "请选择问题类型" }]}
         >
-          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.question_types)} />
+          <Select
+            placeholder="--请选择--"
+            options={taxonomySelectOptions(taxonomy.question_types, preservedValues?.question_type)}
+          />
         </Form.Item>
         <Form.Item
           name={[root, "business_object"]}
           label="具体功能与模块"
           rules={[{ required: true, message: "请选择具体功能与模块" }]}
         >
-          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.business_objects)} />
+          <Select
+            placeholder="--请选择--"
+            options={taxonomySelectOptions(
+              taxonomy.business_objects,
+              preservedValues?.business_object
+            )}
+          />
         </Form.Item>
         <Form.Item
           name={[root, "purpose"]}
           label="应用场景"
           rules={[{ required: true, message: "请选择应用场景" }]}
         >
-          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.purposes)} />
+          <Select
+            placeholder="--请选择--"
+            options={taxonomySelectOptions(taxonomy.purposes, preservedValues?.purpose)}
+          />
         </Form.Item>
         <Form.Item
           name={[root, "customer_type"]}
           label="客户类型"
           rules={[{ required: true, message: "请选择客户类型" }]}
         >
-          <Select placeholder="--请选择--" options={taxonomySelectOptions(taxonomy.customer_types)} />
+          <Select
+            placeholder="--请选择--"
+            options={taxonomySelectOptions(taxonomy.customer_types, preservedValues?.customer_type)}
+          />
         </Form.Item>
       </div>
       <ChildAttachmentField root={root} />
@@ -632,6 +663,7 @@ export function ContentSubmissionPage(): JSX.Element {
   const [submittingParent, setSubmittingParent] = useState(false);
   const [submittingChild, setSubmittingChild] = useState(false);
   const [editingSubmission, setEditingSubmission] = useState<ReviewSubmission | null>(null);
+  const [viewingSubmission, setViewingSubmission] = useState<ReviewSubmission | null>(null);
   const [resubmitting, setResubmitting] = useState(false);
   const [editingPublishedEntry, setEditingPublishedEntry] = useState<EditableContentEntry | null>(null);
   const [viewingPublishedEntry, setViewingPublishedEntry] = useState<EditableContentEntry | null>(null);
@@ -1165,23 +1197,25 @@ export function ContentSubmissionPage(): JSX.Element {
     },
   ];
 
-  if (submissions.some(canResubmitSubmission)) {
-    submissionColumns.push({
-      title: "操作",
-      key: "actions",
-      width: 130,
-      fixed: "right",
-      ellipsis: true,
-      render: (_value: unknown, submission: ReviewSubmission) =>
-        canResubmitSubmission(submission) ? (
-          <TableActionBar>
-            <Button type="link" onClick={() => openResubmission(submission)}>
-              编辑重提
-            </Button>
-          </TableActionBar>
-        ) : null
-    });
-  }
+  submissionColumns.push({
+    title: "操作",
+    key: "actions",
+    width: 190,
+    fixed: "right",
+    ellipsis: true,
+    render: (_value: unknown, submission: ReviewSubmission) => (
+      <TableActionBar>
+        <Button type="link" onClick={() => setViewingSubmission(submission)}>
+          查看细则
+        </Button>
+        {canResubmitSubmission(submission) ? (
+          <Button type="link" onClick={() => openResubmission(submission)}>
+            编辑重提
+          </Button>
+        ) : null}
+      </TableActionBar>
+    )
+  });
 
   const editableEntryColumns: TableProps<EditableContentEntry>["columns"] = [
     {
@@ -1590,7 +1624,13 @@ export function ContentSubmissionPage(): JSX.Element {
                       }))}
                     />
                   </Form.Item>
-                  <ChildContentFields root="child" taxonomy={taxonomy} />
+                  <ChildContentFields
+                    root="child"
+                    taxonomy={taxonomy}
+                    preservedValues={
+                      drafts.find((draft) => draft.id === editingDraftId) ?? undefined
+                    }
+                  />
                   <Form.Item
                     name="knowledge_base_ids"
                     label="目标知识库"
@@ -1727,7 +1767,11 @@ export function ContentSubmissionPage(): JSX.Element {
                   <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
                   <ParentContentFields taxonomy={taxonomy} />
                   <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
-                  <ChildContentFields root="primary_child" taxonomy={taxonomy} />
+                  <ChildContentFields
+                    root="primary_child"
+                    taxonomy={taxonomy}
+                    preservedValues={editingSubmission.child_revision ?? undefined}
+                  />
                 </>
               )}
               {editingSubmission.submission_kind === "child" && (
@@ -1735,7 +1779,11 @@ export function ContentSubmissionPage(): JSX.Element {
                   <Typography.Text type="secondary">
                     当前问题：{editingSubmission.title}
                   </Typography.Text>
-                  <ChildContentFields root="child" taxonomy={taxonomy} />
+                  <ChildContentFields
+                    root="child"
+                    taxonomy={taxonomy}
+                    preservedValues={editingSubmission.child_revision ?? undefined}
+                  />
                 </>
               )}
               <Form.Item label="重新提交目标">
@@ -1790,7 +1838,11 @@ export function ContentSubmissionPage(): JSX.Element {
                   <Typography.Title level={5}>{PARENT_CATEGORY_LABEL}</Typography.Title>
                   <ParentContentFields taxonomy={taxonomy} />
                   <Typography.Title level={5}>{CHILD_CATEGORY_LABEL}</Typography.Title>
-                  <ChildContentFields root="primary_child" taxonomy={taxonomy} />
+                  <ChildContentFields
+                    root="primary_child"
+                    taxonomy={taxonomy}
+                    preservedValues={editingPublishedEntry.child_revision}
+                  />
                   <Form.Item label="重新审核知识库">
                     <Space size={[4, 4]} wrap>
                       {editingPublishedEntry.knowledge_bases.map((knowledgeBase) => (
@@ -1804,7 +1856,11 @@ export function ContentSubmissionPage(): JSX.Element {
                   <Typography.Text type="secondary">
                     {PARENT_CATEGORY_LABEL}：{editingPublishedEntry.parent_name}
                   </Typography.Text>
-                  <ChildContentFields root="child" taxonomy={taxonomy} />
+                  <ChildContentFields
+                    root="child"
+                    taxonomy={taxonomy}
+                    preservedValues={editingPublishedEntry.child_revision}
+                  />
                   <Form.Item
                     name="knowledge_base_ids"
                     label="重新审核知识库"
@@ -1833,6 +1889,17 @@ export function ContentSubmissionPage(): JSX.Element {
         childRevision={viewingPublishedEntry?.child_revision ?? null}
         parentRevision={viewingPublishedEntry?.parent_revision}
         parentName={viewingPublishedEntry?.parent_name}
+      />
+      <KnowledgeDetailModal
+        open={viewingSubmission !== null}
+        onClose={() => setViewingSubmission(null)}
+        childRevision={viewingSubmission?.child_revision ?? null}
+        parentRevision={viewingSubmission?.parent_revision}
+        parentName={
+          viewingSubmission?.parent_revision?.name ??
+          (viewingSubmission?.submission_kind === "child" ? undefined : viewingSubmission?.title)
+        }
+        title="上传内容细则"
       />
     </section>
   );
