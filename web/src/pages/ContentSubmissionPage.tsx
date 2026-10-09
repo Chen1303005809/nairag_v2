@@ -506,6 +506,12 @@ function ChildContentFields({
       >
         <Input.TextArea rows={2} placeholder="用户会提出的具体问题" />
       </Form.Item>
+      <StructuredTextList
+        name={[root, "question_variants"]}
+        label="同义问句"
+        addLabel="添加同义问句"
+        placeholder="无需重复填写主问题"
+      />
       <Form.Item
         name={[root, "response_content"]}
         label="回复内容"
@@ -513,12 +519,6 @@ function ChildContentFields({
       >
         <Input.TextArea rows={5} placeholder="审核通过后面向检索用户展示的回答" />
       </Form.Item>
-      <StructuredTextList
-        name={[root, "question_variants"]}
-        label="同义问句"
-        addLabel="添加同义问句"
-        placeholder="无需重复填写主问题"
-      />
       <div className="content-form-grid">
         <Form.Item
           name={[root, "question_type"]}
