@@ -4,7 +4,7 @@ import importlib.util
 import re
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import Column, MetaData, Table, Uuid, create_engine, inspect, text
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -60,3 +60,39 @@ def test_knowledge_taxonomy_migration_seeds_the_existing_choices() -> None:
     assert ("business_objects", "对应平台使用说明书") in seeded_values
     assert ("purposes", "企业微信咨询") in seeded_values
     assert ("customer_types", "个人客户") in seeded_values
+
+
+def test_review_history_access_migration_supports_upgrade_and_downgrade() -> None:
+    migration_path = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "0016_review_history_access.py"
+    )
+    specification = importlib.util.spec_from_file_location(
+        "review_history_access_migration", migration_path
+    )
+    assert specification is not None and specification.loader is not None
+    migration = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(migration)
+
+    engine = create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            metadata = MetaData()
+            Table(
+                "user_account",
+                metadata,
+                Column("id", Uuid(), primary_key=True),
+            ).create(connection)
+            context = MigrationContext.configure(connection)
+            with Operations.context(context):
+                migration.upgrade()
+            inspector = inspect(connection)
+            assert "review_history_access" in inspector.get_table_names()
+            assert len(inspector.get_foreign_keys("review_history_access")) == 3
+            with Operations.context(context):
+                migration.downgrade()
+            assert "review_history_access" not in inspect(connection).get_table_names()
+    finally:
+        engine.dispose()

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from uuid import UUID
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.input_validation import normalize_display_name, normalize_username
@@ -43,3 +46,30 @@ class UpdateUserRequest(BaseModel):
 class TemporaryPasswordResponse(BaseModel):
     user: UserResponse
     temporary_password: str
+
+
+class ReviewHistoryAccessUpdateRequest(BaseModel):
+    reviewer_user_ids: list[UUID]
+
+    @field_validator("reviewer_user_ids")
+    @classmethod
+    def validate_unique_reviewer_ids(cls, values: list[UUID]) -> list[UUID]:
+        if len(set(values)) != len(values):
+            raise ValueError("审核人不能重复")
+        return values
+
+
+class ReviewHistoryPersonResponse(BaseModel):
+    id: UUID
+    username: str
+    display_name: str
+
+
+class ReviewHistorySubjectResponse(ReviewHistoryPersonResponse):
+    is_self: bool
+
+
+class ReviewHistoryAccessResponse(BaseModel):
+    reviewer: ReviewHistoryPersonResponse
+    granted_by_user_id: UUID
+    granted_at: datetime

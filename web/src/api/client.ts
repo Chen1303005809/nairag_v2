@@ -27,6 +27,9 @@ import type {
   OcrRecognition,
   ParentContentInput,
   ReviewerAssignment,
+  ReviewHistoryAccess,
+  ReviewHistoryPerson,
+  ReviewHistorySubject,
   ReviewDecision,
   ReviewDecisionKind,
   ReviewQueueItem,
@@ -169,6 +172,20 @@ export const api = {
   listUsers: (includeDisabled = true): Promise<User[]> =>
     request<User[]>(`/users?include_disabled=${includeDisabled}`),
 
+  listReviewHistoryTargets: (): Promise<ReviewHistoryPerson[]> =>
+    request<ReviewHistoryPerson[]>("/users/review-history-targets"),
+
+  listReviewHistoryAccess: (viewerUserId: string): Promise<ReviewHistoryAccess[]> =>
+    request<ReviewHistoryAccess[]>(`/users/${viewerUserId}/review-history-access`),
+
+  replaceReviewHistoryAccess: (
+    viewerUserId: string,
+    reviewerUserIds: string[]
+  ): Promise<ReviewHistoryAccess[]> =>
+    sessionMutation<ReviewHistoryAccess[]>("PUT", `/users/${viewerUserId}/review-history-access`, {
+      reviewer_user_ids: reviewerUserIds
+    }),
+
   createUser: (
     username: string,
     displayName: string,
@@ -265,8 +282,12 @@ export const api = {
   deleteKnowledgeAttachment: (attachmentId: string): Promise<void> =>
     sessionMutation<void>("DELETE", `/knowledge-content/attachments/${attachmentId}`),
 
-  knowledgeAttachmentDownloadUrl: (attachmentId: string): string =>
-    apiUrl(`/knowledge-content/attachments/${attachmentId}/download`),
+  knowledgeAttachmentDownloadUrl: (attachmentId: string, reviewerUserId?: string): string =>
+    apiUrl(
+      `/knowledge-content/attachments/${attachmentId}/download${queryString({
+        reviewer_user_id: reviewerUserId
+      })}`
+    ),
 
   listMyContentSubmissions: (): Promise<ReviewSubmission[]> =>
     request<ReviewSubmission[]>("/knowledge-content/submissions/mine"),
@@ -282,8 +303,13 @@ export const api = {
       `/knowledge-content/review-queue${knowledgeBaseId ? `?knowledge_base_id=${knowledgeBaseId}` : ""}`
     ),
 
-  listMyReviewHistory: (): Promise<ReviewQueueItem[]> =>
-    request<ReviewQueueItem[]>("/knowledge-content/review-history"),
+  listReviewHistorySubjects: (): Promise<ReviewHistorySubject[]> =>
+    request<ReviewHistorySubject[]>("/knowledge-content/review-history-subjects"),
+
+  listMyReviewHistory: (reviewerUserId?: string): Promise<ReviewQueueItem[]> =>
+    request<ReviewQueueItem[]>(
+      `/knowledge-content/review-history${reviewerUserId ? `?reviewer_user_id=${encodeURIComponent(reviewerUserId)}` : ""}`
+    ),
 
   decideReviewTarget: (
     submissionId: string,

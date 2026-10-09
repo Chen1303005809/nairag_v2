@@ -18,8 +18,24 @@ from app.core.security import hash_password, new_temporary_password
 from app.db.session import get_db_session
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.auth import UserResponse
-from app.schemas.users import CreateUserRequest, TemporaryPasswordResponse, UpdateUserRequest
+from app.schemas.users import (
+    CreateUserRequest,
+    ReviewHistoryAccessResponse,
+    ReviewHistoryAccessUpdateRequest,
+    ReviewHistoryPersonResponse,
+    TemporaryPasswordResponse,
+    UpdateUserRequest,
+)
 from app.services.knowledge_bases import count_reviewer_assignments_for_user
+from app.services.review_history_access import (
+    ReviewHistoryAccessWithUser,
+    ReviewHistorySelfGrantError,
+    ReviewHistoryTargetNotFoundError,
+    ReviewHistoryViewerInactiveError,
+    list_review_history_access,
+    list_review_history_targets,
+    replace_review_history_access,
+)
 from app.services.users import (
     UsernameAlreadyExistsError,
     count_active_system_administrators,
@@ -77,6 +93,119 @@ async def list_users(
         statement = statement.where(UserAccount.is_active.is_(True))
     users = (await session.scalars(statement)).all()
     return [UserResponse.model_validate(user) for user in users]
+
+
+def as_review_history_access_response(
+    access_with_user: ReviewHistoryAccessWithUser,
+) -> ReviewHistoryAccessResponse:
+    access = access_with_user.access
+    reviewer = access_with_user.reviewer
+    return ReviewHistoryAccessResponse(
+        reviewer=ReviewHistoryPersonResponse(
+            id=reviewer.id,
+            username=reviewer.username,
+            display_name=reviewer.display_name,
+        ),
+        granted_by_user_id=access.granted_by_user_id,
+        granted_at=access.granted_at,
+    )
+
+
+@router.get(
+    "/review-history-targets",
+    response_model=list[ReviewHistoryPersonResponse],
+)
+async def list_review_history_target_accounts(
+    _actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[ReviewHistoryPersonResponse]:
+    targets = await list_review_history_targets(session)
+    return [
+        ReviewHistoryPersonResponse(
+            id=target.id,
+            username=target.username,
+            display_name=target.display_name,
+        )
+        for target in targets
+    ]
+
+
+@router.get(
+    "/{viewer_user_id}/review-history-access",
+    response_model=list[ReviewHistoryAccessResponse],
+)
+async def list_managed_review_history_access(
+    viewer_user_id: UUID,
+    _actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[ReviewHistoryAccessResponse]:
+    await get_target_user(session, viewer_user_id)
+    accesses = await list_review_history_access(session, viewer_user_id=viewer_user_id)
+    return [as_review_history_access_response(access) for access in accesses]
+
+
+@router.put(
+    "/{viewer_user_id}/review-history-access",
+    response_model=list[ReviewHistoryAccessResponse],
+)
+async def replace_managed_review_history_access(
+    viewer_user_id: UUID,
+    body: ReviewHistoryAccessUpdateRequest,
+    actor: Annotated[AuthenticatedSession, Depends(require_system_administrator)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[ReviewHistoryAccessResponse]:
+    viewer = await get_target_user(session, viewer_user_id)
+    try:
+        accesses, added_ids, removed_ids = await replace_review_history_access(
+            session,
+            viewer=viewer,
+            reviewer_user_ids=set(body.reviewer_user_ids),
+            granted_by_user_id=actor.user.id,
+        )
+    except ReviewHistorySelfGrantError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="不能将本人审核历史作为他人授权对象",
+        ) from exc
+    except ReviewHistoryTargetNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="审核对象不存在或没有审核历史",
+        ) from exc
+    except ReviewHistoryViewerInactiveError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="只能为启用账号新增审核历史查看权限",
+        ) from exc
+
+    for reviewer_user_id in sorted(added_ids, key=str):
+        record_audit_event(
+            session,
+            event_type="review_history.access_granted",
+            actor_user_id=actor.user.id,
+            target_type="review_history_access",
+            target_id=reviewer_user_id,
+            payload={
+                "viewer_user_id": str(viewer_user_id),
+                "reviewer_user_id": str(reviewer_user_id),
+            },
+        )
+    for reviewer_user_id in sorted(removed_ids, key=str):
+        record_audit_event(
+            session,
+            event_type="review_history.access_revoked",
+            actor_user_id=actor.user.id,
+            target_type="review_history_access",
+            target_id=reviewer_user_id,
+            payload={
+                "viewer_user_id": str(viewer_user_id),
+                "reviewer_user_id": str(reviewer_user_id),
+            },
+        )
+    if added_ids or removed_ids:
+        await session.commit()
+    return [as_review_history_access_response(access) for access in accesses]
 
 
 @router.post("", response_model=TemporaryPasswordResponse, status_code=status.HTTP_201_CREATED)

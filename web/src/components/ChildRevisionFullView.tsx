@@ -6,11 +6,13 @@ import type { ReviewChildRevision, ReviewParentRevision } from "../api/types";
 export function ChildRevisionFullView({
   childRevision,
   parentRevision,
-  parentName
+  parentName,
+  attachmentHistoryReviewerId
 }: {
   childRevision: ReviewChildRevision;
   parentRevision?: ReviewParentRevision | null;
   parentName?: string;
+  attachmentHistoryReviewerId?: string;
 }): JSX.Element {
   const revision = childRevision;
   return (
@@ -92,7 +94,10 @@ export function ChildRevisionFullView({
         <Descriptions.Item label="佐证附件">
           <Space size={[8, 8]} wrap>
             {revision.attachments.map((attachment) => {
-              const downloadUrl = api.knowledgeAttachmentDownloadUrl(attachment.id);
+              const downloadUrl = api.knowledgeAttachmentDownloadUrl(
+                attachment.id,
+                attachmentHistoryReviewerId
+              );
               return attachment.content_type.startsWith("image/") ? (
                 <Image key={attachment.id} alt={attachment.name} src={downloadUrl} width={120} />
               ) : (

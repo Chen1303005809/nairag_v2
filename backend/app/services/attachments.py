@@ -5,7 +5,7 @@ import struct
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zipfile import BadZipFile, ZipFile
 
 from sqlalchemy import select
@@ -16,9 +16,11 @@ from app.models.knowledge_content import (
     ChildKnowledgeBasePublication,
     ChildPublicationStatus,
     EvidenceAttachment,
+    ReviewDecision,
     ReviewSubmission,
     ReviewSubmissionTarget,
 )
+from app.models.review_history_access import ReviewHistoryAccess
 from app.models.user_account import UserRole
 
 ALLOWED_ATTACHMENT_CONTENT_TYPES: dict[str, str] = {
@@ -371,10 +373,19 @@ async def attachment_is_readable_by(
     session: AsyncSession,
     *,
     attachment: EvidenceAttachment,
-    user_id,
+    user_id: UUID,
     user_role: UserRole,
+    required_history_reviewer_user_id: UUID | None = None,
 ) -> bool:
     """Authorize owner, relevant reviewer, administrator, or published readers."""
+
+    if required_history_reviewer_user_id is not None:
+        return await _attachment_has_shared_review_history(
+            session,
+            attachment=attachment,
+            viewer_user_id=user_id,
+            reviewer_user_id=required_history_reviewer_user_id,
+        )
 
     if attachment.uploaded_by_user_id == user_id or user_role == UserRole.SYSTEM_ADMIN:
         return True
@@ -389,21 +400,60 @@ async def attachment_is_readable_by(
     )
     if published is not None:
         return True
-    if user_role != UserRole.REVIEW_ADMIN:
+    if user_role == UserRole.REVIEW_ADMIN:
+        assigned_review_target = await session.scalar(
+            select(ReviewSubmissionTarget.review_submission_id)
+            .join(
+                ReviewSubmission,
+                ReviewSubmission.id == ReviewSubmissionTarget.review_submission_id,
+            )
+            .join(
+                ReviewerKnowledgeBase,
+                ReviewerKnowledgeBase.knowledge_base_id
+                == ReviewSubmissionTarget.knowledge_base_id,
+            )
+            .where(
+                ReviewSubmission.child_revision_id == attachment.child_revision_id,
+                ReviewerKnowledgeBase.reviewer_user_id == user_id,
+            )
+        )
+        if assigned_review_target is not None:
+            return True
+
+    return await _attachment_has_shared_review_history(
+        session,
+        attachment=attachment,
+        viewer_user_id=user_id,
+    )
+
+
+async def _attachment_has_shared_review_history(
+    session: AsyncSession,
+    *,
+    attachment: EvidenceAttachment,
+    viewer_user_id: UUID,
+    reviewer_user_id: UUID | None = None,
+) -> bool:
+    if attachment.child_revision_id is None:
         return False
-    assigned_review_target = await session.scalar(
-        select(ReviewSubmissionTarget.review_submission_id)
+    statement = (
+        select(ReviewDecision.id)
         .join(
             ReviewSubmission,
-            ReviewSubmission.id == ReviewSubmissionTarget.review_submission_id,
+            ReviewSubmission.id == ReviewDecision.review_submission_id,
         )
         .join(
-            ReviewerKnowledgeBase,
-            ReviewerKnowledgeBase.knowledge_base_id == ReviewSubmissionTarget.knowledge_base_id,
+            ReviewHistoryAccess,
+            ReviewHistoryAccess.reviewer_user_id == ReviewDecision.decided_by_user_id,
         )
         .where(
+            ReviewHistoryAccess.viewer_user_id == viewer_user_id,
             ReviewSubmission.child_revision_id == attachment.child_revision_id,
-            ReviewerKnowledgeBase.reviewer_user_id == user_id,
         )
     )
-    return assigned_review_target is not None
+    if reviewer_user_id is not None:
+        statement = statement.where(
+            ReviewHistoryAccess.reviewer_user_id == reviewer_user_id
+        )
+    shared_history_decision = await session.scalar(statement.limit(1))
+    return shared_history_decision is not None

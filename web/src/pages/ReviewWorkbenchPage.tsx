@@ -24,6 +24,7 @@ import { uniqueTableFilterOptions } from "../tableFilters";
 import type {
   KnowledgeBase,
   ReviewDecisionKind,
+  ReviewHistorySubject,
   ReviewQueueItem,
   ReviewTargetStatus
 } from "../api/types";
@@ -41,9 +42,17 @@ function targetStatus(status: ReviewTargetStatus): JSX.Element {
   return <Tag color={color}>{label}</Tag>;
 }
 
-export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boolean }): JSX.Element {
+export function ReviewWorkbenchPage({
+  systemAdmin = false,
+  historyOnly = false
+}: {
+  systemAdmin?: boolean;
+  historyOnly?: boolean;
+}): JSX.Element {
   const [queue, setQueue] = useState<ReviewQueueItem[]>([]);
   const [history, setHistory] = useState<ReviewQueueItem[]>([]);
+  const [historySubjects, setHistorySubjects] = useState<ReviewHistorySubject[]>([]);
+  const [historySubjectId, setHistorySubjectId] = useState<string>();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseId, setKnowledgeBaseId] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -52,28 +61,40 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [retryingKey, setRetryingKey] = useState<string>();
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const refresh = async (): Promise<void> => {
     setLoading(true);
     try {
-      const [nextQueue, nextKnowledgeBases, nextHistory] = await Promise.all([
-        api.listReviewQueue(knowledgeBaseId),
-        systemAdmin ? api.listKnowledgeBases() : api.listAssignedReviewKnowledgeBases(),
-        api.listMyReviewHistory()
+      const [nextQueue, nextKnowledgeBases, nextHistorySubjects] = await Promise.all([
+        historyOnly ? Promise.resolve([]) : api.listReviewQueue(knowledgeBaseId),
+        historyOnly
+          ? Promise.resolve([])
+          : systemAdmin
+            ? api.listKnowledgeBases()
+            : api.listAssignedReviewKnowledgeBases(),
+        api.listReviewHistorySubjects()
       ]);
       setQueue(nextQueue);
       setKnowledgeBases(nextKnowledgeBases);
-      setHistory(nextHistory);
+      setHistorySubjects(nextHistorySubjects);
+      const selectedSubject =
+        nextHistorySubjects.find((subject) => subject.id === historySubjectId) ??
+        nextHistorySubjects[0];
+      setHistorySubjectId(selectedSubject?.id);
+      setHistoryLoading(true);
+      setHistory(selectedSubject ? await api.listMyReviewHistory(selectedSubject.id) : []);
     } catch (reason) {
-      message.error(reason instanceof Error ? reason.message : "无法加载审核队列");
+      message.error(reason instanceof Error ? reason.message : "无法加载审核工作台");
     } finally {
+      setHistoryLoading(false);
       setLoading(false);
     }
   };
 
   useEffect(() => {
     void refresh();
-  }, [knowledgeBaseId, systemAdmin]);
+  }, [knowledgeBaseId, systemAdmin, historyOnly]);
 
   const submitDecision = async (): Promise<void> => {
     if (!decisionItem) {
@@ -112,6 +133,22 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     }
   };
 
+  const selectHistorySubject = async (subjectId: string): Promise<void> => {
+    setHistorySubjectId(subjectId);
+    setHistoryLoading(true);
+    try {
+      setHistory(await api.listMyReviewHistory(subjectId));
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "无法加载审核历史");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const selectedHistorySubject = historySubjects.find(
+    (subject) => subject.id === historySubjectId
+  );
+
   const contentCell = (item: ReviewQueueItem): JSX.Element => (
     <Space direction="vertical" size={0}>
       <Typography.Text strong>{item.parent_revision?.name ?? item.child_revision.question}</Typography.Text>
@@ -121,11 +158,16 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     </Space>
   );
 
-  const expandedRow = (item: ReviewQueueItem): JSX.Element => (
+  const expandedRow = (item: ReviewQueueItem, sharedHistory = false): JSX.Element => (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <ChildRevisionFullView
         childRevision={item.child_revision}
         parentRevision={item.parent_revision}
+        attachmentHistoryReviewerId={
+          sharedHistory && selectedHistorySubject && !selectedHistorySubject.is_self
+            ? selectedHistorySubject.id
+            : undefined
+        }
       />
       <Descriptions bordered size="small" column={1} title="审核信息">
         <Descriptions.Item label="上传者">
@@ -180,7 +222,6 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       ]),
     [history]
   );
-
   const queueColumns: TableProps<ReviewQueueItem>["columns"] = [
     {
       title: "上传内容",
@@ -342,7 +383,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       render: (value: string | null) => value || "—"
     },
     {
-      title: "当前状态/操作",
+      title: selectedHistorySubject?.is_self ? "当前状态/操作" : "当前状态",
       key: "status_actions",
       width: 180,
       fixed: "right",
@@ -350,7 +391,7 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
       render: (_value: unknown, item: ReviewQueueItem) => (
         <TableActionBar>
           {targetStatus(item.target_status)}
-          {item.target_status === "index_failed" ? (
+          {selectedHistorySubject?.is_self && item.target_status === "index_failed" ? (
             <Button
               type="primary"
               ghost
@@ -365,80 +406,100 @@ export function ReviewWorkbenchPage({ systemAdmin = false }: { systemAdmin?: boo
     }
   ];
 
+  const queueTab = {
+    key: "queue",
+    label: "待审核",
+    children:
+      knowledgeBases.length === 0 && !systemAdmin ? (
+        <Alert
+          type="info"
+          showIcon
+          message="尚未分配审核知识库"
+          description="请联系系统管理员为你的账号分配至少一个知识库。"
+        />
+      ) : (
+        <Card>
+          <Table<ReviewQueueItem>
+            rowKey={(item) => `${item.review_submission_id}:${item.knowledge_base.id}`}
+            loading={loading}
+            columns={queueColumns}
+            dataSource={queue}
+            scroll={{ x: 1620 }}
+            expandable={{ expandedRowRender: (item) => expandedRow(item) }}
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            locale={{ emptyText: "当前没有待审核的上传内容" }}
+          />
+        </Card>
+      )
+  };
+  const historyTab = {
+    key: "history",
+    label: selectedHistorySubject?.is_self ? "我的审核历史" : "审核历史",
+    children: (
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Space wrap>
+          <Typography.Text>查看对象</Typography.Text>
+          <Select
+            value={historySubjectId}
+            placeholder="暂无可查看的审核历史"
+            onChange={(value) => void selectHistorySubject(value)}
+            options={historySubjects.map((subject) => ({
+              value: subject.id,
+              label: `${subject.display_name}（${subject.username}）${subject.is_self ? " · 本人" : ""}`
+            }))}
+            style={{ minWidth: 240 }}
+            disabled={historySubjects.length === 0}
+          />
+        </Space>
+        <Card>
+          <Table<ReviewQueueItem>
+            rowKey={(item) => `${item.review_submission_id}:${item.knowledge_base.id}:${item.id}`}
+            loading={loading || historyLoading}
+            columns={historyColumns}
+            dataSource={history}
+            scroll={{ x: 1450 }}
+            expandable={{ expandedRowRender: (item) => expandedRow(item, true) }}
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            locale={{
+              emptyText: historySubjects.length ? "尚无审核历史" : "暂无获授权的审核历史"
+            }}
+          />
+        </Card>
+      </Space>
+    )
+  };
+
   return (
     <section>
       <div className="page-heading">
         <div>
-          <Typography.Title level={3}>审核工作台</Typography.Title>
+          <Typography.Title level={3}>{historyOnly ? "审核历史" : "审核工作台"}</Typography.Title>
           <Typography.Paragraph type="secondary">
-            待审核仅展示你有权限处理的目标库；“我的审核历史”保留你已作出的审核决定，并在同一行显示当前索引状态与失败重试入口。问题大类与问题小类会在全部目标通过且索引完成后整体发布。
+            {historyOnly
+              ? "查看系统管理员授权给你的审核历史，包含审核决定、提交内容和附件。"
+              : "待审核仅展示你有权限处理的目标库；审核历史保留你已作出的决定，并可查看获授权的其他审核人记录。问题大类与问题小类会在全部目标通过且索引完成后整体发布。"}
           </Typography.Paragraph>
         </div>
         <Space>
-          <Select
-            allowClear
-            placeholder="全部授权知识库"
-            value={knowledgeBaseId}
-            onChange={setKnowledgeBaseId}
-            options={knowledgeBases.map((knowledgeBase) => ({
-              value: knowledgeBase.id,
-              label: knowledgeBase.name
-            }))}
-            style={{ minWidth: 180 }}
-          />
+          {!historyOnly ? (
+            <Select
+              allowClear
+              placeholder="全部授权知识库"
+              value={knowledgeBaseId}
+              onChange={setKnowledgeBaseId}
+              options={knowledgeBases.map((knowledgeBase) => ({
+                value: knowledgeBase.id,
+                label: knowledgeBase.name
+              }))}
+              style={{ minWidth: 180 }}
+            />
+          ) : null}
           <Button onClick={() => void refresh()} loading={loading}>
             刷新
           </Button>
         </Space>
       </div>
-      <Tabs
-        items={[
-          {
-            key: "queue",
-            label: "待审核",
-            children:
-              knowledgeBases.length === 0 && !systemAdmin ? (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="尚未分配审核知识库"
-                  description="请联系系统管理员为你的账号分配至少一个知识库。"
-                />
-              ) : (
-                <Card>
-                  <Table<ReviewQueueItem>
-                    rowKey={(item) => `${item.review_submission_id}:${item.knowledge_base.id}`}
-                    loading={loading}
-                    columns={queueColumns}
-                    dataSource={queue}
-                    scroll={{ x: 1620 }}
-                    expandable={{ expandedRowRender: expandedRow }}
-                    pagination={{ pageSize: 10, hideOnSinglePage: true }}
-                    locale={{ emptyText: "当前没有待审核的上传内容" }}
-                  />
-                </Card>
-              )
-          },
-          {
-            key: "history",
-            label: "我的审核历史",
-            children: (
-              <Card>
-                <Table<ReviewQueueItem>
-                  rowKey={(item) => `${item.review_submission_id}:${item.knowledge_base.id}:${item.id}`}
-                  loading={loading}
-                  columns={historyColumns}
-                  dataSource={history}
-                  scroll={{ x: 1450 }}
-                  expandable={{ expandedRowRender: expandedRow }}
-                  pagination={{ pageSize: 10, hideOnSinglePage: true }}
-                  locale={{ emptyText: "尚无审核历史" }}
-                />
-              </Card>
-            )
-          }
-        ]}
-      />
+      <Tabs items={historyOnly ? [historyTab] : [queueTab, historyTab]} />
       <Modal
         title="记录审核决定"
         open={Boolean(decisionItem)}

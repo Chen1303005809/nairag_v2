@@ -268,6 +268,15 @@ function App(): JSX.Element {
                       <ContentSubmissionPage />
                     </Suspense>
                   )
+                },
+                {
+                  key: "review-history",
+                  label: "审核历史",
+                  children: (
+                    <Suspense fallback={<Spin />}>
+                      <ReviewWorkbenchPage historyOnly />
+                    </Suspense>
+                  )
                 }
               ]}
             />

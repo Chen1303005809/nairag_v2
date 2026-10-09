@@ -55,6 +55,7 @@ from app.schemas.knowledge_content import (
     ReviewSubmitterResponse,
     WebLinkInput,
 )
+from app.schemas.users import ReviewHistorySubjectResponse
 from app.services.attachment_storage import AttachmentStorage, AttachmentStorageError
 from app.services.attachments import (
     AttachmentValidationError,
@@ -102,6 +103,10 @@ from app.services.knowledge_content import (
     submit_new_child,
     submit_new_parent_aggregate,
     submit_parent_aggregate_revision,
+)
+from app.services.review_history_access import (
+    has_review_history_access,
+    list_viewable_review_history_subjects,
 )
 from app.services.taxonomy import (
     TaxonomyOptionAlreadyExistsError,
@@ -636,6 +641,7 @@ async def download_evidence_attachment(
     request: Request,
     user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    reviewer_user_id: UUID | None = None,
 ) -> Response:
     attachment = await session.get(EvidenceAttachment, attachment_id)
     if attachment is None:
@@ -645,6 +651,7 @@ async def download_evidence_attachment(
         attachment=attachment,
         user_id=user.user.id,
         user_role=user.user.role,
+        required_history_reviewer_user_id=reviewer_user_id,
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该附件")
 
@@ -1025,10 +1032,43 @@ async def list_content_review_queue(
 async def list_current_reviewer_history(
     user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    reviewer_user_id: UUID | None = None,
 ) -> list[ReviewQueueItemResponse]:
-    _require_review_actor(user)
-    history = await list_review_history(session, reviewer_user_id=user.user.id)
+    target_user_id = reviewer_user_id or user.user.id
+    if target_user_id == user.user.id:
+        _require_review_actor(user)
+    elif not await has_review_history_access(
+        session,
+        viewer_user_id=user.user.id,
+        reviewer_user_id=target_user_id,
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权查看该审核历史")
+    history = await list_review_history(session, reviewer_user_id=target_user_id)
     return [as_review_queue_response(item) for item in history]
+
+
+@router.get(
+    "/review-history-subjects",
+    response_model=list[ReviewHistorySubjectResponse],
+)
+async def list_current_viewable_review_history_subjects(
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> list[ReviewHistorySubjectResponse]:
+    subjects = await list_viewable_review_history_subjects(
+        session,
+        viewer_user_id=user.user.id,
+        viewer_role=user.user.role,
+    )
+    return [
+        ReviewHistorySubjectResponse(
+            id=subject.id,
+            username=subject.username,
+            display_name=subject.display_name,
+            is_self=is_self,
+        )
+        for subject, is_self in subjects
+    ]
 
 
 @router.post(

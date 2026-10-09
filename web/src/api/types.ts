@@ -12,6 +12,22 @@ export interface User {
   updated_at: string;
 }
 
+export interface ReviewHistoryPerson {
+  id: string;
+  username: string;
+  display_name: string;
+}
+
+export interface ReviewHistorySubject extends ReviewHistoryPerson {
+  is_self: boolean;
+}
+
+export interface ReviewHistoryAccess {
+  reviewer: ReviewHistoryPerson;
+  granted_by_user_id: string;
+  granted_at: string;
+}
+
 export interface LoginResponse {
   user: User;
 }

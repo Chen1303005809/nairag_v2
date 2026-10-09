@@ -10,6 +10,7 @@ vi.mock("../api/client", () => ({
     listReviewQueue: vi.fn(),
     listAssignedReviewKnowledgeBases: vi.fn(),
     listMyReviewHistory: vi.fn(),
+    listReviewHistorySubjects: vi.fn(),
     decideReviewTarget: vi.fn(),
     retryReviewTargetIndexing: vi.fn()
   }
@@ -69,6 +70,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listReviewQueue.mockResolvedValue([]);
   mockedApi.listAssignedReviewKnowledgeBases.mockResolvedValue([knowledgeBase]);
+  mockedApi.listReviewHistorySubjects.mockResolvedValue([
+    { id: "reviewer-1", username: "reviewer", display_name: "审核人", is_self: true }
+  ]);
   mockedApi.listMyReviewHistory.mockResolvedValue([historyItem]);
 });
 
@@ -106,5 +110,43 @@ describe("ReviewWorkbenchPage history", () => {
         "knowledge-base-1"
       )
     );
+  });
+
+  it("allows selecting a granted history and hides retry actions for another reviewer", async () => {
+    mockedApi.listReviewHistorySubjects.mockResolvedValue([
+      { id: "reviewer-1", username: "reviewer", display_name: "审核人", is_self: true },
+      { id: "reviewer-2", username: "reviewer-two", display_name: "其他审核人", is_self: false }
+    ]);
+    mockedApi.listMyReviewHistory.mockResolvedValue([
+      { ...historyItem, target_status: "index_failed", submission_status: "index_failed" }
+    ]);
+    render(<ReviewWorkbenchPage />);
+
+    const historyTab = (await screen.findAllByRole("tab", { name: "我的审核历史" }))[0];
+    fireEvent.click(historyTab);
+    expect(await screen.findByRole("button", { name: "重试索引" })).toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByText("审核人（reviewer） · 本人").closest(".ant-select-selection-item") ??
+      screen.getByText("审核人（reviewer） · 本人"));
+    fireEvent.click(await screen.findByText("其他审核人（reviewer-two）"));
+
+    await waitFor(() =>
+      expect(mockedApi.listMyReviewHistory).toHaveBeenLastCalledWith("reviewer-2")
+    );
+    expect(screen.queryByRole("button", { name: "重试索引" })).not.toBeInTheDocument();
+  });
+
+  it("shows the read-only history view to a normal user without loading a review queue", async () => {
+    mockedApi.listReviewHistorySubjects.mockResolvedValue([
+      { id: "reviewer-2", username: "reviewer-two", display_name: "其他审核人", is_self: false }
+    ]);
+    render(<ReviewWorkbenchPage historyOnly />);
+
+    expect(await screen.findByRole("heading", { name: "审核历史" })).toBeInTheDocument();
+    expect(await screen.findByText("其他审核人（reviewer-two）")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "待审核" })).not.toBeInTheDocument();
+    await waitFor(() => expect(mockedApi.listMyReviewHistory).toHaveBeenCalledWith("reviewer-2"));
+    expect(mockedApi.listReviewQueue).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "重试索引" })).not.toBeInTheDocument();
   });
 });

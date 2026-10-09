@@ -12,6 +12,7 @@ import app.models  # noqa: F401  # Register model metadata.
 from app.core.config import Settings
 from app.db.base import Base
 from app.main import create_app
+from app.models.audit_event import AuditEvent
 from app.models.knowledge_base import KnowledgeBase
 from app.models.knowledge_content import (
     ChildKnowledgeBasePublication,
@@ -457,12 +458,26 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                 )
                 assert author_created.status_code == 201
                 author_password = author_created.json()["temporary_password"]
+                viewer_created = await admin.post(
+                    "/api/v1/users",
+                    headers=csrf_headers(admin, settings),
+                    json={
+                        "username": "history-viewer",
+                        "display_name": "History Viewer",
+                        "role": "normal_user",
+                    },
+                )
+                assert viewer_created.status_code == 201
+                viewer_id = viewer_created.json()["user"]["id"]
+                viewer_password = viewer_created.json()["temporary_password"]
 
                 async with AsyncClient(
                     transport=transport, base_url="https://testserver"
                 ) as reviewer, AsyncClient(
                     transport=transport, base_url="https://testserver"
-                ) as author:
+                ) as author, AsyncClient(
+                    transport=transport, base_url="https://testserver"
+                ) as viewer:
                     assert (
                         await login(
                             reviewer,
@@ -496,6 +511,24 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                             json={
                                 "current_password": author_password,
                                 "new_password": "AuthorPassword-123!",
+                            },
+                        )
+                    ).status_code == 200
+                    assert (
+                        await login(
+                            viewer,
+                            settings,
+                            username="history-viewer",
+                            password=viewer_password,
+                        )
+                    ).status_code == 200
+                    assert (
+                        await viewer.post(
+                            "/api/v1/auth/change-password",
+                            headers=csrf_headers(viewer, settings),
+                            json={
+                                "current_password": viewer_password,
+                                "new_password": "HistoryViewerPassword-123!",
                             },
                         )
                     ).status_code == 200
@@ -556,6 +589,93 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                     assert {item["review_decision"] for item in history_items} == {"approved"}
                     assert all(item["submitted_at"] for item in history_items)
                     assert all(item["reviewed_at"] for item in history_items)
+
+                    reviewer_subjects = await reviewer.get(
+                        "/api/v1/knowledge-content/review-history-subjects"
+                    )
+                    assert reviewer_subjects.status_code == 200
+                    assert reviewer_subjects.json()[0]["is_self"] is True
+                    denied_history = await viewer.get(
+                        "/api/v1/knowledge-content/review-history",
+                        params={"reviewer_user_id": reviewer_id},
+                    )
+                    assert denied_history.status_code == 403
+                    assert (
+                        await viewer.get(
+                            "/api/v1/knowledge-content/review-history-subjects"
+                        )
+                    ).json() == []
+                    review_targets = await admin.get(
+                        "/api/v1/users/review-history-targets"
+                    )
+                    assert review_targets.status_code == 200
+                    assert {target["id"] for target in review_targets.json()} == {reviewer_id}
+                    denied_management = await viewer.get(
+                        f"/api/v1/users/{viewer_id}/review-history-access"
+                    )
+                    assert denied_management.status_code == 403
+                    grant_response = await admin.put(
+                        f"/api/v1/users/{viewer_id}/review-history-access",
+                        headers=csrf_headers(admin, settings),
+                        json={"reviewer_user_ids": [reviewer_id]},
+                    )
+                    assert grant_response.status_code == 200
+                    assert [item["reviewer"]["id"] for item in grant_response.json()] == [
+                        reviewer_id
+                    ]
+                    self_grant = await admin.put(
+                        f"/api/v1/users/{viewer_id}/review-history-access",
+                        headers=csrf_headers(admin, settings),
+                        json={"reviewer_user_ids": [viewer_id]},
+                    )
+                    assert self_grant.status_code == 422
+                    duplicate_targets = await admin.put(
+                        f"/api/v1/users/{viewer_id}/review-history-access",
+                        headers=csrf_headers(admin, settings),
+                        json={"reviewer_user_ids": [reviewer_id, reviewer_id]},
+                    )
+                    assert duplicate_targets.status_code == 422
+                    idempotent_grant = await admin.put(
+                        f"/api/v1/users/{viewer_id}/review-history-access",
+                        headers=csrf_headers(admin, settings),
+                        json={"reviewer_user_ids": [reviewer_id]},
+                    )
+                    assert idempotent_grant.status_code == 200
+                    assert len(idempotent_grant.json()) == 1
+                    viewer_subjects = await viewer.get(
+                        "/api/v1/knowledge-content/review-history-subjects"
+                    )
+                    assert viewer_subjects.status_code == 200
+                    assert viewer_subjects.json() == [
+                        {
+                            "id": reviewer_id,
+                            "username": "reviewer",
+                            "display_name": "Reviewer",
+                            "is_self": False,
+                        }
+                    ]
+                    shared_history = await viewer.get(
+                        "/api/v1/knowledge-content/review-history",
+                        params={"reviewer_user_id": reviewer_id},
+                    )
+                    assert shared_history.status_code == 200
+                    assert len(shared_history.json()) == 2
+                    assert all(
+                        item["reviewer"]["id"] == reviewer_id
+                        for item in shared_history.json()
+                    )
+                    async with app.state.session_factory() as session:  # type: ignore[attr-defined]
+                        grant_events = list(
+                            (
+                                await session.scalars(
+                                    select(AuditEvent).where(
+                                        AuditEvent.event_type
+                                        == "review_history.access_granted"
+                                    )
+                                )
+                            ).all()
+                        )
+                    assert len(grant_events) == 1
 
                     async with app.state.session_factory() as session:  # type: ignore[attr-defined]
                         jobs = list((await session.scalars(select(IndexJob))).all())
@@ -661,6 +781,12 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         json={"decision": "approved"},
                     )
                     assert approve_child.status_code == 201
+                    shared_download = await viewer.get(
+                        f"/api/v1/knowledge-content/attachments/{attachment_id}/download",
+                        params={"reviewer_user_id": reviewer_id},
+                    )
+                    assert shared_download.status_code == 200
+                    assert shared_download.content == "请先确认用户身份。".encode()
                     result = await run_index_worker_once(
                         app.state.session_factory,  # type: ignore[attr-defined]
                         worker_id="test-worker",
@@ -676,6 +802,39 @@ async def test_review_queue_decisions_and_target_publication_are_isolated(tmp_pa
                         json={"decision": "rejected", "comment": "不适用于该知识库"},
                     )
                     assert reject_child.status_code == 201
+                    revoke_response = await admin.put(
+                        f"/api/v1/users/{viewer_id}/review-history-access",
+                        headers=csrf_headers(admin, settings),
+                        json={"reviewer_user_ids": []},
+                    )
+                    assert revoke_response.status_code == 200
+                    assert revoke_response.json() == []
+                    revoked_history = await viewer.get(
+                        "/api/v1/knowledge-content/review-history",
+                        params={"reviewer_user_id": reviewer_id},
+                    )
+                    assert revoked_history.status_code == 403
+                    revoked_history_download = await viewer.get(
+                        f"/api/v1/knowledge-content/attachments/{attachment_id}/download",
+                        params={"reviewer_user_id": reviewer_id},
+                    )
+                    assert revoked_history_download.status_code == 403
+                    published_download = await viewer.get(
+                        f"/api/v1/knowledge-content/attachments/{attachment_id}/download"
+                    )
+                    assert published_download.status_code == 200
+                    async with app.state.session_factory() as session:  # type: ignore[attr-defined]
+                        revoke_events = list(
+                            (
+                                await session.scalars(
+                                    select(AuditEvent).where(
+                                        AuditEvent.event_type
+                                        == "review_history.access_revoked"
+                                    )
+                                )
+                            ).all()
+                        )
+                    assert len(revoke_events) == 1
 
                     mine = await author.get("/api/v1/knowledge-content/submissions/mine")
                     assert mine.status_code == 200

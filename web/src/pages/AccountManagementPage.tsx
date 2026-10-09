@@ -15,7 +15,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import type { User, UserRole } from "../api/types";
+import type { ReviewHistoryPerson, User, UserRole } from "../api/types";
 import { RoleTag, roleLabel } from "../components/role";
 import { showTemporaryPassword } from "../components/TemporaryPasswordModal";
 import { TableActionBar } from "../components/TableActionBar";
@@ -47,6 +47,11 @@ export function AccountManagementPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User>();
+  const [historyAccessUser, setHistoryAccessUser] = useState<User>();
+  const [historyTargets, setHistoryTargets] = useState<ReviewHistoryPerson[]>([]);
+  const [historyAccessIds, setHistoryAccessIds] = useState<string[]>([]);
+  const [initialHistoryAccessIds, setInitialHistoryAccessIds] = useState<string[]>([]);
+  const [historyAccessLoading, setHistoryAccessLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [createForm] = Form.useForm<CreateUserValues>();
   const [editForm] = Form.useForm<UpdateUserValues>();
@@ -121,6 +126,48 @@ export function AccountManagementPage(): JSX.Element {
     }
   };
 
+  const openHistoryAccess = async (user: User): Promise<void> => {
+    setHistoryAccessUser(user);
+    setHistoryAccessLoading(true);
+    try {
+      const [targets, access] = await Promise.all([
+        api.listReviewHistoryTargets(),
+        api.listReviewHistoryAccess(user.id)
+      ]);
+      setHistoryTargets(targets.filter((target) => target.id !== user.id));
+      const accessIds = access.map((item) => item.reviewer.id);
+      setHistoryAccessIds(accessIds);
+      setInitialHistoryAccessIds(accessIds);
+    } catch (reason) {
+      setHistoryAccessUser(undefined);
+      message.error(errorMessage(reason));
+    } finally {
+      setHistoryAccessLoading(false);
+    }
+  };
+
+  const saveHistoryAccess = async (): Promise<void> => {
+    if (!historyAccessUser) {
+      return;
+    }
+    const currentIds = new Set(initialHistoryAccessIds);
+    const addedIds = historyAccessIds.filter((id) => !currentIds.has(id));
+    if (!historyAccessUser.is_active && addedIds.length > 0) {
+      message.error("只能为启用账号新增审核历史查看权限");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.replaceReviewHistoryAccess(historyAccessUser.id, historyAccessIds);
+      setHistoryAccessUser(undefined);
+      message.success("审核历史权限已更新");
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const columns: ColumnsType<User> = [
     { title: "用户名", dataIndex: "username", width: 170, ellipsis: true },
     { title: "显示名称", dataIndex: "display_name", width: 180, ellipsis: true },
@@ -145,11 +192,14 @@ export function AccountManagementPage(): JSX.Element {
     {
       title: "操作",
       key: "actions",
-      width: 190,
+      width: 280,
       fixed: "right",
       ellipsis: true,
       render: (_, user) => (
         <TableActionBar>
+          <Button type="link" onClick={() => void openHistoryAccess(user)}>
+            审核历史权限
+          </Button>
           <Button type="link" onClick={() => openEdit(user)}>
             编辑
           </Button>
@@ -190,9 +240,44 @@ export function AccountManagementPage(): JSX.Element {
         columns={columns}
         dataSource={users}
         loading={loading}
-        scroll={{ x: 920 }}
+        scroll={{ x: 1010 }}
         pagination={{ pageSize: 10, showSizeChanger: false }}
       />
+
+      <Modal
+        title={`审核历史权限${historyAccessUser ? `：${historyAccessUser.display_name}` : ""}`}
+        open={Boolean(historyAccessUser)}
+        onCancel={() => setHistoryAccessUser(undefined)}
+        onOk={() => void saveHistoryAccess()}
+        okButtonProps={{ disabled: historyAccessLoading }}
+        okText="保存授权"
+        confirmLoading={submitting}
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          选择该账号可查看审核历史的审核人。授权后可查看提交内容和附件；撤销后立即失去访问权限。
+        </Typography.Paragraph>
+        {historyAccessUser && !historyAccessUser.is_active ? (
+          <Typography.Paragraph type="warning">
+            该查看者已停用，可撤销已有授权；启用前不能新增授权。
+          </Typography.Paragraph>
+        ) : null}
+        <Select
+          mode="multiple"
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="选择有审核记录的账号"
+          value={historyAccessIds}
+          onChange={setHistoryAccessIds}
+          loading={historyAccessLoading}
+          options={historyTargets.map((target) => ({
+            value: target.id,
+            label: `${target.display_name}（${target.username}）`
+          }))}
+          style={{ width: "100%" }}
+        />
+      </Modal>
 
       <Modal
         title="创建账号"

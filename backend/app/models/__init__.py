@@ -43,6 +43,7 @@ from app.models.knowledge_content import (
     SearchResultKind,
     WebLink,
 )
+from app.models.review_history_access import ReviewHistoryAccess
 from app.models.taxonomy import KnowledgeTaxonomyOption
 from app.models.user_account import UserAccount, UserRole
 
@@ -71,6 +72,7 @@ __all__ = [
     "ParentLexicalRuleType",
     "ParentRevision",
     "ReviewerKnowledgeBase",
+    "ReviewHistoryAccess",
     "ReviewSubmission",
     "ReviewSubmissionKind",
     "ReviewSubmissionStatus",
