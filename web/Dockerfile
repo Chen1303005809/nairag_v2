@@ -14,7 +14,8 @@ ENV VITE_LLM_MAX_CONVERSATION_MESSAGES=${VITE_LLM_MAX_CONVERSATION_MESSAGES} \
     VITE_PRE_AUTH_CSRF_COOKIE_NAME=${VITE_PRE_AUTH_CSRF_COOKIE_NAME}
 
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN nom cache clean --force && \
+    npm ci --no-audit --no-fund
 
 COPY . ./
 RUN npm run build
