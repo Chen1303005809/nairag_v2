@@ -456,10 +456,19 @@ export function ReviewWorkbenchPage({
             </Button>
           ) : null}
           {(systemAdmin || knowledgeBases.some((knowledgeBase) => knowledgeBase.id === item.knowledge_base.id)) &&
-          item.additional_rejection_allowed &&
           item.target_status === "published" &&
           item.review_decision === "approved" ? (
-            <Button danger type="link" onClick={() => setAdditionalRejectionItem(item)}>
+            <Button
+              danger
+              type="link"
+              disabled={!item.additional_rejection_allowed}
+              title={
+                item.additional_rejection_allowed
+                  ? undefined
+                  : "当前记录不是可追加驳回的发布版本，或已有更新待审核。"
+              }
+              onClick={() => setAdditionalRejectionItem(item)}
+            >
               追加驳回
             </Button>
           ) : null}
