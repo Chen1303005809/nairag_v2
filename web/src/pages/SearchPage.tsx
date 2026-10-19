@@ -486,10 +486,10 @@ function SearchAnnotationReviewPanel({
   );
 
   return (
-    <Card size="small" style={{ marginTop: 16 }} title="本次检索标注">
+    <Card size="small" className="search-annotation-review-card" title="本次检索标注">
       <Space direction="vertical" size={10} style={{ width: "100%" }}>
         <Typography.Text type="secondary">
-          以本次检索为一个 Review 提交。点击后请逐条标注；“跳过”会记录为“结果正常”（高分有关或低分无关）。
+          以本次检索为一个 Review 提交。点击悬浮按钮开始逐条标注；“跳过”会记录为“结果正常”（高分有关或低分无关）。
         </Typography.Text>
         {submitted ? (
           <Alert
@@ -498,7 +498,12 @@ function SearchAnnotationReviewPanel({
             message="已记录本次检索标注，提交后不可修改。"
           />
         ) : (
-          <Button type="primary" onClick={() => setOpen(true)}>
+          <Button
+            aria-label={results.length === 0 ? "完成无结果标注" : "开始逐条标注"}
+            className="search-annotation-float-button"
+            type="primary"
+            onClick={() => setOpen(true)}
+          >
             {results.length === 0 ? "完成无结果标注" : "开始逐条标注"}
           </Button>
         )}
@@ -1137,6 +1142,17 @@ export function SearchPage(): JSX.Element {
       </Card>
       {activeTab !== "conversation" && result ? (
         <div style={{ marginTop: 16 }}>
+          <SearchAnnotationReviewPanel
+            key={result.search_interaction_id ?? "missing-search-interaction"}
+            interactionId={result.search_interaction_id}
+            results={visibleResultsForAnnotation(result.groups, result.supplemental_results)}
+            onSubmit={(resultFeedbacks) =>
+              api.submitSearchAnnotationReview(
+                result.search_interaction_id ?? "",
+                resultFeedbacks
+              )
+            }
+          />
           {result.degraded ? (
             <Alert
               type="warning"
@@ -1158,21 +1174,26 @@ export function SearchPage(): JSX.Element {
               <SupplementalResultsView results={result.supplemental_results} />
             </>
           )}
-          <SearchAnnotationReviewPanel
-            key={result.search_interaction_id ?? "missing-search-interaction"}
-            interactionId={result.search_interaction_id}
-            results={visibleResultsForAnnotation(result.groups, result.supplemental_results)}
-            onSubmit={(resultFeedbacks) =>
-              api.submitSearchAnnotationReview(
-                result.search_interaction_id ?? "",
-                resultFeedbacks
-              )
-            }
-          />
         </div>
       ) : null}
       {activeTab === "conversation" && conversationResult ? (
         <div style={{ marginTop: 16 }}>
+          {!conversationResult.no_query_guidance ? (
+            <SearchAnnotationReviewPanel
+              key={conversationResult.search_interaction_id ?? "missing-conversation-interaction"}
+              interactionId={conversationResult.search_interaction_id}
+              results={visibleResultsForAnnotation(
+                conversationResult.groups,
+                conversationResult.supplemental_results
+              )}
+              onSubmit={(resultFeedbacks) =>
+                api.submitSearchAnnotationReview(
+                  conversationResult.search_interaction_id ?? "",
+                  resultFeedbacks
+                )
+              }
+            />
+          ) : null}
           {conversationResult.degraded ? (
             <Alert
               type="warning"
@@ -1206,22 +1227,6 @@ export function SearchPage(): JSX.Element {
               <SupplementalResultsView results={conversationResult.supplemental_results} />
             </>
           )}
-          {!conversationResult.no_query_guidance ? (
-            <SearchAnnotationReviewPanel
-              key={conversationResult.search_interaction_id ?? "missing-conversation-interaction"}
-              interactionId={conversationResult.search_interaction_id}
-              results={visibleResultsForAnnotation(
-                conversationResult.groups,
-                conversationResult.supplemental_results
-              )}
-              onSubmit={(resultFeedbacks) =>
-                api.submitSearchAnnotationReview(
-                  conversationResult.search_interaction_id ?? "",
-                  resultFeedbacks
-                )
-              }
-            />
-          ) : null}
         </div>
       ) : null}
     </section>

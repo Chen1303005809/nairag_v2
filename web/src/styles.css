@@ -63,6 +63,28 @@ body {
   padding: 40px 24px;
 }
 
+.search-annotation-review-card {
+  margin-bottom: 16px;
+}
+
+.search-annotation-float-button {
+  position: fixed !important;
+  top: 50%;
+  right: max(0px, calc((100vw - 1280px) / 2 - 36px));
+  z-index: 900;
+  width: 36px;
+  min-width: 36px;
+  min-height: 132px;
+  height: auto;
+  padding: 12px 8px;
+  border-radius: 8px 0 0 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 16%);
+  transform: translateY(-50%);
+  white-space: nowrap;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+}
+
 .page-heading {
   display: flex;
   align-items: flex-start;
@@ -277,5 +299,21 @@ body {
 
   .content-form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .search-annotation-float-button {
+    top: auto;
+    right: 16px;
+    bottom: 20px;
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    padding: 8px 14px;
+    border-radius: 999px;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+    transform: none;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
   }
 }
