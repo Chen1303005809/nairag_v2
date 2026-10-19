@@ -571,6 +571,19 @@ function SearchAnnotationReviewPanel({
           </Space>
         ) : currentResult ? (
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Alert
+              type="info"
+              showIcon
+              message="建议标注规则（参考默认分数口径，不是硬性标准）"
+              description={
+                <ul style={{ margin: 0, paddingInlineStart: 20 }}>
+                  <li>相关度 ≥ 70%，但结果与查询实际无关：标为“高分无关”。</li>
+                  <li>相关度 ≤ 50%，但结果与查询实际相关：标为“低分有关”。</li>
+                  <li>相关度在 50%～70% 之间时，结合查询和结果内容判断；相关度仅作参考，不单独决定标签。</li>
+                  <li>高分且相关，或低分但无关：选择“跳过（结果正常）”。</li>
+                </ul>
+              }
+            />
             <Typography.Text type="secondary">
               第 {currentIndex + 1} / {results.length} 条。选择标签后会进入下一条；可以返回修改已处理的结果。
             </Typography.Text>
