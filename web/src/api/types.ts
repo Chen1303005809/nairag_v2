@@ -79,6 +79,7 @@ export type ReviewTargetStatus =
   | "pending_review"
   | "approved"
   | "rejected"
+  | "withdrawn"
   | "indexing"
   | "published"
   | "index_failed";
@@ -220,6 +221,8 @@ export interface ReviewQueueItem {
   reviewer: ReviewActor | null;
   review_decision: ReviewDecisionKind | null;
   review_comment: string | null;
+  decision_history: ReviewDecision[];
+  additional_rejection_allowed: boolean;
   parent_revision: ReviewParentRevision | null;
   child_revision: ReviewChildRevision;
   submitted_at: string;
@@ -245,6 +248,7 @@ export interface EditableContentEntry {
   parent_id: string;
   parent_name: string;
   is_primary: boolean;
+  owner: ReviewActor;
   knowledge_bases: AvailableKnowledgeBase[];
   parent_revision: ReviewParentRevision | null;
   child_revision: ReviewChildRevision;
@@ -257,6 +261,7 @@ export interface ReviewDecision {
   decision: ReviewDecisionKind;
   comment: string | null;
   decided_by_user_id: string;
+  reviewer?: ReviewActor | null;
   decided_at: string;
 }
 

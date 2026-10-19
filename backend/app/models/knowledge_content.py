@@ -48,6 +48,7 @@ class ReviewTargetStatus(str, Enum):
     PENDING_REVIEW = "pending_review"
     APPROVED = "approved"
     REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
     INDEXING = "indexing"
     PUBLISHED = "published"
     INDEX_FAILED = "index_failed"
@@ -507,15 +508,16 @@ class ReviewSubmissionTarget(Base):
 
 
 class ReviewDecision(Base):
-    """The immutable decision made for one submission target."""
+    """One immutable decision event recorded for a submission target."""
 
     __tablename__ = "review_decision"
     __mapper_args__ = {"eager_defaults": True}
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "ix_review_decision_target_history",
             "review_submission_id",
             "knowledge_base_id",
-            name="uq_review_decision_submission_target",
+            "decided_at",
         ),
         ForeignKeyConstraint(
             ["review_submission_id", "knowledge_base_id"],
@@ -850,9 +852,7 @@ class SearchResultItem(Base):
     score: Mapped[float] = mapped_column(nullable=False)
     hybrid_score: Mapped[float | None] = mapped_column(nullable=True)
     rerank_score: Mapped[float | None] = mapped_column(nullable=True)
-    selection_stage: Mapped[str] = mapped_column(
-        String(40), nullable=False, default="legacy"
-    )
+    selection_stage: Mapped[str] = mapped_column(String(40), nullable=False, default="legacy")
     helpful_count_at_search: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     result_kind: Mapped[SearchResultKind] = mapped_column(
         SqlEnum(

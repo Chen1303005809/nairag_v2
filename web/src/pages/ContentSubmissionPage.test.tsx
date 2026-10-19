@@ -106,6 +106,7 @@ const editableEntry: EditableContentEntry = {
   parent_id: "parent-1",
   parent_name: "账号登录",
   is_primary: false,
+  owner: { id: "user-1", username: "author", display_name: "上传人" },
   knowledge_bases: [knowledgeBase],
   parent_revision: null,
   child_revision: rejectedSubmission.child_revision!
@@ -358,6 +359,8 @@ describe("ContentSubmissionPage", () => {
     render(<ContentSubmissionPage />);
 
     fireEvent.click(screen.getByRole("tab", { name: "修改已发布内容" }));
+    expect(screen.getByRole("columnheader", { name: /知识创建人/ })).toBeInTheDocument();
+    expect(await screen.findByText("上传人（author）")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "修改并提交审核" }));
 
     const dialog = await screen.findByRole("dialog");

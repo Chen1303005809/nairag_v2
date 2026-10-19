@@ -33,7 +33,10 @@ from app.models.knowledge_content import (
 )
 from app.models.user_account import UserAccount, UserRole
 from app.schemas.knowledge_content import ChildContentInput, ParentContentInput
-from app.services.index_jobs import enqueue_index_jobs_for_submission
+from app.services.index_jobs import (
+    enqueue_clean_publication_job,
+    enqueue_index_jobs_for_submission,
+)
 
 
 class ParentNotFoundError(Exception):
@@ -65,6 +68,10 @@ class PendingSubmissionExistsError(Exception):
 
 
 class ReviewAccessDeniedError(Exception):
+    pass
+
+
+class ContentRevisionAccessDeniedError(Exception):
     pass
 
 
@@ -158,6 +165,8 @@ class ReviewQueueDetails:
     child_web_links: list[WebLink]
     review_decision: ReviewDecision | None = None
     reviewer: UserAccount | None = None
+    decision_history: list[tuple[ReviewDecision, UserAccount]] = field(default_factory=list)
+    additional_rejection_allowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,6 +188,7 @@ class ManagedKnowledgeDetails:
 @dataclass(frozen=True)
 class EditableContentDetails:
     child: Child
+    owner: UserAccount
     parent_name: str
     parent_revision: ParentRevision | None
     parent_lexical_rules: list[ParentLexicalRule]
@@ -731,8 +741,16 @@ async def submit_parent_aggregate_revision(
     parent_content: ParentContentInput,
     primary_child_content: ChildContentInput,
     submitted_by_user_id: UUID,
+    actor_role: UserRole = UserRole.NORMAL_USER,
 ) -> SubmissionDetails:
     parent_details = await get_available_parent_details(session, parent_id, lock=True)
+    await _assert_revision_access(
+        session,
+        actor_user_id=submitted_by_user_id,
+        actor_role=actor_role,
+        owner_user_id=parent_details.parent.created_by_user_id,
+        knowledge_base_ids=[kb.id for kb in parent_details.knowledge_bases],
+    )
     await _assert_no_open_parent_aggregate_submission(session, parent_details.parent.id)
     knowledge_base_ids = [knowledge_base.id for knowledge_base in parent_details.knowledge_bases]
     publications = await _locked_publications(
@@ -783,6 +801,8 @@ async def submit_child_revision(
     child_content: ChildContentInput,
     knowledge_base_ids: list[UUID],
     submitted_by_user_id: UUID,
+    actor_role: UserRole = UserRole.NORMAL_USER,
+    resubmission_authorized: bool = False,
 ) -> SubmissionDetails:
     child = await session.scalar(select(Child).where(Child.id == child_id).with_for_update())
     if child is None:
@@ -805,6 +825,28 @@ async def submit_child_revision(
         for publication in publications.values()
     ):
         raise TargetKnowledgeBaseNotAllowedError()
+
+    published_knowledge_base_ids = [
+        knowledge_base_id
+        for knowledge_base_id, publication in publications.items()
+        if publication.status == ChildPublicationStatus.PUBLISHED
+    ]
+    if not resubmission_authorized:
+        await _assert_revision_access(
+            session,
+            actor_user_id=submitted_by_user_id,
+            actor_role=actor_role,
+            owner_user_id=child.created_by_user_id,
+            knowledge_base_ids=published_knowledge_base_ids,
+        )
+    if actor_role == UserRole.REVIEW_ADMIN and not resubmission_authorized:
+        for knowledge_base_id in knowledge_base_ids:
+            await _assert_review_access(
+                session,
+                actor_user_id=submitted_by_user_id,
+                actor_role=actor_role,
+                knowledge_base_id=knowledge_base_id,
+            )
 
     child_revision = await _create_child_revision(
         session,
@@ -967,6 +1009,7 @@ async def resubmit_rejected_child(
         child_content=child_content,
         knowledge_base_ids=knowledge_base_ids,
         submitted_by_user_id=submitted_by_user_id,
+        resubmission_authorized=True,
     )
 
 
@@ -1043,6 +1086,12 @@ async def list_submissions_by_author(
             select(ReviewDecision, reviewer)
             .join(reviewer, reviewer.id == ReviewDecision.decided_by_user_id)
             .where(ReviewDecision.review_submission_id.in_(submission_ids))
+            .order_by(
+                ReviewDecision.review_submission_id,
+                ReviewDecision.knowledge_base_id,
+                ReviewDecision.decided_at,
+                ReviewDecision.id,
+            )
         )
     ).all()
     reviews_by_target = {
@@ -1227,8 +1276,11 @@ async def list_managed_knowledge_entries(
 
 async def list_editable_content_entries(
     session: AsyncSession,
+    *,
+    actor_user_id: UUID,
+    actor_role: UserRole,
 ) -> list[EditableContentDetails]:
-    """Group published content into the exact revisions that users can revise."""
+    """Return only published revisions the current actor is allowed to revise."""
 
     managed_entries = [
         entry
@@ -1241,6 +1293,45 @@ async def list_editable_content_entries(
             (entry.child.id, entry.child_revision.id),
             [],
         ).append(entry)
+
+    parent_ids = {entry.child.parent_id for entry in managed_entries}
+    parent_owner_rows = (
+        await session.execute(
+            select(Parent.id, Parent.created_by_user_id).where(Parent.id.in_(parent_ids))
+        )
+        if parent_ids
+        else []
+    )
+    parent_owner_ids = {parent_id: owner_id for parent_id, owner_id in parent_owner_rows}
+    owner_ids = {
+        (
+            parent_owner_ids.get(entries[0].child.parent_id)
+            if entries[0].child.is_primary
+            else entries[0].child.created_by_user_id
+        )
+        for entries in grouped_entries.values()
+    }
+    owner_accounts = (
+        {
+            user.id: user
+            for user in (
+                await session.scalars(select(UserAccount).where(UserAccount.id.in_(owner_ids)))
+            ).all()
+        }
+        if owner_ids
+        else {}
+    )
+    assigned_knowledge_base_ids: set[UUID] = set()
+    if actor_role == UserRole.REVIEW_ADMIN:
+        assigned_knowledge_base_ids = set(
+            (
+                await session.scalars(
+                    select(ReviewerKnowledgeBase.knowledge_base_id).where(
+                        ReviewerKnowledgeBase.reviewer_user_id == actor_user_id
+                    )
+                )
+            ).all()
+        )
 
     primary_parent_revision_ids = {
         entry.parent_revision.id
@@ -1261,10 +1352,30 @@ async def list_editable_content_entries(
     editable_entries: list[EditableContentDetails] = []
     for entries in grouped_entries.values():
         first = entries[0]
+        owner_id = (
+            parent_owner_ids.get(first.child.parent_id)
+            if first.child.is_primary
+            else first.child.created_by_user_id
+        )
+        owner = owner_accounts.get(owner_id)
+        if owner is None:
+            continue
+        if actor_role == UserRole.NORMAL_USER and owner_id != actor_user_id:
+            continue
+        if actor_role == UserRole.REVIEW_ADMIN and not any(
+            entry.knowledge_base.id in assigned_knowledge_base_ids for entry in entries
+        ):
+            continue
+        editable_targets = entries
+        if actor_role == UserRole.REVIEW_ADMIN and not first.child.is_primary:
+            editable_targets = [
+                entry for entry in entries if entry.knowledge_base.id in assigned_knowledge_base_ids
+            ]
         parent_revision = first.parent_revision if first.child.is_primary else None
         editable_entries.append(
             EditableContentDetails(
                 child=first.child,
+                owner=owner,
                 parent_name=first.parent_name,
                 parent_revision=parent_revision,
                 parent_lexical_rules=(
@@ -1276,7 +1387,7 @@ async def list_editable_content_entries(
                 child_question_variants=first.child_question_variants,
                 child_attachments=first.child_attachments,
                 child_web_links=first.child_web_links,
-                knowledge_bases=[entry.knowledge_base for entry in entries],
+                knowledge_bases=[entry.knowledge_base for entry in editable_targets],
             )
         )
     return sorted(
@@ -1303,6 +1414,34 @@ async def _reviewer_has_knowledge_base_access(
         )
     )
     return assignment is not None
+
+
+async def _assert_revision_access(
+    session: AsyncSession,
+    *,
+    actor_user_id: UUID,
+    actor_role: UserRole,
+    owner_user_id: UUID,
+    knowledge_base_ids: list[UUID],
+) -> None:
+    if actor_role == UserRole.SYSTEM_ADMIN:
+        return
+    if actor_role == UserRole.NORMAL_USER:
+        if actor_user_id != owner_user_id:
+            raise ContentRevisionAccessDeniedError(owner_user_id)
+        return
+    if actor_role == UserRole.REVIEW_ADMIN and knowledge_base_ids:
+        has_assignment = await session.scalar(
+            select(ReviewerKnowledgeBase.knowledge_base_id)
+            .where(
+                ReviewerKnowledgeBase.reviewer_user_id == actor_user_id,
+                ReviewerKnowledgeBase.knowledge_base_id.in_(knowledge_base_ids),
+            )
+            .limit(1)
+        )
+        if has_assignment is not None:
+            return
+    raise ContentRevisionAccessDeniedError(owner_user_id)
 
 
 async def _assert_review_access(
@@ -1438,6 +1577,16 @@ async def list_review_history(
 
     submitter_account = aliased(UserAccount)
     reviewer_account = aliased(UserAccount)
+    subject_decision = aliased(ReviewDecision)
+    subject_has_decision = (
+        select(subject_decision.id)
+        .where(
+            subject_decision.review_submission_id == ReviewDecision.review_submission_id,
+            subject_decision.knowledge_base_id == ReviewDecision.knowledge_base_id,
+            subject_decision.decided_by_user_id == reviewer_user_id,
+        )
+        .exists()
+    )
     statement = (
         select(
             ReviewDecision,
@@ -1463,12 +1612,23 @@ async def list_review_history(
         .join(reviewer_account, reviewer_account.id == ReviewDecision.decided_by_user_id)
         .outerjoin(ParentRevision, ParentRevision.id == ReviewSubmission.parent_revision_id)
         .join(ChildRevision, ChildRevision.id == ReviewSubmission.child_revision_id)
-        .where(ReviewDecision.decided_by_user_id == reviewer_user_id)
-        .order_by(ReviewDecision.decided_at.desc(), ReviewDecision.id.desc())
+        .where(subject_has_decision)
+        .order_by(
+            ReviewDecision.review_submission_id,
+            ReviewDecision.knowledge_base_id,
+            ReviewDecision.decided_at,
+            ReviewDecision.id,
+        )
     )
     rows = (await session.execute(statement)).all()
     if not rows:
         return []
+
+    grouped_rows: dict[tuple[UUID, UUID], list[tuple]] = {}
+    for row in rows:
+        grouped_rows.setdefault((row[0].review_submission_id, row[0].knowledge_base_id), []).append(
+            row
+        )
 
     parent_revision_ids = {
         parent_revision.id
@@ -1523,34 +1683,97 @@ async def list_review_history(
         child_revision_ids,
     )
 
-    return [
-        ReviewQueueDetails(
-            submission=submission,
-            target=target,
-            knowledge_base=knowledge_base,
-            submitter=submitter,
-            parent_revision=parent_revision,
-            parent_lexical_rules=(
-                rules_by_revision.get(parent_revision.id, []) if parent_revision is not None else []
-            ),
-            child_revision=child_revision,
-            child_question_variants=variants_by_revision.get(child_revision.id, []),
-            child_attachments=attachments_by_revision.get(child_revision.id, []),
-            child_web_links=web_links_by_revision.get(child_revision.id, []),
-            review_decision=decision,
-            reviewer=reviewer,
-        )
-        for (
-            decision,
+    history: list[ReviewQueueDetails] = []
+    for target_rows in grouped_rows.values():
+        (
+            _first_decision,
             target,
             submission,
             knowledge_base,
             submitter,
-            reviewer,
+            _first_reviewer,
             parent_revision,
             child_revision,
-        ) in rows
-    ]
+        ) = target_rows[0]
+        decision_events = [(row[0], row[5]) for row in target_rows]
+        latest_decision, latest_reviewer = decision_events[-1]
+
+        additional_rejection_allowed = (
+            target.status == ReviewTargetStatus.PUBLISHED
+            and latest_decision.decision == ReviewDecisionKind.APPROVED
+        )
+        if additional_rejection_allowed:
+            if submission.submission_kind == ReviewSubmissionKind.PARENT_WITH_PRIMARY:
+                related_targets = list(
+                    (
+                        await session.scalars(
+                            select(ReviewSubmissionTarget).where(
+                                ReviewSubmissionTarget.review_submission_id == submission.id
+                            )
+                        )
+                    ).all()
+                )
+            else:
+                related_targets = [target]
+            related_knowledge_base_ids = [item.knowledge_base_id for item in related_targets]
+            publications = list(
+                (
+                    await session.scalars(
+                        select(ChildKnowledgeBasePublication).where(
+                            ChildKnowledgeBasePublication.child_id == submission.child_id,
+                            ChildKnowledgeBasePublication.knowledge_base_id.in_(
+                                related_knowledge_base_ids
+                            ),
+                        )
+                    )
+                ).all()
+            )
+            publication_by_knowledge_base = {
+                publication.knowledge_base_id: publication for publication in publications
+            }
+            additional_rejection_allowed = (
+                len(publication_by_knowledge_base) == len(related_targets)
+                and all(item.status == ReviewTargetStatus.PUBLISHED for item in related_targets)
+                and all(
+                    (publication := publication_by_knowledge_base.get(item.knowledge_base_id))
+                    is not None
+                    and publication.status == ChildPublicationStatus.PUBLISHED
+                    and publication.active_revision_id == submission.child_revision_id
+                    and publication.pending_submission_id is None
+                    for item in related_targets
+                )
+            )
+
+        history.append(
+            ReviewQueueDetails(
+                submission=submission,
+                target=target,
+                knowledge_base=knowledge_base,
+                submitter=submitter,
+                parent_revision=parent_revision,
+                parent_lexical_rules=(
+                    rules_by_revision.get(parent_revision.id, [])
+                    if parent_revision is not None
+                    else []
+                ),
+                child_revision=child_revision,
+                child_question_variants=variants_by_revision.get(child_revision.id, []),
+                child_attachments=attachments_by_revision.get(child_revision.id, []),
+                child_web_links=web_links_by_revision.get(child_revision.id, []),
+                review_decision=latest_decision,
+                reviewer=latest_reviewer,
+                decision_history=decision_events,
+                additional_rejection_allowed=additional_rejection_allowed,
+            )
+        )
+    return sorted(
+        history,
+        key=lambda item: (
+            item.review_decision.decided_at if item.review_decision is not None else datetime.min,
+            str(item.review_decision.id) if item.review_decision is not None else "",
+        ),
+        reverse=True,
+    )
 
 
 async def _get_locked_review_target(
@@ -1749,6 +1972,111 @@ async def decide_review_target(
             review_submission_id=submission.id,
         )
     return review_decision
+
+
+async def append_review_rejection(
+    session: AsyncSession,
+    *,
+    review_submission_id: UUID,
+    knowledge_base_id: UUID,
+    actor_user_id: UUID,
+    actor_role: UserRole,
+    comment: str | None,
+) -> ReviewDecision:
+    """Append a rejection event and withdraw the currently published revision."""
+
+    await _assert_review_access(
+        session,
+        actor_user_id=actor_user_id,
+        actor_role=actor_role,
+        knowledge_base_id=knowledge_base_id,
+    )
+    target, submission = await _get_locked_review_target(
+        session,
+        review_submission_id=review_submission_id,
+        knowledge_base_id=knowledge_base_id,
+    )
+    latest_decision = await session.scalar(
+        select(ReviewDecision)
+        .where(
+            ReviewDecision.review_submission_id == review_submission_id,
+            ReviewDecision.knowledge_base_id == knowledge_base_id,
+        )
+        .order_by(ReviewDecision.decided_at.desc(), ReviewDecision.id.desc())
+        .limit(1)
+    )
+    if (
+        latest_decision is None
+        or latest_decision.decision != ReviewDecisionKind.APPROVED
+        or target.status != ReviewTargetStatus.PUBLISHED
+        or submission.child_revision_id is None
+    ):
+        raise ReviewTargetStateError(target.status)
+
+    if submission.submission_kind == ReviewSubmissionKind.PARENT_WITH_PRIMARY:
+        affected_targets = await _locked_submission_targets(session, submission.id)
+        if any(item.status != ReviewTargetStatus.PUBLISHED for item in affected_targets):
+            raise ReviewTargetStateError(submission.status)
+    else:
+        affected_targets = [target]
+
+    affected_knowledge_base_ids = [item.knowledge_base_id for item in affected_targets]
+    publications = list(
+        (
+            await session.scalars(
+                select(ChildKnowledgeBasePublication)
+                .where(
+                    ChildKnowledgeBasePublication.child_id == submission.child_id,
+                    ChildKnowledgeBasePublication.knowledge_base_id.in_(
+                        affected_knowledge_base_ids
+                    ),
+                )
+                .order_by(ChildKnowledgeBasePublication.knowledge_base_id)
+                .with_for_update()
+            )
+        ).all()
+    )
+    publications_by_knowledge_base = {
+        publication.knowledge_base_id: publication for publication in publications
+    }
+    if len(publications_by_knowledge_base) != len(affected_targets):
+        raise ReviewPublicationNotFoundError(submission.child_id, knowledge_base_id)
+    if any(
+        (publication := publications_by_knowledge_base[item.knowledge_base_id]).status
+        != ChildPublicationStatus.PUBLISHED
+        or publication.active_revision_id != submission.child_revision_id
+        or publication.pending_submission_id is not None
+        for item in affected_targets
+    ):
+        raise ReviewTargetStateError(target.status)
+
+    rejection = ReviewDecision(
+        review_submission_id=review_submission_id,
+        knowledge_base_id=knowledge_base_id,
+        decision=ReviewDecisionKind.REJECTED,
+        comment=comment,
+        decided_by_user_id=actor_user_id,
+        decided_at=datetime.now(UTC),
+    )
+    session.add(rejection)
+    target.status = ReviewTargetStatus.REJECTED
+    for affected_target in affected_targets:
+        publication = publications_by_knowledge_base[affected_target.knowledge_base_id]
+        publication.status = ChildPublicationStatus.PENDING
+        publication.active_revision_id = None
+        publication.pending_submission_id = None
+        if affected_target.knowledge_base_id != knowledge_base_id:
+            affected_target.status = ReviewTargetStatus.WITHDRAWN
+        await enqueue_clean_publication_job(
+            session,
+            child_id=submission.child_id,
+            child_revision_id=submission.child_revision_id,
+            knowledge_base_id=affected_target.knowledge_base_id,
+        )
+
+    submission.status = ReviewSubmissionStatus.REJECTED
+    await session.flush()
+    return rejection
 
 
 async def publish_approved_target(

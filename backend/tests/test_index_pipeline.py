@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import app.models  # noqa: F401  # Register model metadata.
 from app.core.config import Settings
 from app.db.base import Base
-from app.models.knowledge_base import KnowledgeBase
+from app.models.knowledge_base import KnowledgeBase, ReviewerKnowledgeBase
 from app.models.knowledge_content import (
     Child,
     ChildKnowledgeBasePublication,
@@ -26,6 +26,8 @@ from app.models.knowledge_content import (
     IndexJobStatus,
     Parent,
     ParentRevision,
+    ReviewDecision,
+    ReviewDecisionKind,
     ReviewSubmission,
     ReviewSubmissionKind,
     ReviewSubmissionStatus,
@@ -51,6 +53,11 @@ from app.services.index_backend import (
     stable_source_item_id,
 )
 from app.services.index_jobs import claim_next_index_job, run_next_index_job
+from app.services.knowledge_content import (
+    ReviewTargetStateError,
+    append_review_rejection,
+    list_review_history,
+)
 from app.services.retrieval import (
     IndexQuery,
     LocalArtifactSearchBackend,
@@ -135,9 +142,7 @@ async def create_index_graph(
 
     submission = ReviewSubmission(
         submission_kind=(
-            ReviewSubmissionKind.PARENT_WITH_PRIMARY
-            if parent_kind
-            else ReviewSubmissionKind.CHILD
+            ReviewSubmissionKind.PARENT_WITH_PRIMARY if parent_kind else ReviewSubmissionKind.CHILD
         ),
         status=ReviewSubmissionStatus.PENDING_REVIEW,
         parent_id=parent.id,
@@ -183,6 +188,43 @@ async def create_index_graph(
     return child_revision, submission, knowledge_bases, jobs
 
 
+async def mark_graph_published(
+    session: AsyncSession,
+    *,
+    submission: ReviewSubmission,
+    revision: ChildRevision,
+    knowledge_bases: list[KnowledgeBase],
+) -> UserAccount:
+    author = await session.get(UserAccount, submission.submitted_by_user_id)
+    assert author is not None
+    for knowledge_base in knowledge_bases:
+        target = await session.get(
+            ReviewSubmissionTarget,
+            (submission.id, knowledge_base.id),
+        )
+        publication = await session.get(
+            ChildKnowledgeBasePublication,
+            (submission.child_id, knowledge_base.id),
+        )
+        assert target is not None and publication is not None
+        target.status = ReviewTargetStatus.PUBLISHED
+        publication.status = ChildPublicationStatus.PUBLISHED
+        publication.active_revision_id = revision.id
+        publication.pending_submission_id = None
+        session.add(
+            ReviewDecision(
+                review_submission_id=submission.id,
+                knowledge_base_id=knowledge_base.id,
+                decision=ReviewDecisionKind.APPROVED,
+                comment="原审核通过",
+                decided_by_user_id=author.id,
+            )
+        )
+    submission.status = ReviewSubmissionStatus.PUBLISHED
+    await session.flush()
+    return author
+
+
 def test_deterministic_vector_and_source_id_are_stable() -> None:
     revision_id = uuid4()
     first = stable_source_item_id(
@@ -224,8 +266,9 @@ async def test_long_response_chunks_overlap_and_artifact_is_rebuildable(tmp_path
                 item for item in fragments if item.field_type == "response_content"
             ]
             assert len(response_fragments) > 1
-            assert response_fragments[0].field_text[-RESPONSE_CHUNK_OVERLAP:] == (
-                response_fragments[1].field_text[:RESPONSE_CHUNK_OVERLAP]
+            assert (
+                response_fragments[0].field_text[-RESPONSE_CHUNK_OVERLAP:]
+                == (response_fragments[1].field_text[:RESPONSE_CHUNK_OVERLAP])
             )
             assert all(len(item.dense_vector) == VECTOR_DIMENSION for item in fragments)
 
@@ -240,6 +283,42 @@ async def test_long_response_chunks_overlap_and_artifact_is_rebuildable(tmp_path
             assert not list(artifact_path.parent.glob("*.tmp"))
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_revision_scoped_cleanup_preserves_a_later_child_revision_artifact(
+    tmp_path: Path,
+) -> None:
+    knowledge_base_id = uuid4()
+    child_id = uuid4()
+    rejected_revision_id = uuid4()
+    later_revision_id = uuid4()
+    artifact_dir = tmp_path / "artifacts"
+    knowledge_base_dir = artifact_dir / str(knowledge_base_id)
+    knowledge_base_dir.mkdir(parents=True)
+    rejected_artifact = knowledge_base_dir / f"{rejected_revision_id}.json"
+    later_artifact = knowledge_base_dir / f"{later_revision_id}.json"
+    rejected_artifact.write_text(
+        json.dumps({"child_id": str(child_id), "child_revision_id": str(rejected_revision_id)}),
+        encoding="utf-8",
+    )
+    later_artifact.write_text(
+        json.dumps({"child_id": str(child_id), "child_revision_id": str(later_revision_id)}),
+        encoding="utf-8",
+    )
+    job = IndexJob(
+        job_kind=IndexJobKind.CLEAN_PUBLICATION,
+        status=IndexJobStatus.PENDING,
+        idempotency_key=f"clean:{child_id}:{rejected_revision_id}",
+        knowledge_base_id=knowledge_base_id,
+        child_id=child_id,
+        child_revision_id=rejected_revision_id,
+    )
+
+    await LocalArtifactIndexBackend(artifact_dir).clean_publication(None, job)
+
+    assert not rejected_artifact.exists()
+    assert later_artifact.exists()
 
 
 class FailingBackend:
@@ -358,6 +437,257 @@ async def test_parent_publishes_only_after_last_target_index_succeeds(tmp_path: 
             assert {item.knowledge_base_id for item in publications} == {
                 item.id for item in knowledge_bases
             }
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_append_rejection_is_an_immutable_target_event_and_cleans_one_child_target(
+    tmp_path: Path,
+) -> None:
+    factory, engine = await build_index_db(tmp_path)
+    try:
+        async with factory() as session:
+            revision, submission, knowledge_bases, _jobs = await create_index_graph(
+                session,
+                target_count=2,
+            )
+            author = await mark_graph_published(
+                session,
+                submission=submission,
+                revision=revision,
+                knowledge_bases=knowledge_bases,
+            )
+            reviewer = UserAccount(
+                username=f"r-{uuid4().hex[:12]}",
+                display_name="审核管理员",
+                password_hash="x" * 32,
+                role=UserRole.REVIEW_ADMIN,
+                must_change_password=False,
+            )
+            session.add(reviewer)
+            await session.flush()
+            session.add(
+                ReviewerKnowledgeBase(
+                    reviewer_user_id=reviewer.id,
+                    knowledge_base_id=knowledge_bases[0].id,
+                    assigned_by_user_id=author.id,
+                )
+            )
+
+            selected_publication = await session.get(
+                ChildKnowledgeBasePublication,
+                (submission.child_id, knowledge_bases[0].id),
+            )
+            assert selected_publication is not None
+            current_revision = ChildRevision(
+                child_id=submission.child_id,
+                revision_number=2,
+                question="新版问题？",
+                response_content="新版回答。",
+                created_by_user_id=author.id,
+            )
+            session.add(current_revision)
+            await session.flush()
+            selected_publication.active_revision_id = current_revision.id
+            with pytest.raises(ReviewTargetStateError):
+                await append_review_rejection(
+                    session,
+                    review_submission_id=submission.id,
+                    knowledge_base_id=knowledge_bases[0].id,
+                    actor_user_id=reviewer.id,
+                    actor_role=UserRole.REVIEW_ADMIN,
+                    comment="版本已更新",
+                )
+            selected_publication.active_revision_id = revision.id
+
+            newer_submission = ReviewSubmission(
+                submission_kind=ReviewSubmissionKind.CHILD,
+                status=ReviewSubmissionStatus.PENDING_REVIEW,
+                parent_id=submission.parent_id,
+                parent_revision_id=None,
+                child_id=submission.child_id,
+                child_revision_id=current_revision.id,
+                submitted_by_user_id=author.id,
+            )
+            session.add(newer_submission)
+            await session.flush()
+            selected_publication.pending_submission_id = newer_submission.id
+            with pytest.raises(ReviewTargetStateError):
+                await append_review_rejection(
+                    session,
+                    review_submission_id=submission.id,
+                    knowledge_base_id=knowledge_bases[0].id,
+                    actor_user_id=reviewer.id,
+                    actor_role=UserRole.REVIEW_ADMIN,
+                    comment="已有更新待审",
+                )
+            selected_publication.pending_submission_id = None
+
+            rejection = await append_review_rejection(
+                session,
+                review_submission_id=submission.id,
+                knowledge_base_id=knowledge_bases[0].id,
+                actor_user_id=reviewer.id,
+                actor_role=UserRole.REVIEW_ADMIN,
+                comment="需要撤下",
+            )
+            assert rejection.decision == ReviewDecisionKind.REJECTED
+            decisions = list(
+                (
+                    await session.scalars(
+                        select(ReviewDecision).where(
+                            ReviewDecision.review_submission_id == submission.id,
+                            ReviewDecision.knowledge_base_id == knowledge_bases[0].id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(decisions) == 2
+            selected_target = await session.get(
+                ReviewSubmissionTarget,
+                (submission.id, knowledge_bases[0].id),
+            )
+            unaffected_target = await session.get(
+                ReviewSubmissionTarget,
+                (submission.id, knowledge_bases[1].id),
+            )
+            unaffected_publication = await session.get(
+                ChildKnowledgeBasePublication,
+                (submission.child_id, knowledge_bases[1].id),
+            )
+            assert selected_target is not None
+            assert selected_target.status == ReviewTargetStatus.REJECTED
+            assert unaffected_target is not None
+            assert unaffected_target.status == ReviewTargetStatus.PUBLISHED
+            assert unaffected_publication is not None
+            assert unaffected_publication.status == ChildPublicationStatus.PUBLISHED
+            assert unaffected_publication.active_revision_id == revision.id
+
+            cleanup_job = await session.scalar(
+                select(IndexJob).where(
+                    IndexJob.job_kind == IndexJobKind.CLEAN_PUBLICATION,
+                    IndexJob.knowledge_base_id == knowledge_bases[0].id,
+                )
+            )
+            assert cleanup_job is not None
+            assert cleanup_job.child_revision_id == revision.id
+
+            reviewer_history = await list_review_history(
+                session,
+                reviewer_user_id=reviewer.id,
+            )
+            assert len(reviewer_history) == 1
+            history_item = reviewer_history[0]
+            assert history_item.review_decision is not None
+            assert history_item.review_decision.decision == ReviewDecisionKind.REJECTED
+            assert [decision.decision for decision, _actor in history_item.decision_history] == [
+                ReviewDecisionKind.APPROVED,
+                ReviewDecisionKind.REJECTED,
+            ]
+            assert not history_item.additional_rejection_allowed
+            with pytest.raises(ReviewTargetStateError):
+                await append_review_rejection(
+                    session,
+                    review_submission_id=submission.id,
+                    knowledge_base_id=knowledge_bases[0].id,
+                    actor_user_id=reviewer.id,
+                    actor_role=UserRole.REVIEW_ADMIN,
+                    comment="重复驳回",
+                )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_parent_append_rejection_withdraws_all_targets_without_fake_decisions(
+    tmp_path: Path,
+) -> None:
+    factory, engine = await build_index_db(tmp_path)
+    try:
+        async with factory() as session:
+            revision, submission, knowledge_bases, _jobs = await create_index_graph(
+                session,
+                target_count=2,
+                parent_kind=True,
+            )
+            author = await mark_graph_published(
+                session,
+                submission=submission,
+                revision=revision,
+                knowledge_bases=knowledge_bases,
+            )
+            reviewer = UserAccount(
+                username=f"r-{uuid4().hex[:12]}",
+                display_name="审核管理员",
+                password_hash="x" * 32,
+                role=UserRole.REVIEW_ADMIN,
+                must_change_password=False,
+            )
+            session.add(reviewer)
+            await session.flush()
+            session.add(
+                ReviewerKnowledgeBase(
+                    reviewer_user_id=reviewer.id,
+                    knowledge_base_id=knowledge_bases[0].id,
+                    assigned_by_user_id=author.id,
+                )
+            )
+
+            await append_review_rejection(
+                session,
+                review_submission_id=submission.id,
+                knowledge_base_id=knowledge_bases[0].id,
+                actor_user_id=reviewer.id,
+                actor_role=UserRole.REVIEW_ADMIN,
+                comment="整体内容需要重审",
+            )
+
+            selected_target = await session.get(
+                ReviewSubmissionTarget,
+                (submission.id, knowledge_bases[0].id),
+            )
+            withdrawn_target = await session.get(
+                ReviewSubmissionTarget,
+                (submission.id, knowledge_bases[1].id),
+            )
+            assert selected_target is not None
+            assert selected_target.status == ReviewTargetStatus.REJECTED
+            assert withdrawn_target is not None
+            assert withdrawn_target.status == ReviewTargetStatus.WITHDRAWN
+            for knowledge_base in knowledge_bases:
+                publication = await session.get(
+                    ChildKnowledgeBasePublication,
+                    (submission.child_id, knowledge_base.id),
+                )
+                assert publication is not None
+                assert publication.status == ChildPublicationStatus.PENDING
+                assert publication.active_revision_id is None
+            sibling_decisions = list(
+                (
+                    await session.scalars(
+                        select(ReviewDecision).where(
+                            ReviewDecision.review_submission_id == submission.id,
+                            ReviewDecision.knowledge_base_id == knowledge_bases[1].id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(sibling_decisions) == 1
+            cleanup_jobs = list(
+                (
+                    await session.scalars(
+                        select(IndexJob).where(
+                            IndexJob.job_kind == IndexJobKind.CLEAN_PUBLICATION,
+                            IndexJob.child_id == submission.child_id,
+                        )
+                    )
+                ).all()
+            )
+            assert {job.knowledge_base_id for job in cleanup_jobs} == {
+                knowledge_base.id for knowledge_base in knowledge_bases
+            }
+            assert {job.child_revision_id for job in cleanup_jobs} == {revision.id}
     finally:
         await engine.dispose()
 
@@ -602,8 +932,7 @@ async def test_milvus_backend_upserts_current_collection_with_stable_rows(tmp_pa
             )
             await backend.index_target(session, jobs[0])
             assert (
-                captured["collection_name"]
-                == knowledge_bases[0].current_physical_collection_name
+                captured["collection_name"] == knowledge_bases[0].current_physical_collection_name
             )
             assert (
                 captured["ensured_collection_name"]
@@ -802,14 +1131,18 @@ async def test_milvus_client_hybrid_searcher_loads_and_searches_one_query_at_a_t
     assert len(client.calls) == 2
     assert all(len(call["reqs"]) == 2 for call in client.calls)
     assert all(call["limit"] == 2 for call in client.calls)
-    assert all(call["output_fields"] == [
-        "source_item_id",
-        "child_id",
-        "child_revision_id",
-        "field_type",
-        "field_text",
-        "embedding_model",
-    ] for call in client.calls)
+    assert all(
+        call["output_fields"]
+        == [
+            "source_item_id",
+            "child_id",
+            "child_revision_id",
+            "field_type",
+            "field_text",
+            "embedding_model",
+        ]
+        for call in client.calls
+    )
     assert [request.data for request in client.calls[0]["reqs"]] == [[[0.1]], ["账号"]]
     assert [request.data for request in client.calls[1]["reqs"]] == [[[0.2]], ["登录"]]
     assert all(

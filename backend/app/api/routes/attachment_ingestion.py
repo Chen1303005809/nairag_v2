@@ -52,6 +52,7 @@ from app.services.attachments import AttachmentValidationError, validate_attachm
 from app.services.knowledge_content import (
     AttachmentNotAllowedError,
     AttachmentNotFoundError,
+    ContentRevisionAccessDeniedError,
     ParentNotAvailableError,
     ParentNotFoundError,
     PendingSubmissionExistsError,
@@ -105,6 +106,8 @@ def as_attachment_import_batch_detail_response(
 
 
 def _as_http_error(error: Exception) -> HTTPException:
+    if isinstance(error, ContentRevisionAccessDeniedError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修订该知识内容")
     if isinstance(error, AttachmentImportNotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="附件解析批次不存在")
     if isinstance(error, AttachmentImportExpiredError):
@@ -296,8 +299,10 @@ async def confirm_my_attachment_import(
             owner_user_id=user.user.id,
             batch_id=batch_id,
             request=body,
+            actor_role=user.user.role,
         )
     except (
+        ContentRevisionAccessDeniedError,
         AttachmentImportNotFoundError,
         AttachmentImportStateError,
         AttachmentImportConfirmationError,

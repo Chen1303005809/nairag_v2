@@ -244,8 +244,7 @@ async def build_index_fragments(
     )
     fragment_inputs: list[tuple[str, str, int]] = [("question", revision.question, 0)]
     fragment_inputs.extend(
-        ("question_variant", variant.question_text, index)
-        for index, variant in enumerate(variants)
+        ("question_variant", variant.question_text, index) for index, variant in enumerate(variants)
     )
     fragment_inputs.extend(
         ("response_content", chunk, index)
@@ -313,9 +312,7 @@ class LocalArtifactIndexBackend:
             "fragments": [asdict(fragment) for fragment in fragments],
         }
         destination = (
-            self.artifact_dir
-            / str(job.knowledge_base_id)
-            / f"{job.child_revision_id}.json"
+            self.artifact_dir / str(job.knowledge_base_id) / f"{job.child_revision_id}.json"
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary_path: Path | None = None
@@ -352,29 +349,29 @@ class LocalArtifactIndexBackend:
                 # A malformed artifact is not proof that it belongs to this
                 # publication, so leave it intact for diagnostics.
                 continue
-            if payload.get("child_id") == str(job.child_id):
+            if payload.get("child_id") == str(job.child_id) and (
+                job.child_revision_id is None
+                or payload.get("child_revision_id") == str(job.child_revision_id)
+            ):
                 artifact_path.unlink(missing_ok=True)
 
 
 class MilvusWriter(Protocol):
-    async def ensure_collection(self, *, collection_name: str) -> None:
-        ...
+    async def ensure_collection(self, *, collection_name: str) -> None: ...
 
     async def upsert(
         self,
         *,
         collection_name: str,
         rows: Sequence[dict[str, object]],
-    ) -> None:
-        ...
+    ) -> None: ...
 
     async def delete(
         self,
         *,
         collection_name: str,
         filter_expression: str,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 class MilvusHttpWriter:
@@ -534,11 +531,7 @@ class MilvusIndexBackend:
         self.embedding_provider = embedding_provider
 
     async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
-        if (
-            job.child_revision_id is None
-            or job.knowledge_base_id is None
-            or job.child_id is None
-        ):
+        if job.child_revision_id is None or job.knowledge_base_id is None or job.child_id is None:
             raise ValueError("index job is missing target fields")
         knowledge_base = await session.get(KnowledgeBase, job.knowledge_base_id)
         if knowledge_base is None or not knowledge_base.is_active:
@@ -578,7 +571,12 @@ class MilvusIndexBackend:
         knowledge_base = await session.get(KnowledgeBase, job.knowledge_base_id)
         if knowledge_base is None:
             raise ValueError("knowledge base is missing")
+        revision_filter = (
+            f' and child_revision_id == "{job.child_revision_id}"'
+            if job.child_revision_id is not None
+            else ""
+        )
         await self.writer.delete(
             collection_name=knowledge_base.current_physical_collection_name,
-            filter_expression=f'child_id == "{job.child_id}"',
+            filter_expression=f'child_id == "{job.child_id}"{revision_filter}',
         )

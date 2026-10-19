@@ -37,6 +37,7 @@ from app.models.knowledge_content import (
     ReviewSubmissionStatus,
     WebLink,
 )
+from app.models.user_account import UserRole
 from app.schemas.attachment_ingestion import (
     AttachmentImportCandidate,
     AttachmentImportParentProposal,
@@ -952,6 +953,7 @@ async def confirm_attachment_import(
     owner_user_id: UUID,
     batch_id: UUID,
     request: ConfirmAttachmentImportRequest,
+    actor_role: UserRole = UserRole.NORMAL_USER,
 ) -> AttachmentImportConfirmation:
     """Atomically submit the primary revision and stage all ordinary children."""
 
@@ -1029,6 +1031,7 @@ async def confirm_attachment_import(
             parent_content=parent_content,
             primary_child_content=primary_content,
             submitted_by_user_id=owner_user_id,
+            actor_role=actor_role,
         )
         parent_id = parent_details.parent.id
         # When merging, every parsed candidate remains an ordinary-child draft;

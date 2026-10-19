@@ -300,6 +300,15 @@ class ReviewDecisionRequest(BaseModel):
         return normalize_optional_content(value)
 
 
+class ReviewAdditionalRejectionRequest(BaseModel):
+    comment: str | None = Field(default=None, max_length=4_000)
+
+    @field_validator("comment")
+    @classmethod
+    def validate_comment(cls, value: str | None) -> str | None:
+        return normalize_optional_content(value)
+
+
 class ReviewDecisionResponse(BaseModel):
     id: UUID
     review_submission_id: UUID
@@ -307,6 +316,7 @@ class ReviewDecisionResponse(BaseModel):
     decision: ReviewDecisionKind
     comment: str | None
     decided_by_user_id: UUID
+    reviewer: ReviewSubmitterResponse | None = None
     decided_at: datetime
 
 
@@ -326,6 +336,8 @@ class ReviewQueueItemResponse(BaseModel):
     reviewer: ReviewSubmitterResponse | None = None
     review_decision: ReviewDecisionKind | None = None
     review_comment: str | None = None
+    decision_history: list[ReviewDecisionResponse] = Field(default_factory=list)
+    additional_rejection_allowed: bool = False
     parent_revision: ReviewParentRevisionResponse | None
     child_revision: ReviewChildRevisionResponse
     submitted_at: datetime
@@ -355,6 +367,7 @@ class EditableContentEntryResponse(BaseModel):
     parent_id: UUID
     parent_name: str
     is_primary: bool
+    owner: ReviewSubmitterResponse
     knowledge_bases: list[AvailableKnowledgeBaseResponse]
     parent_revision: ReviewParentRevisionResponse | None = None
     child_revision: ReviewChildRevisionResponse

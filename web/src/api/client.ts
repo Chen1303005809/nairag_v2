@@ -323,6 +323,17 @@ export const api = {
       { decision, comment: comment || null }
     ),
 
+  appendReviewRejection: (
+    submissionId: string,
+    knowledgeBaseId: string,
+    comment?: string
+  ): Promise<ReviewDecision> =>
+    sessionMutation<ReviewDecision>(
+      "POST",
+      `/knowledge-content/review-submissions/${submissionId}/targets/${knowledgeBaseId}/additional-rejection`,
+      { comment: comment || null }
+    ),
+
   retryReviewTargetIndexing: (submissionId: string, knowledgeBaseId: string): Promise<void> =>
     sessionMutation<void>(
       "POST",

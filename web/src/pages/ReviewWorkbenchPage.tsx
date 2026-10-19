@@ -10,6 +10,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Timeline,
   Typography,
   message
 } from "antd";
@@ -34,6 +35,7 @@ function targetStatus(status: ReviewTargetStatus): JSX.Element {
     pending_review: ["gold", "待审核"],
     approved: ["processing", "待索引"],
     rejected: ["error", "已驳回"],
+    withdrawn: ["default", "整体撤下"],
     indexing: ["processing", "索引中"],
     published: ["success", "已发布"],
     index_failed: ["error", "索引失败"]
@@ -62,6 +64,9 @@ export function ReviewWorkbenchPage({
   const [saving, setSaving] = useState(false);
   const [retryingKey, setRetryingKey] = useState<string>();
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [additionalRejectionItem, setAdditionalRejectionItem] = useState<ReviewQueueItem>();
+  const [additionalRejectionComment, setAdditionalRejectionComment] = useState("");
+  const [appendingRejection, setAppendingRejection] = useState(false);
 
   const refresh = async (): Promise<void> => {
     setLoading(true);
@@ -133,6 +138,28 @@ export function ReviewWorkbenchPage({
     }
   };
 
+  const appendRejection = async (): Promise<void> => {
+    if (!additionalRejectionItem) {
+      return;
+    }
+    setAppendingRejection(true);
+    try {
+      await api.appendReviewRejection(
+        additionalRejectionItem.review_submission_id,
+        additionalRejectionItem.knowledge_base.id,
+        additionalRejectionComment
+      );
+      message.success("已追加驳回并撤下当前发布内容");
+      setAdditionalRejectionItem(undefined);
+      setAdditionalRejectionComment("");
+      await refresh();
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "追加驳回失败");
+    } finally {
+      setAppendingRejection(false);
+    }
+  };
+
   const selectHistorySubject = async (subjectId: string): Promise<void> => {
     setHistorySubjectId(subjectId);
     setHistoryLoading(true);
@@ -180,6 +207,29 @@ export function ReviewWorkbenchPage({
         <Descriptions.Item label="实际审核时间">{formatDateTime(item.reviewed_at)}</Descriptions.Item>
         {item.review_comment ? (
           <Descriptions.Item label="审核备注">{item.review_comment}</Descriptions.Item>
+        ) : null}
+        {item.decision_history.length > 0 ? (
+          <Descriptions.Item label="审核轨迹">
+            <Timeline
+              items={item.decision_history.map((event) => ({
+                color: event.decision === "approved" ? "green" : "red",
+                children: (
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text>
+                      {event.decision === "approved" ? "通过" : "驳回"}
+                      {event.reviewer
+                        ? ` · ${event.reviewer.display_name}（${event.reviewer.username}）`
+                        : ""}
+                    </Typography.Text>
+                    <Typography.Text type="secondary">
+                      {formatDateTime(event.decided_at)}
+                    </Typography.Text>
+                    {event.comment ? <Typography.Text>{event.comment}</Typography.Text> : null}
+                  </Space>
+                )
+              }))}
+            />
+          </Descriptions.Item>
         ) : null}
       </Descriptions>
     </Space>
@@ -284,6 +334,7 @@ export function ReviewWorkbenchPage({
         { text: "待审核", value: "pending_review" },
         { text: "待索引", value: "approved" },
         { text: "已驳回", value: "rejected" },
+        { text: "整体撤下", value: "withdrawn" },
         { text: "索引中", value: "indexing" },
         { text: "已发布", value: "published" },
         { text: "索引失败", value: "index_failed" }
@@ -383,9 +434,12 @@ export function ReviewWorkbenchPage({
       render: (value: string | null) => value || "—"
     },
     {
-      title: selectedHistorySubject?.is_self ? "当前状态/操作" : "当前状态",
+      title:
+        selectedHistorySubject?.is_self || systemAdmin || knowledgeBases.length > 0
+          ? "当前状态/操作"
+          : "当前状态",
       key: "status_actions",
-      width: 180,
+      width: 220,
       fixed: "right",
       ellipsis: true,
       render: (_value: unknown, item: ReviewQueueItem) => (
@@ -399,6 +453,14 @@ export function ReviewWorkbenchPage({
               onClick={() => void retryIndexing(item)}
             >
               重试索引
+            </Button>
+          ) : null}
+          {(systemAdmin || knowledgeBases.some((knowledgeBase) => knowledgeBase.id === item.knowledge_base.id)) &&
+          item.additional_rejection_allowed &&
+          item.target_status === "published" &&
+          item.review_decision === "approved" ? (
+            <Button danger type="link" onClick={() => setAdditionalRejectionItem(item)}>
+              追加驳回
             </Button>
           ) : null}
         </TableActionBar>
@@ -457,7 +519,7 @@ export function ReviewWorkbenchPage({
             loading={loading || historyLoading}
             columns={historyColumns}
             dataSource={history}
-            scroll={{ x: 1450 }}
+            scroll={{ x: 1500 }}
             expandable={{ expandedRowRender: (item) => expandedRow(item, true) }}
             pagination={{ pageSize: 10, hideOnSinglePage: true }}
             locale={{
@@ -528,6 +590,37 @@ export function ReviewWorkbenchPage({
               value={comment}
               onChange={(event) => setComment(event.target.value)}
               placeholder="审核备注（可选）"
+            />
+          </Space>
+        ) : null}
+      </Modal>
+      <Modal
+        title="追加驳回"
+        open={Boolean(additionalRejectionItem)}
+        onCancel={() => setAdditionalRejectionItem(undefined)}
+        onOk={() => void appendRejection()}
+        okButtonProps={{ danger: true, loading: appendingRejection }}
+        okText="确认驳回并撤下"
+      >
+        {additionalRejectionItem ? (
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Typography.Text>
+              {additionalRejectionItem.parent_revision?.name ??
+                additionalRejectionItem.child_revision.question}
+              {` · ${additionalRejectionItem.knowledge_base.name}`}
+            </Typography.Text>
+            <Typography.Paragraph type="secondary">
+              {additionalRejectionItem.submission_kind === "parent_with_primary"
+                ? "此操作会追加一条驳回记录，并撤下这一代在全部目标知识库的发布。原审核记录会保留。"
+                : "此操作会追加一条驳回记录，并只撤下该知识库的当前版本。原审核记录会保留。"}
+            </Typography.Paragraph>
+            <Input.TextArea
+              rows={4}
+              maxLength={4000}
+              showCount
+              value={additionalRejectionComment}
+              onChange={(event) => setAdditionalRejectionComment(event.target.value)}
+              placeholder="驳回备注（可选）"
             />
           </Space>
         ) : null}

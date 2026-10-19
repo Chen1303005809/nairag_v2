@@ -1094,6 +1094,17 @@ export function ContentSubmissionPage(): JSX.Element {
     [editableEntries]
   );
 
+  const editableOwnerFilters = useMemo(
+    () =>
+      uniqueTableFilterOptions(editableEntries, (entry) => [
+        {
+          text: `${entry.owner.display_name}（${entry.owner.username}）`,
+          value: entry.owner.id
+        }
+      ]),
+    [editableEntries]
+  );
+
   const submissionColumns: TableProps<ReviewSubmission>["columns"] = [
     {
       title: "上传内容",
@@ -1237,6 +1248,17 @@ export function ContentSubmissionPage(): JSX.Element {
       key: "question",
       width: 320,
       ellipsis: true
+    },
+    {
+      title: "知识创建人",
+      key: "owner",
+      width: 200,
+      ellipsis: true,
+      filters: editableOwnerFilters,
+      filterSearch: true,
+      onFilter: (value, entry) => entry.owner.id === String(value),
+      render: (_value: unknown, entry: EditableContentEntry) =>
+        `${entry.owner.display_name}（${entry.owner.username}）`
     },
     {
       title: "已发布知识库",
@@ -1681,7 +1703,7 @@ export function ContentSubmissionPage(): JSX.Element {
                   loading={loading}
                   columns={editableEntryColumns}
                   dataSource={editableEntries}
-                  scroll={{ x: 900 }}
+                  scroll={{ x: 1120 }}
                   pagination={{ pageSize: 10, hideOnSinglePage: true }}
                   locale={{ emptyText: "当前没有可修改的已发布知识" }}
                 />

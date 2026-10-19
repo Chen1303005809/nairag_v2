@@ -49,11 +49,9 @@ class IndexWorkerResult:
 class IndexBackend(Protocol):
     """Adapter seam for local artifacts and production embedding/Milvus writers."""
 
-    async def index_target(self, session: AsyncSession, job: IndexJob) -> None:
-        ...
+    async def index_target(self, session: AsyncSession, job: IndexJob) -> None: ...
 
-    async def clean_publication(self, session: AsyncSession, job: IndexJob) -> None:
-        ...
+    async def clean_publication(self, session: AsyncSession, job: IndexJob) -> None: ...
 
 
 class NoopIndexBackend:
@@ -70,8 +68,14 @@ def _index_job_key(submission_id: UUID, knowledge_base_id: UUID, revision_id: UU
     return f"index-target:{submission_id}:{knowledge_base_id}:{revision_id}"
 
 
-def _clean_publication_job_key(child_id: UUID, knowledge_base_id: UUID) -> str:
-    return f"clean-publication:{knowledge_base_id}:{child_id}"
+def _clean_publication_job_key(
+    child_id: UUID,
+    knowledge_base_id: UUID,
+    child_revision_id: UUID | None = None,
+) -> str:
+    if child_revision_id is None:
+        return f"clean-publication:{knowledge_base_id}:{child_id}"
+    return f"clean-publication:{knowledge_base_id}:{child_id}:{child_revision_id}"
 
 
 async def enqueue_index_jobs_for_submission(
@@ -144,10 +148,15 @@ async def enqueue_clean_publication_job(
     *,
     child_id: UUID,
     knowledge_base_id: UUID,
+    child_revision_id: UUID | None = None,
 ) -> IndexJob:
-    """Queue idempotent removal of every derived vector for one publication."""
+    """Queue idempotent removal of one revision or all vectors for a publication."""
 
-    idempotency_key = _clean_publication_job_key(child_id, knowledge_base_id)
+    idempotency_key = _clean_publication_job_key(
+        child_id,
+        knowledge_base_id,
+        child_revision_id,
+    )
     existing = await session.scalar(
         select(IndexJob).where(IndexJob.idempotency_key == idempotency_key)
     )
@@ -169,6 +178,7 @@ async def enqueue_clean_publication_job(
         idempotency_key=idempotency_key,
         knowledge_base_id=knowledge_base_id,
         child_id=child_id,
+        child_revision_id=child_revision_id,
     )
     session.add(job)
     await session.flush()

@@ -45,6 +45,7 @@ from app.schemas.knowledge_content import (
     ManagedKnowledgeEntryResponse,
     ParentLexicalRuleInput,
     PublicationResponse,
+    ReviewAdditionalRejectionRequest,
     ReviewChildRevisionResponse,
     ReviewDecisionRequest,
     ReviewDecisionResponse,
@@ -68,6 +69,7 @@ from app.services.knowledge_content import (
     AttachmentNotFoundError,
     AvailableParentDetails,
     ChildNotFoundError,
+    ContentRevisionAccessDeniedError,
     EditableContentDetails,
     ManagedKnowledgeDetails,
     ParentNotAvailableError,
@@ -87,6 +89,7 @@ from app.services.knowledge_content import (
     SubmissionNotFoundError,
     TargetKnowledgeBaseNotAllowedError,
     TargetKnowledgeBaseUnavailableError,
+    append_review_rejection,
     archive_publication,
     decide_review_target,
     get_publication,
@@ -392,6 +395,8 @@ def as_content_http_error(error: Exception) -> HTTPException:
         )
     if isinstance(error, ReviewAccessDeniedError):
         return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="没有该知识库的审核权限")
+    if isinstance(error, ContentRevisionAccessDeniedError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权修订该知识内容")
     if isinstance(error, ReviewTargetNotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="审核目标不存在")
     if isinstance(error, ReviewDecisionAlreadyExistsError):
@@ -438,6 +443,20 @@ def as_review_queue_response(details: ReviewQueueDetails) -> ReviewQueueItemResp
         review_comment=(
             details.review_decision.comment if details.review_decision is not None else None
         ),
+        decision_history=[
+            ReviewDecisionResponse(
+                id=decision.id,
+                review_submission_id=decision.review_submission_id,
+                knowledge_base_id=decision.knowledge_base_id,
+                decision=decision.decision,
+                comment=decision.comment,
+                decided_by_user_id=decision.decided_by_user_id,
+                reviewer=as_user_response(reviewer),
+                decided_at=decision.decided_at,
+            )
+            for decision, reviewer in details.decision_history
+        ],
+        additional_rejection_allowed=details.additional_rejection_allowed,
         parent_revision=as_parent_revision_response(
             details.parent_revision,
             details.parent_lexical_rules,
@@ -488,6 +507,7 @@ def as_editable_content_response(details: EditableContentDetails) -> EditableCon
         parent_id=details.child.parent_id,
         parent_name=details.parent_name,
         is_primary=details.child.is_primary,
+        owner=as_user_response(details.owner),
         knowledge_bases=[
             AvailableKnowledgeBaseResponse(
                 id=knowledge_base.id,
@@ -695,12 +715,16 @@ async def list_my_content_submissions(
 
 @router.get("/entries/editable", response_model=list[EditableContentEntryResponse])
 async def list_currently_editable_content(
-    _user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> list[EditableContentEntryResponse]:
     return [
         as_editable_content_response(entry)
-        for entry in await list_editable_content_entries(session)
+        for entry in await list_editable_content_entries(
+            session,
+            actor_user_id=user.user.id,
+            actor_role=user.user.role,
+        )
     ]
 
 
@@ -778,8 +802,10 @@ async def create_parent_aggregate_revision_submission(
             parent_content=body.parent,
             primary_child_content=body.primary_child,
             submitted_by_user_id=user.user.id,
+            actor_role=user.user.role,
         )
     except (
+        ContentRevisionAccessDeniedError,
         ParentNotFoundError,
         ParentNotAvailableError,
         PendingSubmissionExistsError,
@@ -865,8 +891,10 @@ async def create_child_revision_submission(
             child_content=body.child,
             knowledge_base_ids=body.knowledge_base_ids,
             submitted_by_user_id=user.user.id,
+            actor_role=user.user.role,
         )
     except (
+        ContentRevisionAccessDeniedError,
         ChildNotFoundError,
         ParentNotAvailableError,
         PrimaryChildRevisionError,
@@ -1130,6 +1158,64 @@ async def decide_content_review_target(
         decision=decision.decision,
         comment=decision.comment,
         decided_by_user_id=decision.decided_by_user_id,
+        reviewer=as_user_response(user.user),
+        decided_at=decision.decided_at,
+    )
+
+
+@router.post(
+    "/review-submissions/{review_submission_id}/targets/{knowledge_base_id}/additional-rejection",
+    response_model=ReviewDecisionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def append_content_review_rejection(
+    review_submission_id: UUID,
+    knowledge_base_id: UUID,
+    body: ReviewAdditionalRejectionRequest,
+    user: Annotated[AuthenticatedSession, Depends(require_fully_authenticated_session)],
+    _csrf: Annotated[None, Depends(require_csrf)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ReviewDecisionResponse:
+    _require_review_actor(user)
+    try:
+        decision = await append_review_rejection(
+            session,
+            review_submission_id=review_submission_id,
+            knowledge_base_id=knowledge_base_id,
+            actor_user_id=user.user.id,
+            actor_role=user.user.role,
+            comment=body.comment,
+        )
+    except (
+        ReviewAccessDeniedError,
+        ReviewTargetNotFoundError,
+        ReviewTargetStateError,
+        ReviewPublicationNotFoundError,
+    ) as exc:
+        raise as_content_http_error(exc) from exc
+
+    record_audit_event(
+        session,
+        event_type="content.review_additional_rejection_recorded",
+        actor_user_id=user.user.id,
+        target_type="review_submission_target",
+        target_id=review_submission_id,
+        payload={
+            "review_submission_id": str(review_submission_id),
+            "knowledge_base_id": str(knowledge_base_id),
+            "decision": decision.decision.value,
+            "comment": body.comment,
+        },
+    )
+    await session.commit()
+    return ReviewDecisionResponse(
+        id=decision.id,
+        review_submission_id=decision.review_submission_id,
+        knowledge_base_id=decision.knowledge_base_id,
+        decision=decision.decision,
+        comment=decision.comment,
+        decided_by_user_id=decision.decided_by_user_id,
+        reviewer=as_user_response(user.user),
         decided_at=decision.decided_at,
     )
 

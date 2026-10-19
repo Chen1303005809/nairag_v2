@@ -12,7 +12,8 @@ vi.mock("../api/client", () => ({
     listMyReviewHistory: vi.fn(),
     listReviewHistorySubjects: vi.fn(),
     decideReviewTarget: vi.fn(),
-    retryReviewTargetIndexing: vi.fn()
+    retryReviewTargetIndexing: vi.fn(),
+    appendReviewRejection: vi.fn()
   }
 }));
 
@@ -44,6 +45,19 @@ const historyItem: ReviewQueueItem = {
   reviewer: { id: "reviewer-1", username: "reviewer", display_name: "审核人" },
   review_decision: "approved",
   review_comment: "内容完整",
+  decision_history: [
+    {
+      id: "decision-1",
+      review_submission_id: "submission-1",
+      knowledge_base_id: knowledgeBase.id,
+      decision: "approved",
+      comment: "内容完整",
+      decided_by_user_id: "reviewer-1",
+      reviewer: { id: "reviewer-1", username: "reviewer", display_name: "审核人" },
+      decided_at: "2026-01-01T00:01:02Z"
+    }
+  ],
+  additional_rejection_allowed: false,
   parent_revision: null,
   child_revision: {
     id: "revision-1",
@@ -110,6 +124,36 @@ describe("ReviewWorkbenchPage history", () => {
         "knowledge-base-1"
       )
     );
+  });
+
+  it("offers append rejection for an eligible published revision and refreshes the history", async () => {
+    mockedApi.listMyReviewHistory.mockResolvedValue([
+      { ...historyItem, additional_rejection_allowed: true }
+    ]);
+    mockedApi.appendReviewRejection.mockResolvedValue({
+      ...historyItem.decision_history[0],
+      id: "decision-2",
+      decision: "rejected",
+      comment: "需要撤下",
+      decided_at: "2026-01-02T00:00:00Z"
+    });
+    render(<ReviewWorkbenchPage />);
+
+    fireEvent.click((await screen.findAllByRole("tab", { name: "我的审核历史" }))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "追加驳回" }));
+    fireEvent.change(screen.getByPlaceholderText("驳回备注（可选）"), {
+      target: { value: "需要撤下" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认驳回并撤下" }));
+
+    await waitFor(() =>
+      expect(mockedApi.appendReviewRejection).toHaveBeenCalledWith(
+        "submission-1",
+        "knowledge-base-1",
+        "需要撤下"
+      )
+    );
+    await waitFor(() => expect(mockedApi.listMyReviewHistory).toHaveBeenCalledTimes(2));
   });
 
   it("allows selecting a granted history and hides retry actions for another reviewer", async () => {
