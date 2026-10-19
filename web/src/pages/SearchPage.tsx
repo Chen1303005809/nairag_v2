@@ -2,7 +2,6 @@ import {
   Alert,
   Button,
   Card,
-  Divider,
   Descriptions,
   Image,
   Input,
@@ -134,17 +133,21 @@ function ResultItemView({
   item,
   feedbackGiven,
   onFeedback,
-  showHelpfulFeedback = true
+  showHelpfulFeedback = true,
+  showQuestion = true,
+  showKnowledgeBaseTag = true
 }: {
   item: RenderableResult;
   feedbackGiven: boolean;
   onFeedback: (item: RenderableResult) => void;
   showHelpfulFeedback?: boolean;
+  showQuestion?: boolean;
+  showKnowledgeBaseTag?: boolean;
 }): JSX.Element {
   return (
     <Space direction="vertical" size={4} style={{ width: "100%" }}>
       <Space wrap>
-        <Tag color="blue">{item.knowledge_base_name}</Tag>
+        {showKnowledgeBaseTag ? <Tag color="blue">{item.knowledge_base_name}</Tag> : null}
         <Tag color={selectionStageColor(item.selection_stage)}>
           命中阶段：{selectionStageLabels[item.selection_stage]}
         </Tag>
@@ -165,11 +168,13 @@ function ResultItemView({
         ))}
       </Space>
       <Descriptions bordered size="small" column={1}>
-        <Descriptions.Item label="问题小类">
-          <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
-            {item.question}
-          </Typography.Paragraph>
-        </Descriptions.Item>
+        {showQuestion ? (
+          <Descriptions.Item label="问题小类">
+            <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+              {item.question}
+            </Typography.Paragraph>
+          </Descriptions.Item>
+        ) : null}
         <Descriptions.Item label="回复内容">
           <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
             {item.response_content}
@@ -276,31 +281,56 @@ function ResultsGroupsView({
   onFeedback: (item: RenderableResult) => void;
 }): JSX.Element {
   return (
-    <>
-      {groups.map((group) => (
-        <Card
+    <div className="search-result-groups">
+      {groups.map((group, groupIndex) => (
+        <section
           key={group.parent_id}
-          title={
-            <Space>
-              <Typography.Text strong>{group.parent_name}</Typography.Text>
-              <Tag>{group.canonical_keyword}</Tag>
-            </Space>
-          }
-          style={{ marginBottom: 12 }}
+          className="search-result-group"
+          style={{ animationDelay: `${Math.min(groupIndex * 90, 450)}ms` }}
         >
-          {group.children.map((item, index) => (
-            <div key={item.result_item_id}>
-              {index > 0 ? <Divider /> : null}
-              <ResultItemView
-                item={item}
-                feedbackGiven={feedbackIds.has(item.result_item_id)}
-                onFeedback={onFeedback}
-              />
+          <header className="search-result-group-heading">
+            <div className="search-result-group-title">
+              <span className="search-result-group-label">问题大类</span>
+              <Typography.Text strong>{group.parent_name}</Typography.Text>
+              <Tag color="blue">{group.canonical_keyword}</Tag>
             </div>
-          ))}
-        </Card>
+            <span className="search-result-group-count">{group.children.length} 条知识</span>
+          </header>
+          <div className="search-result-group-items">
+            {group.children.map((item, index) => (
+              <article
+                key={item.result_item_id}
+                className="search-result-item"
+                style={{
+                  animationDelay: `${Math.min(groupIndex * 90 + index * 65, 600)}ms`
+                }}
+              >
+                <div className="search-result-item-heading">
+                  <span className="search-result-item-index">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <div className="search-result-item-title-wrap">
+                    <Typography.Text className="search-result-item-title">
+                      {item.question}
+                    </Typography.Text>
+                    <Typography.Text className="search-result-item-source">
+                      知识库：{item.knowledge_base_name}
+                    </Typography.Text>
+                  </div>
+                </div>
+                <ResultItemView
+                  item={item}
+                  feedbackGiven={feedbackIds.has(item.result_item_id)}
+                  onFeedback={onFeedback}
+                  showQuestion={false}
+                  showKnowledgeBaseTag={false}
+                />
+              </article>
+            ))}
+          </div>
+        </section>
       ))}
-    </>
+    </div>
   );
 }
 
@@ -348,14 +378,23 @@ function SupplementalResultsView({
     return null;
   }
   return (
-    <Card title="相关资料" style={{ marginBottom: 12 }}>
-      {results.map((item, index) => (
-        <div key={item.result_item_id}>
-          {index > 0 ? <Divider /> : null}
-          <SupplementalResultItemView item={item} />
-        </div>
-      ))}
-    </Card>
+    <section className="search-supplemental-section">
+      <header className="search-supplemental-heading">
+        <Typography.Text strong>相关资料</Typography.Text>
+        <span>{results.length} 条补充资料</span>
+      </header>
+      <div className="search-supplemental-items">
+        {results.map((item, index) => (
+          <article
+            key={item.result_item_id}
+            className="search-supplemental-item"
+            style={{ animationDelay: `${Math.min(index * 65, 500)}ms` }}
+          >
+            <SupplementalResultItemView item={item} />
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
