@@ -28,6 +28,8 @@ from app.models.knowledge_content import (
     ChildPublicationStatus,
     ChildRevision,
     Parent,
+    ParentLexicalRule,
+    ParentLexicalRuleType,
     ParentRevision,
     ReviewSubmission,
     ReviewSubmissionKind,
@@ -117,6 +119,9 @@ async def create_user(session: AsyncSession) -> UserAccount:
 async def create_published_graph(
     session: AsyncSession,
     user_id,
+    *,
+    canonical_keyword: str = "登录",
+    alias_keyword: str | None = None,
 ) -> tuple[Parent, KnowledgeBase, Child, ChildRevision]:
     parent = Parent(created_by_user_id=user_id)
     knowledge_base = KnowledgeBase(
@@ -132,12 +137,21 @@ async def create_published_graph(
         parent_id=parent.id,
         revision_number=1,
         name="登录问题",
-        canonical_keyword="登录",
+        canonical_keyword=canonical_keyword,
         created_by_user_id=user_id,
     )
     primary_child = Child(parent_id=parent.id, is_primary=True, created_by_user_id=user_id)
     session.add_all([parent_revision, primary_child])
     await session.flush()
+    if alias_keyword is not None:
+        session.add(
+            ParentLexicalRule(
+                parent_revision_id=parent_revision.id,
+                rule_type=ParentLexicalRuleType.ALIAS,
+                rule_value=alias_keyword,
+                sort_order=0,
+            )
+        )
     primary_revision = ChildRevision(
         child_id=primary_child.id,
         revision_number=1,
@@ -541,6 +555,49 @@ async def test_search_persists_staged_scores_and_keeps_keyword_fallback_independ
             assert fallback_item.match_reason == "parent_keyword_fallback"
             assert keyword_fallback.event.degraded is False
             assert keyword_fallback.event.degradation_reasons is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("canonical_keyword", "alias_keyword", "query"),
+    [
+        ("账号登录", None, "无法登录"),
+        ("用户管理", "凭据验证", "验证流程"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_search_injects_fallback_for_two_character_keyword_matches(
+    tmp_path: Path,
+    canonical_keyword: str,
+    alias_keyword: str | None,
+    query: str,
+) -> None:
+    factory, engine, _settings = await build_db(tmp_path)
+    try:
+        async with factory() as session:
+            user = await create_user(session)
+            _parent, knowledge_base, _child, _revision = await create_published_graph(
+                session,
+                user.id,
+                canonical_keyword=canonical_keyword,
+                alias_keyword=alias_keyword,
+            )
+
+            result = await search_published_content(
+                session,
+                user_id=user.id,
+                query=query,
+                ocr_text=None,
+                knowledge_base_id=knowledge_base.id,
+                retrieval_mode="vector",
+                limit=10,
+                index_backend=EmptyIndexBackend(),
+            )
+
+            fallback_item = result.groups[0][1][0][0]
+            assert fallback_item.selection_stage == "keyword_fallback"
+            assert fallback_item.match_reason == "parent_keyword_fallback"
     finally:
         await engine.dispose()
 

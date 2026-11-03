@@ -320,21 +320,37 @@ def _parent_keyword_match(query: str, candidate: SearchCandidate) -> tuple[int, 
     normalized_query = _normalize_text(query)
     if not normalized_query:
         return None
+
+    def matches_keyword(keyword: str) -> bool:
+        if not keyword:
+            return False
+        if keyword in normalized_query:
+            return True
+        return len(keyword) >= 2 and any(
+            keyword[index : index + 2] in normalized_query for index in range(len(keyword) - 1)
+        )
+
     canonical = _normalize_text(candidate.parent_revision.canonical_keyword)
-    if canonical and canonical in normalized_query:
+    if matches_keyword(canonical):
         return 3, "canonical_keyword"
+
+    # Aliases outrank regex rules even if a regex appears earlier in sort order.
+    for rule in candidate.lexical_rules:
+        if rule.rule_type == ParentLexicalRuleType.ALIAS and matches_keyword(
+            _normalize_text(rule.rule_value)
+        ):
+            return 2, "alias_keyword"
+
     for rule in candidate.lexical_rules:
         if rule.rule_type == ParentLexicalRuleType.ALIAS:
-            if _normalize_text(rule.rule_value) in normalized_query:
-                return 2, "alias_keyword"
-        else:
-            try:
-                if re.search(rule.rule_value, normalized_query):
-                    return 1, "regex_keyword"
-            except re.error:
-                # Validation prevents this for newly-created data; ignoring a
-                # legacy malformed rule keeps search available.
-                continue
+            continue
+        try:
+            if re.search(rule.rule_value, normalized_query):
+                return 1, "regex_keyword"
+        except re.error:
+            # Validation prevents this for newly-created data; ignoring a
+            # legacy malformed rule keeps search available.
+            continue
     return None
 
 
