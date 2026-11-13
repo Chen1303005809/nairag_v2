@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import type {
   ConversationSearchResponse,
+  EditableContentEntry,
   KnowledgeBase,
   OcrRecognition,
   SearchResponse
@@ -14,6 +15,7 @@ import { SearchPage } from "./SearchPage";
 vi.mock("../api/client", () => ({
   api: {
     listKnowledgeBases: vi.fn(),
+    listEditableContentEntries: vi.fn(),
     getKnowledgeContentTaxonomy: vi.fn(),
     recognizeSearchImage: vi.fn(),
     recognizeConversationImage: vi.fn(),
@@ -21,7 +23,9 @@ vi.mock("../api/client", () => ({
     conversationSearch: vi.fn(),
     queryBatchSearch: vi.fn(),
     submitHelpfulFeedback: vi.fn(),
-    submitSearchAnnotationReview: vi.fn()
+    submitSearchAnnotationReview: vi.fn(),
+    createParentRevision: vi.fn(),
+    createChildRevision: vi.fn()
   }
 }));
 
@@ -36,6 +40,45 @@ const knowledgeBase: KnowledgeBase = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z"
 };
+
+function editableEntry(isPrimary = false): EditableContentEntry {
+  return {
+    child_id: "child-1",
+    parent_id: "parent-1",
+    parent_name: "账号问题",
+    is_primary: isPrimary,
+    owner: { id: "owner-1", username: "owner", display_name: "知识创建人" },
+    knowledge_bases: [
+      { id: "knowledge-base-1", logical_key: "support", name: "支持知识库" }
+    ],
+    parent_revision: isPrimary
+      ? {
+          id: "parent-revision-1",
+          revision_number: 1,
+          name: "问题反馈",
+          canonical_keyword: "账号",
+          lexical_rules: []
+        }
+      : null,
+    child_revision: {
+      id: "revision-1",
+      revision_number: 1,
+      question: "当前发布问题？",
+      response_content: "当前发布的回答。",
+      question_variants: ["当前同义问题？"],
+      follow_up_guidance: null,
+      question_type: "功能故障类",
+      business_object: "对应平台使用说明书",
+      purpose: "企业微信咨询",
+      customer_type: "个人客户",
+      feature_explanation: null,
+      example: null,
+      internal_notes: null,
+      attachments: [],
+      web_links: []
+    }
+  };
+}
 
 const recognition: OcrRecognition = {
   text: "账号 登录失败",
@@ -156,6 +199,7 @@ const conversationNoQueryResponse: ConversationSearchResponse = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedApi.listKnowledgeBases.mockResolvedValue([knowledgeBase]);
+  mockedApi.listEditableContentEntries.mockResolvedValue([]);
   mockedApi.getKnowledgeContentTaxonomy.mockResolvedValue({
     parent_types: ["问题反馈", "需求提交", "配置项咨询"],
     question_types: ["功能故障类"],
@@ -187,6 +231,8 @@ beforeEach(() => {
       }
     ]
   });
+  mockedApi.createParentRevision.mockResolvedValue({} as never);
+  mockedApi.createChildRevision.mockResolvedValue({} as never);
 });
 
 afterEach(() => {
@@ -254,6 +300,177 @@ describe("SearchPage OCR", () => {
     expect(screen.getByText("命中字段：同义问句")).toBeInTheDocument();
   });
 
+  it("opens and submits a prefilled child revision from a vector result", async () => {
+    const initialEntry = editableEntry();
+    const currentEntry: EditableContentEntry = {
+      ...initialEntry,
+      child_revision: {
+        ...initialEntry.child_revision,
+        id: "revision-current",
+        question: "最新发布问题？",
+        response_content: "最新发布的回答。"
+      }
+    };
+    mockedApi.listEditableContentEntries
+      .mockResolvedValueOnce([initialEntry])
+      .mockResolvedValueOnce([currentEntry]);
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+    fireEvent.click(await screen.findByRole("button", { name: "修订此知识" }));
+
+    expect(await screen.findByDisplayValue("最新发布问题？")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交新修订审核" }));
+
+    await waitFor(() =>
+      expect(mockedApi.createChildRevision).toHaveBeenCalledWith(
+        "child-1",
+        {
+          question: "最新发布问题？",
+          response_content: "最新发布的回答。",
+          question_variants: ["当前同义问题？"],
+          follow_up_guidance: null,
+          question_type: "功能故障类",
+          business_object: "对应平台使用说明书",
+          purpose: "企业微信咨询",
+          customer_type: "个人客户",
+          feature_explanation: null,
+          example: null,
+          internal_notes: null,
+          attachments: [],
+          web_links: []
+        },
+        ["knowledge-base-1"]
+      )
+    );
+  });
+
+  it("opens and submits the parent aggregate revision from a result", async () => {
+    mockedApi.listEditableContentEntries.mockResolvedValue([editableEntry(true)]);
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+    fireEvent.click(await screen.findByRole("button", { name: "修订此知识" }));
+
+    expect(await screen.findByDisplayValue("当前发布问题？")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交新修订审核" }));
+
+    await waitFor(() =>
+      expect(mockedApi.createParentRevision).toHaveBeenCalledWith(
+        "parent-1",
+        { name: "问题反馈", canonical_keyword: "账号", lexical_rules: [] },
+        {
+          question: "当前发布问题？",
+          response_content: "当前发布的回答。",
+          question_variants: ["当前同义问题？"],
+          follow_up_guidance: null,
+          question_type: "功能故障类",
+          business_object: "对应平台使用说明书",
+          purpose: "企业微信咨询",
+          customer_type: "个人客户",
+          feature_explanation: null,
+          example: null,
+          internal_notes: null,
+          attachments: [],
+          web_links: []
+        }
+      )
+    );
+  });
+
+  it("keeps the revision form open and reports a submit error", async () => {
+    mockedApi.listEditableContentEntries.mockResolvedValue([editableEntry()]);
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    mockedApi.createChildRevision.mockRejectedValue(new Error("提交端暂时不可用"));
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+    fireEvent.click(await screen.findByRole("button", { name: "修订此知识" }));
+    await screen.findByDisplayValue("当前发布问题？");
+    fireEvent.click(screen.getByRole("button", { name: "提交新修订审核" }));
+
+    expect(await screen.findByText("提交端暂时不可用")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("当前发布问题？")).toBeInTheDocument();
+  });
+
+  it("shows revision actions for conversation-assisted knowledge results", async () => {
+    mockedApi.listEditableContentEntries.mockResolvedValue([editableEntry()]);
+    mockedApi.conversationSearch.mockResolvedValue({
+      ...conversationWithQueriesResponse,
+      groups: matchedResponse.groups.map((group) => ({
+        ...group,
+        children: group.children.map((item) => ({
+          ...item,
+          search_event_id: "conversation-event-1",
+          matched_queries: ["如何找回密码？"]
+        }))
+      }))
+    });
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("tab", { name: /快速检索/ }));
+    fireEvent.paste(screen.getByRole("textbox", { name: "快速检索聊天内容" }), {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain"
+            ? "张客户 09:30\n登录一直失败怎么办？\n\n融航-李支持 09:31\n我需要先查询一下。"
+            : "",
+        items: [],
+        files: []
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /提取查询并检索/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "修订此知识" }));
+    expect(await screen.findByDisplayValue("当前发布问题？")).toBeInTheDocument();
+  });
+
+  it("hides revision actions when the current account cannot revise the result", async () => {
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    mockedApi.listEditableContentEntries.mockResolvedValue([]);
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+
+    expect(await screen.findByText("综合相关度：87.65%")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修订此知识" })).not.toBeInTheDocument();
+  });
+
+  it("keeps search results available when the editable-entry lookup fails", async () => {
+    mockedApi.search.mockResolvedValue(matchedResponse);
+    mockedApi.listEditableContentEntries.mockRejectedValue(new Error("权限列表暂不可用"));
+    render(<SearchPage />);
+    await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("例如：如何找回密码？"), {
+      target: { value: "密码怎么找回？" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
+
+    expect(await screen.findByText("综合相关度：87.65%")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修订此知识" })).not.toBeInTheDocument();
+  });
+
   it("shows global supplemental material after knowledge results without a helpful action", async () => {
     mockedApi.search.mockResolvedValue(supplementalOnlyResponse);
     render(<SearchPage />);
@@ -268,6 +485,7 @@ describe("SearchPage OCR", () => {
     expect(screen.getByText("系统指南.pdf")).toBeInTheDocument();
     expect(screen.getByText("这是来自全局资料的相关片段。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /有用/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修订此知识" })).not.toBeInTheDocument();
   });
 
   it("shows a visible warning when basic-score fallback was used", async () => {
@@ -382,6 +600,7 @@ describe("SearchPage OCR", () => {
   });
 
   it("reviews each visible vector result before atomically submitting the immutable Review", async () => {
+    mockedApi.listEditableContentEntries.mockResolvedValue([editableEntry()]);
     mockedApi.search.mockResolvedValue(matchedResponse);
     render(<SearchPage />);
     await waitFor(() => expect(mockedApi.listKnowledgeBases).toHaveBeenCalled());
@@ -391,9 +610,11 @@ describe("SearchPage OCR", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "向量检索" }));
     expect(await screen.findByText("本次检索标注")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "修订此知识" })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "开始逐条标注" }));
     expect(await screen.findByText("第 1 / 1 条。选择标签后会进入下一条；可以返回修改已处理的结果。")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "修订此知识" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "高分无关" }));
     expect(await screen.findByText("已逐条完成标注")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "完成并提交" }));

@@ -16,6 +16,7 @@ import {
 } from "antd";
 import {
   DeleteOutlined,
+  EditOutlined,
   LikeOutlined,
   MessageOutlined,
   PictureOutlined,
@@ -28,6 +29,7 @@ import { api } from "../api/client";
 import type {
   ConversationSearchResult,
   ConversationSearchResponse,
+  EditableContentEntry,
   KnowledgeBase,
   KnowledgeContentTaxonomy,
   OcrRecognition,
@@ -55,6 +57,7 @@ import {
 } from "../conversation";
 import { ConversationEditor } from "../components/ConversationEditor";
 import type { ConversationEditorHandle } from "../components/ConversationEditor";
+import { KnowledgeRevisionModal } from "../components/KnowledgeRevisionModal";
 
 interface RenderableResult extends SearchResult {
   matched_queries?: string[];
@@ -127,6 +130,20 @@ function matchedFieldLabel(field: string | null): string {
 
 function isKnowledgeResult(item: AnnotationRenderableResult): item is RenderableResult {
   return "knowledge_base_name" in item;
+}
+
+function findEditableEntryForResult(
+  item: RenderableResult,
+  entriesByChildId: Map<string, EditableContentEntry[]>
+): EditableContentEntry | undefined {
+  const entries = entriesByChildId.get(item.child_id) ?? [];
+  const forKnowledgeBase = entries.filter((entry) =>
+    entry.knowledge_bases.some((knowledgeBase) => knowledgeBase.id === item.knowledge_base_id)
+  );
+  return (
+    forKnowledgeBase.find((entry) => entry.child_revision.id === item.child_revision_id) ??
+    forKnowledgeBase[0]
+  );
 }
 
 function ResultItemView({
@@ -269,7 +286,9 @@ function ResultItemView({
 function ResultsGroupsView({
   groups,
   feedbackIds,
-  onFeedback
+  onFeedback,
+  editableEntriesByChildId,
+  onRevise
 }: {
   groups: Array<{
     parent_id: string;
@@ -279,6 +298,8 @@ function ResultsGroupsView({
   }>;
   feedbackIds: Set<string>;
   onFeedback: (item: RenderableResult) => void;
+  editableEntriesByChildId: Map<string, EditableContentEntry[]>;
+  onRevise: (item: RenderableResult) => void;
 }): JSX.Element {
   return (
     <div className="search-result-groups">
@@ -297,36 +318,50 @@ function ResultsGroupsView({
             <span className="search-result-group-count">{group.children.length} 条知识</span>
           </header>
           <div className="search-result-group-items">
-            {group.children.map((item, index) => (
-              <article
-                key={item.result_item_id}
-                className="search-result-item"
-                style={{
-                  animationDelay: `${Math.min(groupIndex * 90 + index * 65, 600)}ms`
-                }}
-              >
-                <div className="search-result-item-heading">
-                  <span className="search-result-item-index">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <div className="search-result-item-title-wrap">
-                    <Typography.Text className="search-result-item-title">
-                      {item.question}
-                    </Typography.Text>
-                    <Typography.Text className="search-result-item-source">
-                      知识库：{item.knowledge_base_name}
-                    </Typography.Text>
+            {group.children.map((item, index) => {
+              const editableEntry = findEditableEntryForResult(item, editableEntriesByChildId);
+              return (
+                <article
+                  key={item.result_item_id}
+                  className="search-result-item"
+                  style={{
+                    animationDelay: `${Math.min(groupIndex * 90 + index * 65, 600)}ms`
+                  }}
+                >
+                  <div className="search-result-item-heading">
+                    <span className="search-result-item-index">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    <div className="search-result-item-title-wrap">
+                      <Typography.Text className="search-result-item-title">
+                        {item.question}
+                      </Typography.Text>
+                      <Typography.Text className="search-result-item-source">
+                        知识库：{item.knowledge_base_name}
+                      </Typography.Text>
+                    </div>
                   </div>
-                </div>
-                <ResultItemView
-                  item={item}
-                  feedbackGiven={feedbackIds.has(item.result_item_id)}
-                  onFeedback={onFeedback}
-                  showQuestion={false}
-                  showKnowledgeBaseTag={false}
-                />
-              </article>
-            ))}
+                  <ResultItemView
+                    item={item}
+                    feedbackGiven={feedbackIds.has(item.result_item_id)}
+                    onFeedback={onFeedback}
+                    showQuestion={false}
+                    showKnowledgeBaseTag={false}
+                  />
+                  {editableEntry ? (
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<EditOutlined />}
+                      aria-label="修订此知识"
+                      onClick={() => onRevise(item)}
+                    >
+                      修订此知识
+                    </Button>
+                  ) : null}
+                </article>
+              );
+            })}
           </div>
         </section>
       ))}
@@ -684,6 +719,10 @@ type SearchTabKey = SearchRetrievalMode | "conversation";
 
 export function SearchPage(): JSX.Element {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [editableEntriesByChildId, setEditableEntriesByChildId] = useState<
+    Map<string, EditableContentEntry[]>
+  >(() => new Map());
+  const [revisionEntry, setRevisionEntry] = useState<EditableContentEntry | null>(null);
   const [taxonomy, setTaxonomy] = useState<KnowledgeContentTaxonomy>(fallbackSearchTaxonomy);
   const [knowledgeBaseId, setKnowledgeBaseId] = useState<string>();
   const [activeTab, setActiveTab] = useState<SearchTabKey>("vector");
@@ -718,6 +757,24 @@ export function SearchPage(): JSX.Element {
       .then(setKnowledgeBases)
       .catch((reason) => {
         message.error(reason instanceof Error ? reason.message : "无法加载知识库");
+      });
+  }, []);
+
+  useEffect(() => {
+    void api
+      .listEditableContentEntries()
+      .then((entries) => {
+        const entriesByChildId = new Map<string, EditableContentEntry[]>();
+        for (const entry of entries) {
+          const childEntries = entriesByChildId.get(entry.child_id) ?? [];
+          childEntries.push(entry);
+          entriesByChildId.set(entry.child_id, childEntries);
+        }
+        setEditableEntriesByChildId(entriesByChildId);
+      })
+      .catch((reason) => {
+        setEditableEntriesByChildId(new Map());
+        message.error(reason instanceof Error ? reason.message : "无法加载可修订知识");
       });
   }, []);
 
@@ -784,6 +841,31 @@ export function SearchPage(): JSX.Element {
       return;
     }
     await submitFeedback(conversationItem.search_event_id, item);
+  };
+
+  const openKnowledgeRevision = async (item: RenderableResult): Promise<void> => {
+    try {
+      const entries = await api.listEditableContentEntries();
+      const entriesByChildId = new Map<string, EditableContentEntry[]>();
+      for (const entry of entries) {
+        const childEntries = entriesByChildId.get(entry.child_id) ?? [];
+        childEntries.push(entry);
+        entriesByChildId.set(entry.child_id, childEntries);
+      }
+      setEditableEntriesByChildId(entriesByChildId);
+      const entry = findEditableEntryForResult(item, entriesByChildId);
+      if (!entry) {
+        message.info("当前账号没有该知识的修订权限，或该知识已不再发布");
+        return;
+      }
+      if (entry.is_primary && !entry.parent_revision) {
+        message.error("问题大类内容尚未加载，无法发起修订");
+        return;
+      }
+      setRevisionEntry(entry);
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : "无法加载可修订知识");
+    }
   };
 
   const runSearch = async (): Promise<void> => {
@@ -1222,6 +1304,8 @@ export function SearchPage(): JSX.Element {
                 groups={result.groups}
                 feedbackIds={feedbackIds}
                 onFeedback={(item) => void markHelpful(item)}
+                editableEntriesByChildId={editableEntriesByChildId}
+                onRevise={openKnowledgeRevision}
               />
               <SupplementalResultsView results={result.supplemental_results} />
             </>
@@ -1275,11 +1359,20 @@ export function SearchPage(): JSX.Element {
                 groups={conversationResult.groups}
                 feedbackIds={feedbackIds}
                 onFeedback={(item) => void markConversationHelpful(item)}
+                editableEntriesByChildId={editableEntriesByChildId}
+                onRevise={openKnowledgeRevision}
               />
               <SupplementalResultsView results={conversationResult.supplemental_results} />
             </>
           )}
         </div>
+      ) : null}
+      {revisionEntry ? (
+        <KnowledgeRevisionModal
+          entry={revisionEntry}
+          taxonomy={taxonomy}
+          onClose={() => setRevisionEntry(null)}
+        />
       ) : null}
     </section>
   );
